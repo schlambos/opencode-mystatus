@@ -54,19 +54,75 @@ Reads the Claude OAuth session from `auth.json`, performs automatic token refres
 
 ### Google (Antigravity)
 
-Reads all accounts from `~/.config/opencode/antigravity-accounts.json`. Tries a live API fetch (token refresh → `fetchAvailableModels`) and falls back to cached quota if the live call fails. Shows G3 Pro, G3 Image, G3 Flash, and Claude model quotas per account.
+Requires the [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) plugin to be installed and at least one account signed in. Reads accounts from `~/.config/opencode/antigravity-accounts.json`. Tries a live API fetch (token refresh → `fetchAvailableModels`) and falls back to cached quota if the live call fails. Shows G3 Pro, G3 Image, G3 Flash, and Claude model quotas per account.
 
 ### GitHub Copilot
 
-Two auth paths: (1) optional fine-grained PAT in `copilot-quota-token.json` for the public billing API, or (2) OAuth token from `auth.json` with automatic token exchange for the internal quota API. Shows Premium + Chat + Completions usage.
+Two auth paths:
+
+**(1) Fine-grained PAT** — Create a fine-grained personal access token with **Plan → Read-only** permission at `https://github.com/settings/tokens?type=beta`. Save to `~/.config/opencode/copilot-quota-token.json`:
+
+```json
+{ "token": "github_pat_...", "username": "YourGitHubUsername", "tier": "pro" }
+```
+
+Valid `tier` values: `free` (50/mo), `pro` (300/mo), `pro+` (1500/mo), `business` (300/mo), `enterprise` (1000/mo). This calls the GitHub public billing API and shows aggregate premium request usage.
+
+**(2) OAuth from auth.json** — Falls back to the OAuth token from `auth.json` → `github-copilot` with automatic token exchange. Works for accounts authenticated via OpenCode's Copilot provider. Shows Premium, Chat, and Completions breakdowns from the internal quota API.
 
 ### OpenCode Go
 
-Two modes: (a) simple API-key probe (`GET /models`) when only a key is available, or (b) full dashboard scraping for 5h/weekly/monthly quota windows when a workspace ID + browser auth cookie are configured via `~/.config/opencode/opencode-go.json`.
+Two modes:
+
+**(a) API-key probe** — If only an API key is present (from `auth.json` → `opencode-go`), the plugin calls `GET /zen/go/v1/models` to confirm reachability and list available models. Quota windows are not exposed by this endpoint.
+
+**(b) Dashboard scraping** — For rolling 5h, weekly, and monthly quota windows, provide a workspace ID and browser auth cookie. The plugin fetches the SolidJS dashboard page at `opencode.ai/workspace/<id>/go` and parses the SSR hydration data.
+
+Configure via `~/.config/opencode/opencode-go.json` in one of two shapes:
+
+```json
+{
+  "accounts": [
+    {
+      "id": "personal",
+      "name": "OpenCode Go Personal",
+      "workspaceId": "your_workspace_id",
+      "authCookie": "the_auth_cookie_value"
+    }
+  ]
+}
+```
+
+Or for a single account:
+
+```json
+{
+  "workspaceId": "your_workspace_id",
+  "authCookie": "the_auth_cookie_value"
+}
+```
+
+Alternatively, set env vars `OPENCODE_GO_WORKSPACE_ID` and `OPENCODE_GO_AUTH_COOKIE`.
+
+**Finding your workspace ID:** Open `https://opencode.ai/workspace` in a browser, select your Go workspace, and note the UUID in the URL: `https://opencode.ai/workspace/<uuid>/go`.
+
+**Getting the auth cookie:** While logged in at `opencode.ai`, open DevTools → Application → Cookies → `opencode.ai` and copy the value of the `auth` cookie. This cookie expires when your browser session ends.
 
 ### Poe
 
-Queries `api.poe.com/usage/current_balance` with a bearer token resolved from auth.json, `POE_API_KEY` env var, or `poe-api-key.json`. Shows monthly point balance, daily grants, and USD equivalent.
+Queries `api.poe.com/usage/current_balance` with a bearer token. The plugin resolves the token in this priority:
+
+1. `access` or `refresh` token from `auth.json` → `poe` (Populated automatically if you use a Poe model in OpenCode.)
+2. `POE_API_KEY` environment variable
+3. `~/.config/opencode/poe-api-key.json`:
+
+```json
+{ "apiKey": "your_poe_api_key" }
+```
+
+To get a Poe API key, visit `https://poe.com/api_key` while logged in.
+
+Output shows monthly point balance, daily grant countdown, and USD equivalent.
 
 ## Security
 
