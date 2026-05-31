@@ -27,6 +27,8 @@ Platforms you aren't signed into are skipped silently — you only see what's re
 
 ## Sample Output
 
+A full run with every platform configured. Platforms you aren't signed into are simply omitted.
+
 ```
 ## OpenAI Account Quota
 
@@ -52,6 +54,54 @@ Resets in: 1h 38m
 ████████████░░░░░░░░░░░░░░ 45% remaining
 Resets in: 1d 18m
 
+## Google Account Quota
+
+### you@example.com
+G3 Pro
+██████████████████████████ 100% remaining
+Resets in: 1h 45m
+
+G3 Flash
+██████████████████████████ 100% remaining
+Resets in: 1h 45m
+
+Claude
+██████████░░░░░░░░░░░░░░░░ 40% remaining
+Resets in: 5d 20h
+
+## GitHub Copilot Account Quota
+
+Account:        GitHub Copilot (pro)
+
+Premium
+█████████████████████░░░░░ 82% remaining (54/300)
+
+Resets in: 12d 4h
+
+## OpenCode Go Account Quota
+
+### OpenCode Go Personal
+5h (rolling)
+██████████████████████████ 100% remaining
+Resets in: 5h
+
+Weekly
+██████████████░░░░░░░░░░░░ 52% remaining
+Resets in: 19h 18m
+
+Monthly
+████████░░░░░░░░░░░░░░░░░░ 32% remaining
+Resets in: 20d 7h
+
+## Poe Account Quota
+
+Monthly
+███████████████████░░░░░░░ 73% remaining
+Resets in: 12d 6h
+
+Balance:        730000 pts ($21.90 USD)
+Daily grant:    +500 (Resets in: 8h)
+
 ## Z.AI Coding Plan
 
 Plan:           GLM Coding Lite
@@ -68,7 +118,7 @@ Resets in: 29d 23h
 Resets in: 4h
 
 Weekly
-████████████████████████░░ 95% remaining
+█████████████████████████░ 95% remaining
 Resets in: 6d 23h
 ```
 
