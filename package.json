@@ -1,7 +1,7 @@
 {
   "name": "opencode-mystatus",
   "version": "2.0.0",
-  "description": "All-in-one AI quota status plugin. Supports OpenAI, Anthropic (Claude.ai), Google (Antigravity), GitHub Copilot, OpenCode Go, and Poe.",
+  "description": "All-in-one AI quota status plugin. Supports OpenAI, Anthropic (Claude.ai), Google (Antigravity), GitHub Copilot, OpenCode Go, Poe, and Z.AI (GLM Coding Plan).",
   "type": "module",
   "main": "dist/plugin/mystatus.js",
   "types": "dist/plugin/mystatus.d.ts",
@@ -33,7 +33,10 @@
     "antigravity",
     "copilot",
     "opencode-go",
-    "poe"
+    "poe",
+    "zai",
+    "glm",
+    "zhipu"
   ],
   "license": "MIT",
   "repository": {

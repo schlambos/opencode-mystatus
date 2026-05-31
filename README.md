@@ -1,25 +1,82 @@
 # opencode-mystatus
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![OpenCode Plugin](https://img.shields.io/badge/OpenCode-plugin-black.svg)](https://opencode.ai)
 
-All-in-one AI quota status plugin for [OpenCode](https://opencode.ai). Query remaining quota across six platforms in one command.
+**One command. Every AI subscription. All your quota in one place.**
+
+`opencode-mystatus` is an all-in-one quota dashboard for [OpenCode](https://opencode.ai). It reads the credentials OpenCode already stores, talks to each provider's usage API, and renders a unified report of how much you have left and when it resets — across **seven** platforms.
+
+```
+/mystatus
+```
 
 ## Supported Platforms
 
-| Platform       | Account Type           | Data Source / Auth                                   |
-|----------------|------------------------|------------------------------------------------------|
-| OpenAI         | ChatGPT Plus/Team/Pro  | `~/.local/share/opencode/auth.json` → `openai`       |
-| Anthropic      | Claude Pro/Max         | `~/.local/share/opencode/auth.json` → `anthropic`    |
-| Google         | Antigravity free quota | `~/.config/opencode/antigravity-accounts.json`       |
-| GitHub Copilot | Individual / Business  | `~/.local/share/opencode/auth.json` + optional PAT   |
-| OpenCode Go    | Any Go subscription    | API key from auth.json + optional dashboard cookie   |
-| Poe            | Subscription or paygo  | auth.json, `POE_API_KEY` env, or poe-api-key.json    |
+| Platform           | Account Type              | Source / Auth                                          |
+|--------------------|---------------------------|--------------------------------------------------------|
+| **OpenAI**         | ChatGPT Plus / Team / Pro | `auth.json` → `openai`                                 |
+| **Anthropic**      | Claude Pro / Max          | `auth.json` → `anthropic` (auto-refresh)               |
+| **Google**         | Antigravity free quota    | `antigravity-accounts.json` (multi-account)            |
+| **GitHub Copilot** | Individual / Business     | `auth.json` → `github-copilot` *or* fine-grained PAT   |
+| **OpenCode Go**    | Any Go subscription       | API key from `auth.json` *or* dashboard cookie (multi) |
+| **Poe**            | Subscription or pay-go    | `auth.json`, `POE_API_KEY`, or `poe-api-key.json`      |
+| **Z.AI**           | GLM Coding Plan           | `auth.json` → `zai-coding-plan`                        |
+
+Platforms you aren't signed into are skipped silently — you only see what's relevant to you.
+
+## Sample Output
+
+```
+## OpenAI Account Quota
+
+Account:        you@example.com (plus)
+
+5-hour limit
+██████████████████████████ 99% remaining
+Resets in: 5h
+
+7-day limit
+████████████░░░░░░░░░░░░░░ 45% remaining
+Resets in: 6d 4h
+
+## Anthropic Account Quota
+
+Account:        Claude Pro/Max
+
+5-hour limit
+███████████████████████░░░ 90% remaining
+Resets in: 1h 38m
+
+7-day limit
+████████████░░░░░░░░░░░░░░ 45% remaining
+Resets in: 1d 18m
+
+## Z.AI Coding Plan
+
+Plan:           GLM Coding Lite
+Price:          $18.00/monthly
+Valid:          2026-05-31 12:02:51 to 2026-06-30 12:02:51
+Auto-renews:    2026-06-30
+
+Monthly
+██████████████████████████ 100% remaining (0/100)
+Resets in: 29d 23h
+
+5-hour rolling
+███████████████████░░░░░░░ 75% remaining
+Resets in: 4h
+
+Weekly
+████████████████████████░░ 95% remaining
+Resets in: 6d 23h
+```
 
 ## Installation
 
-### From npm
+### From npm (recommended)
 
-Add to your `~/.config/opencode/opencode.json`:
+Add the plugin and a slash command to `~/.config/opencode/opencode.json`:
 
 ```json
 {
@@ -33,52 +90,59 @@ Add to your `~/.config/opencode/opencode.json`:
 }
 ```
 
-### From local files
+### From source
 
-Copy `plugin/mystatus.ts` to `~/.config/opencode/plugin/` and `command/mystatus.md` to `~/.config/opencode/command/`, then restart OpenCode.
+Copy `plugin/mystatus.ts` into `~/.config/opencode/plugin/` and `command/mystatus.md` into `~/.config/opencode/command/`, then restart OpenCode.
 
 ## Usage
 
-- `/mystatus` slash command
-- "Check my AI quota" / "How much Claude quota do I have left?"
+Trigger it however you like:
 
-## Platforms
+- The `/mystatus` slash command
+- Natural language: *"Check my AI quota"*, *"How much Claude do I have left?"*, *"What's my GLM coding plan usage?"*
+
+The tool takes no arguments. It queries every configured platform in parallel and returns a single Markdown report with progress bars and reset countdowns.
+
+## Platform Configuration
+
+Most platforms work with **zero configuration** — if you've authenticated the provider inside OpenCode, the credentials are already in `auth.json` and `mystatus` will use them. The sections below cover the per-platform details and the few optional config files.
 
 ### OpenAI
 
-Reads the ChatGPT OAuth token from `auth.json` and calls `chatgpt.com/backend-api/wham/usage`. Shows 5-hour and 7-day rolling windows plus the plan type.
+Reads the ChatGPT OAuth token from `auth.json` and calls `chatgpt.com/backend-api/wham/usage`. Reports the plan type plus the 5-hour and 7-day rolling windows. No setup beyond signing into the OpenAI provider in OpenCode.
 
 ### Anthropic (Claude.ai)
 
-Reads the Claude OAuth session from `auth.json`, performs automatic token refresh via the Claude Code OAuth client, and queries `api.anthropic.com/api/oauth/usage`. Shows 5-hour and 7-day rolling windows.
+Reads the Claude OAuth session from `auth.json`, automatically refreshes the access token via the Claude Code OAuth client, then queries `api.anthropic.com/api/oauth/usage`. Reports the 5-hour and 7-day rolling windows. No setup beyond signing into the Anthropic provider in OpenCode.
 
 ### Google (Antigravity)
 
-Requires the [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) plugin to be installed and at least one account signed in. Reads accounts from `~/.config/opencode/antigravity-accounts.json`. Tries a live API fetch (token refresh → `fetchAvailableModels`) and falls back to cached quota if the live call fails. Shows G3 Pro, G3 Image, G3 Flash, and Claude model quotas per account.
+Requires the [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) plugin with at least one account signed in. Accounts are read from `~/.config/opencode/antigravity-accounts.json`.
+
+For each account the plugin attempts a **live** fetch (refresh token → `fetchAvailableModels`) and falls back to the **cached** quota stored by the auth plugin if the live call fails (the cached value is labelled with its age). Multiple accounts are listed separately, each showing G3 Pro, G3 Flash, G3 Image, and Claude model quotas.
 
 ### GitHub Copilot
 
-Two auth paths:
+Two authentication paths, tried in order:
 
-**(1) Fine-grained PAT** — Create a fine-grained personal access token with **Plan → Read-only** permission at `https://github.com/settings/tokens?type=beta`. Save to `~/.config/opencode/copilot-quota-token.json`:
+**1. Fine-grained PAT (most reliable).** Create a fine-grained personal access token with **Plan → Read-only** permission at <https://github.com/settings/tokens?type=beta>, then save `~/.config/opencode/copilot-quota-token.json`:
 
 ```json
 { "token": "github_pat_...", "username": "YourGitHubUsername", "tier": "pro" }
 ```
 
-Valid `tier` values: `free` (50/mo), `pro` (300/mo), `pro+` (1500/mo), `business` (300/mo), `enterprise` (1000/mo). This calls the GitHub public billing API and shows aggregate premium request usage.
+Valid tiers and their monthly premium-request limits: `free` (50), `pro` (300), `pro+` (1500), `business` (300), `enterprise` (1000). This uses GitHub's public billing API.
 
-**(2) OAuth from auth.json** — Falls back to the OAuth token from `auth.json` → `github-copilot` with automatic token exchange. Works for accounts authenticated via OpenCode's Copilot provider. Shows Premium, Chat, and Completions breakdowns from the internal quota API.
+**2. OAuth from auth.json.** Falls back to the `github-copilot` OAuth token (with automatic token exchange) for accounts authenticated through OpenCode's Copilot provider. Reports Premium, Chat, and Completions breakdowns.
 
 ### OpenCode Go
 
-Two modes:
+Two modes, automatically selected:
 
-**(a) API-key probe** — If only an API key is present (from `auth.json` → `opencode-go`), the plugin calls `GET /zen/go/v1/models` to confirm reachability and list available models. Quota windows are not exposed by this endpoint.
+- **API-key probe** — With only an API key (`auth.json` → `opencode-go`), the plugin calls `GET /zen/go/v1/models` to confirm reachability and list models. Quota windows are not exposed by this endpoint.
+- **Dashboard scraping** — To see the rolling 5-hour, weekly, and monthly windows, supply a workspace ID and browser auth cookie. The plugin fetches `opencode.ai/workspace/<id>/go` and parses the SolidJS SSR hydration payload.
 
-**(b) Dashboard scraping** — For rolling 5h, weekly, and monthly quota windows, provide a workspace ID and browser auth cookie. The plugin fetches the SolidJS dashboard page at `opencode.ai/workspace/<id>/go` and parses the SSR hydration data.
-
-Configure via `~/.config/opencode/opencode-go.json` in one of two shapes:
+Configure one or more accounts in `~/.config/opencode/opencode-go.json`:
 
 ```json
 {
@@ -93,26 +157,23 @@ Configure via `~/.config/opencode/opencode-go.json` in one of two shapes:
 }
 ```
 
-Or for a single account:
+Single-account shorthand:
 
 ```json
-{
-  "workspaceId": "your_workspace_id",
-  "authCookie": "the_auth_cookie_value"
-}
+{ "workspaceId": "your_workspace_id", "authCookie": "the_auth_cookie_value" }
 ```
 
-Alternatively, set env vars `OPENCODE_GO_WORKSPACE_ID` and `OPENCODE_GO_AUTH_COOKIE`.
+Or use environment variables `OPENCODE_GO_WORKSPACE_ID` and `OPENCODE_GO_AUTH_COOKIE`.
 
-**Finding your workspace ID:** Open `https://opencode.ai/workspace` in a browser, select your Go workspace, and note the UUID in the URL: `https://opencode.ai/workspace/<uuid>/go`.
+**Workspace ID** — open <https://opencode.ai/workspace>, select your Go workspace, and copy the UUID from the URL (`.../workspace/<uuid>/go`).
 
-**Getting the auth cookie:** While logged in at `opencode.ai`, open DevTools → Application → Cookies → `opencode.ai` and copy the value of the `auth` cookie. This cookie expires when your browser session ends.
+**Auth cookie** — while logged into `opencode.ai`, open DevTools → Application → Cookies → `opencode.ai` and copy the `auth` cookie value. It expires with your browser session.
 
 ### Poe
 
-Queries `api.poe.com/usage/current_balance` with a bearer token. The plugin resolves the token in this priority:
+Queries `api.poe.com/usage/current_balance` with a bearer token, resolved in priority order:
 
-1. `access` or `refresh` token from `auth.json` → `poe` (Populated automatically if you use a Poe model in OpenCode.)
+1. `access` / `refresh` token from `auth.json` → `poe` (populated automatically when you use a Poe model in OpenCode)
 2. `POE_API_KEY` environment variable
 3. `~/.config/opencode/poe-api-key.json`:
 
@@ -120,42 +181,64 @@ Queries `api.poe.com/usage/current_balance` with a bearer token. The plugin reso
 { "apiKey": "your_poe_api_key" }
 ```
 
-To get a Poe API key, visit `https://poe.com/api_key` while logged in.
+Get a key at <https://poe.com/api_key>. Output shows the monthly point balance, daily grant countdown, and USD equivalent.
 
-Output shows monthly point balance, daily grant countdown, and USD equivalent.
+### Z.AI (GLM Coding Plan)
 
-## Security
+Reads the API key from `auth.json` → `zai-coding-plan` (populated when you authenticate the Z.AI / GLM Coding provider in OpenCode). No additional configuration required.
 
-**Files accessed (read-only):**
+The plugin queries two endpoints on `api.z.ai`:
 
-- `~/.local/share/opencode/auth.json` — OpenCode's official auth storage
-- `~/.config/opencode/antigravity-accounts.json` — Antigravity plugin's account storage
-- `~/.config/opencode/opencode-go.json` — OpenCode Go dashboard config
-- `~/.config/opencode/copilot-quota-token.json` — optional Copilot PAT config
-- `~/.config/opencode/poe-api-key.json` — optional Poe API key file
+- `GET /api/biz/subscription/list` — plan name, price, billing cycle, validity period, and auto-renew status
+- `GET /api/monitor/usage/quota/limit` — usage windows with percentage used, remaining, and reset timestamps, plus per-model breakdowns
 
-**API endpoints (all official):**
+Reported windows map the API's unit codes to friendly labels: **Monthly** request quota (with used/total count), a **5-hour rolling** token window, and a **Weekly** token window — each with its own progress bar and reset countdown.
 
-- `chatgpt.com/backend-api/wham/usage` — OpenAI
-- `api.anthropic.com/api/oauth/usage` — Anthropic
-- `cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels` — Google
-- `api.github.com/copilot_internal/user` / `api.github.com/users/*/settings/billing/premium_request/usage` — GitHub Copilot
-- `opencode.ai/zen/go/v1/models` / `opencode.ai/workspace/*/go` — OpenCode Go
-- `api.poe.com/usage/current_balance` — Poe
-- `oauth2.googleapis.com/token` / `console.anthropic.com/v1/oauth/token` — OAuth token refresh
+## Security & Privacy
 
-**Privacy:**
+`mystatus` is read-only and makes no changes to your system or accounts.
 
-- No data is stored, uploaded, or cached
-- Source code is fully open for review
+**Files read (never written):**
+
+| File | Purpose |
+|------|---------|
+| `~/.local/share/opencode/auth.json` | OpenCode's official credential store |
+| `~/.config/opencode/antigravity-accounts.json` | Antigravity plugin account store |
+| `~/.config/opencode/opencode-go.json` | OpenCode Go dashboard config (optional) |
+| `~/.config/opencode/copilot-quota-token.json` | Copilot PAT (optional) |
+| `~/.config/opencode/poe-api-key.json` | Poe API key (optional) |
+
+**Endpoints contacted (all first-party provider APIs):**
+
+| Provider | Endpoint(s) |
+|----------|-------------|
+| OpenAI | `chatgpt.com/backend-api/wham/usage` |
+| Anthropic | `api.anthropic.com/api/oauth/usage`, `console.anthropic.com/v1/oauth/token` |
+| Google | `cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels`, `oauth2.googleapis.com/token` |
+| GitHub Copilot | `api.github.com/copilot_internal/*`, `api.github.com/users/*/settings/billing/premium_request/usage` |
+| OpenCode Go | `opencode.ai/zen/go/v1/models`, `opencode.ai/workspace/*/go` |
+| Poe | `api.poe.com/usage/current_balance` |
+| Z.AI | `api.z.ai/api/biz/subscription/list`, `api.z.ai/api/monitor/usage/quota/limit` |
+
+- Credentials are read locally and sent **only** to their own provider.
+- Nothing is stored, cached, logged, or transmitted anywhere else.
+- The full source is open for review.
+
+> **Note:** Some provider usage endpoints are internal/undocumented and may change without notice. The plugin degrades gracefully — a failing platform reports an error and the others still render.
 
 ## Development
 
 ```bash
 npm install
-npm run typecheck
-npm run build
+npm run typecheck   # tsc --noEmit
+npm run build       # tsc → dist/
 ```
+
+The plugin is a single self-contained module at `plugin/mystatus.ts`. Each platform is an independent `query*` function returning a `{ success, output | error }` result, run in parallel and collected into the final report — making it straightforward to add a new provider.
+
+## Credits
+
+A fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), extended with Anthropic, GitHub Copilot, OpenCode Go (multi-account), Poe, multi-account Google, and Z.AI (GLM Coding Plan) support.
 
 ## License
 
