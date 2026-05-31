@@ -187,12 +187,22 @@ interface OpenAIWindowData {
 }
 
 interface OpenAIUsage {
+  email?: string;
   plan_type: string;
   rate_limit: {
+    allowed?: boolean;
     limit_reached: boolean;
     primary_window: OpenAIWindowData;
     secondary_window: OpenAIWindowData | null;
   } | null;
+  credits?: {
+    has_credits?: boolean;
+    unlimited?: boolean;
+    overage_limit_reached?: boolean;
+    balance?: string;
+  } | null;
+  rate_limit_reached_type?: { type?: string; details?: string } | null;
+  rate_limit_reset_credits?: { available_count?: number } | null;
 }
 
 function formatOpenAIWindow(w: OpenAIWindowData): string[] {
@@ -233,16 +243,37 @@ async function queryOpenAI(auth: OpenAIAuthData | undefined): Promise<QueryResul
 
     const data = (await res.json()) as OpenAIUsage;
     const lines: string[] = [
-      `Account:        ${email ?? "unknown"} (${data.plan_type})`,
-      "",
+      `Account:        ${data.email ?? email ?? "unknown"}`,
+      `Plan:           ChatGPT ${data.plan_type}`,
     ];
+
+    // Credit balance / overage (mirrors Z.AI's subscription header richness)
+    const credits = data.credits;
+    if (credits) {
+      if (credits.unlimited) {
+        lines.push("Credits:        unlimited");
+      } else if (credits.has_credits || (credits.balance && credits.balance !== "0")) {
+        lines.push(`Credits:        ${credits.balance ?? "?"}`);
+      }
+      if (credits.overage_limit_reached) lines.push("Overage:        ⚠️ limit reached");
+    }
+
+    lines.push("");
 
     if (data.rate_limit?.primary_window)
       lines.push(...formatOpenAIWindow(data.rate_limit.primary_window));
     if (data.rate_limit?.secondary_window)
       lines.push("", ...formatOpenAIWindow(data.rate_limit.secondary_window));
-    if (data.rate_limit?.limit_reached)
-      lines.push("", "⚠️ Rate limit reached!");
+
+    if (data.rate_limit?.limit_reached) {
+      const reason = data.rate_limit_reached_type?.type
+        ? ` (${data.rate_limit_reached_type.type})`
+        : "";
+      lines.push("", `⚠️ Rate limit reached!${reason}`);
+      const resetCredits = data.rate_limit_reset_credits?.available_count ?? 0;
+      if (resetCredits > 0)
+        lines.push(`Reset credits available: ${resetCredits}`);
+    }
 
     return { success: true, output: lines.join("\n") };
   } catch (err) {
@@ -264,10 +295,41 @@ const ANTHROPIC_BETA_HEADER = "oauth-2025-04-20";
 // Mimic Claude Code's User-Agent so the server doesn't aggressively rate-limit
 const ANTHROPIC_USER_AGENT = "claude-code/1.0.17";
 
+interface AnthropicWindow {
+  utilization: number;
+  resets_at: string;
+}
+
 interface AnthropicUsageResponse {
-  five_hour?: { utilization: number; resets_at: string };
-  seven_day?:  { utilization: number; resets_at: string };
-  extra_usage?: unknown;
+  five_hour?: AnthropicWindow;
+  seven_day?: AnthropicWindow;
+  seven_day_opus?: AnthropicWindow | null;
+  seven_day_sonnet?: AnthropicWindow | null;
+  seven_day_cowork?: AnthropicWindow | null;
+  extra_usage?: {
+    is_enabled?: boolean;
+    monthly_limit?: number | null;
+    used_credits?: number | null;
+    utilization?: number | null;
+    currency?: string | null;
+    disabled_reason?: string | null;
+  } | null;
+}
+
+// Per-model 7-day windows to render when present (mirrors Z.AI per-model detail)
+const ANTHROPIC_MODEL_WINDOWS: Array<{ key: keyof AnthropicUsageResponse; label: string }> = [
+  { key: "seven_day_opus", label: "7-day (Opus)" },
+  { key: "seven_day_sonnet", label: "7-day (Sonnet)" },
+  { key: "seven_day_cowork", label: "7-day (Cowork)" },
+];
+
+function formatAnthropicWindow(label: string, w: AnthropicWindow): string[] {
+  const remain = Math.round(100 - w.utilization);
+  return [
+    label,
+    `${createProgressBar(remain)} ${remain}% remaining`,
+    `Resets in: ${formatResetAt(w.resets_at)}`,
+  ];
 }
 
 /**
@@ -339,17 +401,37 @@ async function queryAnthropic(auth: AnthropicAuthData | undefined): Promise<Quer
     const lines: string[] = ["Account:        Claude Pro/Max", ""];
 
     if (data.five_hour) {
-      const remain = Math.round(100 - data.five_hour.utilization);
-      lines.push("5-hour limit");
-      lines.push(`${createProgressBar(remain)} ${remain}% remaining`);
-      lines.push(`Resets in: ${formatResetAt(data.five_hour.resets_at)}`);
+      lines.push(...formatAnthropicWindow("5-hour limit", data.five_hour));
     }
 
     if (data.seven_day) {
-      const remain = Math.round(100 - data.seven_day.utilization);
-      lines.push("", "7-day limit");
-      lines.push(`${createProgressBar(remain)} ${remain}% remaining`);
-      lines.push(`Resets in: ${formatResetAt(data.seven_day.resets_at)}`);
+      if (lines.length > 2) lines.push("");
+      lines.push(...formatAnthropicWindow("7-day limit", data.seven_day));
+    }
+
+    // Per-model 7-day windows (only shown when the API reports them)
+    for (const { key, label } of ANTHROPIC_MODEL_WINDOWS) {
+      const w = data[key] as AnthropicWindow | null | undefined;
+      if (w && typeof w.utilization === "number") {
+        lines.push("", ...formatAnthropicWindow(label, w));
+      }
+    }
+
+    // Extra usage / overage billing (mirrors Z.AI subscription detail)
+    const extra = data.extra_usage;
+    if (extra?.is_enabled) {
+      const cur = extra.currency ?? "USD";
+      const used = extra.used_credits ?? 0;
+      const limit = extra.monthly_limit;
+      lines.push("", "Extra usage (overage)");
+      if (typeof limit === "number" && limit > 0) {
+        const util = Math.round(extra.utilization ?? (used / limit) * 100);
+        const remain = Math.max(0, 100 - util);
+        lines.push(`${createProgressBar(remain)} ${remain}% remaining`);
+        lines.push(`Used: ${used}/${limit} ${cur}`);
+      } else {
+        lines.push(`Used: ${used} ${cur}`);
+      }
     }
 
     if (!data.five_hour && !data.seven_day) {

@@ -32,7 +32,8 @@ A full run with every platform configured. Platforms you aren't signed into are 
 ```
 ## OpenAI Account Quota
 
-Account:        you@example.com (plus)
+Account:        you@example.com
+Plan:           ChatGPT plus
 
 5-hour limit
 ██████████████████████████ 99% remaining
@@ -53,6 +54,10 @@ Resets in: 1h 38m
 7-day limit
 ████████████░░░░░░░░░░░░░░ 45% remaining
 Resets in: 1d 18m
+
+7-day (Sonnet)
+█████████████████████████░ 97% remaining
+Resets in: 16h 3m
 
 ## Google Account Quota
 
