@@ -8,6 +8,7 @@
  *   - GitHub Copilot                        auth.json → github-copilot (+ optional PAT)
  *   - OpenCode Go (dashboard/API probe)     auth.json + optional dashboard scrape config
  *   - Poe         (points balance)          auth.json, env var, or poe-api-key.json
+ *   - Z.AI        (GLM Coding Plan)         auth.json → zai-coding-plan
  *
  * Key fixes vs. opencode-mystatus:
  *   - Google path: always uses ~/.config/opencode/ (not APPDATA on Windows)
@@ -16,6 +17,7 @@
  *   - Anthropic: added via api.anthropic.com/api/oauth/usage (Claude Code internal endpoint)
  *   - OpenCode Go: scrapes SolidJS SSR hydration output from workspace dashboard
  *   - Poe: queries api.poe.com/usage/current_balance with bearer token
+ *   - Z.AI: queries api.z.ai/api/monitor/usage/quota/limit + /api/biz/subscription/list
  */
 
 import { type Plugin, tool } from "@opencode-ai/plugin";
@@ -67,12 +69,18 @@ interface PoeAuthData {
   expires?: number;
 }
 
+interface ZaiAuthData {
+  type: string;
+  key?: string;
+}
+
 interface AuthData {
   openai?: OpenAIAuthData;
   anthropic?: AnthropicAuthData;
   "github-copilot"?: CopilotAuthData;
   "opencode-go"?: OpenCodeGoAuthData;
   poe?: PoeAuthData;
+  "zai-coding-plan"?: ZaiAuthData;
 }
 
 interface AntigravityAccount {
@@ -1060,6 +1068,163 @@ async function queryPoe(auth: PoeAuthData | undefined): Promise<QueryResult | nu
 }
 
 // ============================================================
+// Z.AI Coding Plan (api.z.ai subscription + quota endpoints)
+// ============================================================
+
+const ZAI_BASE_URL = "https://api.z.ai";
+
+const ZAI_UNIT_LABELS: Record<number, (n: number) => string> = {
+  3: (n) => `${n}-hour rolling`,
+  5: (n) => n >= 30 ? `${Math.round(n / 30)}-month` : "Monthly",
+  6: (n) => "Weekly",
+};
+
+function zaiUnitLabel(unit: number, number_: number): string {
+  const fn = ZAI_UNIT_LABELS[unit];
+  return fn ? fn(number_) : `Unit ${unit}`;
+}
+
+interface ZaiLimitUsageDetail {
+  modelCode: string;
+  usage: number;
+}
+
+interface ZaiLimit {
+  type: string;
+  unit: number;
+  number: number;
+  usage?: number;
+  currentValue?: number;
+  remaining?: number;
+  percentage: number;
+  nextResetTime: number;
+  usageDetails?: ZaiLimitUsageDetail[];
+}
+
+interface ZaiQuotaResponse {
+  code: number;
+  msg: string;
+  data: {
+    limits: ZaiLimit[];
+    level: string;
+  };
+  success: boolean;
+}
+
+interface ZaiSubscription {
+  id: string;
+  productName: string;
+  status: string;
+  valid: string;
+  autoRenew: number;
+  actualPrice: number;
+  renewPrice: number;
+  billingCycle: string;
+  nextRenewTime: string;
+  paymentType: string;
+  inCurrentPeriod: boolean;
+}
+
+interface ZaiSubscriptionResponse {
+  code: number;
+  msg: string;
+  data: ZaiSubscription[];
+  success: boolean;
+}
+
+async function queryZai(auth: ZaiAuthData | undefined): Promise<QueryResult | null> {
+  if (!auth?.key) return null;
+
+  try {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${auth.key}`,
+      Accept: "application/json",
+      "User-Agent": "OpenCode-AllStatus/1.0",
+    };
+
+    const [quotaRes, subRes] = await Promise.all([
+      fetchTimeout(`${ZAI_BASE_URL}/api/monitor/usage/quota/limit`, { headers }),
+      fetchTimeout(`${ZAI_BASE_URL}/api/biz/subscription/list`, { headers }),
+    ]);
+
+    if (!quotaRes.ok) {
+      const body = await quotaRes.text().catch(() => "");
+      throw new Error(`Z.AI quota API error (${quotaRes.status}): ${body.slice(0, 200)}`);
+    }
+
+    const quota = (await quotaRes.json()) as ZaiQuotaResponse;
+    if (!quota.success || !quota.data?.limits) {
+      throw new Error(`Z.AI quota API returned non-success: ${quota.msg}`);
+    }
+
+    let planLabel = `GLM Coding (${quota.data.level ?? "unknown"})`;
+    let validityLine = "";
+    let priceLine = "";
+    let renewalLine = "";
+
+    if (subRes.ok) {
+      const subData = (await subRes.json()) as ZaiSubscriptionResponse;
+      const active = (subData.data ?? []).find(
+        (s) => s.status === "VALID" && s.inCurrentPeriod,
+      );
+      if (active) {
+        planLabel = active.productName;
+        const priceUsd = `$${active.actualPrice?.toFixed(2) ?? "?"}`;
+        priceLine = `Price:           ${priceUsd}/${active.billingCycle ?? "?"}`;
+        renewalLine = active.autoRenew
+          ? `Auto-renews:     ${active.nextRenewTime ?? "unknown"}`
+          : `Expires:         ${active.nextRenewTime ?? "unknown"}`;
+        const parts = active.valid?.split("-", 2) ?? [];
+        if (parts.length === 2) {
+          validityLine = `Valid:           ${parts[0].trim()} to ${parts[1].trim()}`;
+        }
+      }
+    }
+
+    const lines: string[] = [`Plan:           ${planLabel}`];
+    if (priceLine) lines.push(priceLine);
+    if (validityLine) lines.push(validityLine);
+    if (renewalLine) lines.push(renewalLine);
+
+    const limits = quota.data.limits;
+    for (const limit of limits) {
+      const remain = Math.round(100 - Math.max(0, Math.min(100, limit.percentage)));
+      const label = zaiUnitLabel(limit.unit, limit.number);
+
+      lines.push("", label);
+
+      if (limit.type === "TIME_LIMIT" && typeof limit.remaining === "number" && typeof limit.usage === "number") {
+        const total = limit.remaining + limit.usage;
+        lines.push(
+          `${createProgressBar(remain)} ${remain}% remaining (${limit.usage}/${total})`,
+        );
+      } else {
+        lines.push(`${createProgressBar(remain)} ${remain}% remaining`);
+      }
+
+      const resetAt = new Date(limit.nextResetTime).toISOString();
+      lines.push(`Resets in: ${formatResetAt(resetAt)}`);
+
+      if (limit.usageDetails?.length) {
+        const withUsage = limit.usageDetails.filter((d) => d.usage > 0);
+        if (withUsage.length) {
+          lines.push(
+            "  " + withUsage.map((d) => `${d.modelCode}: ${d.usage}`).join(", "),
+          );
+        }
+      }
+    }
+
+    return { success: true, output: lines.join("\n") };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+// ============================================================
 // Plugin entry point
 // ============================================================
 
@@ -1082,7 +1247,7 @@ export const MyStatusPlugin: Plugin = async () => ({
   tool: {
     mystatus: tool({
       description:
-        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic (Claude.ai), Google (Antigravity), GitHub Copilot, OpenCode Go, and Poe.",
+        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic (Claude.ai), Google (Antigravity), GitHub Copilot, OpenCode Go, Poe, and Z.AI (GLM Coding Plan).",
       args: {},
       async execute() {
         const authPath = authJsonPath();
@@ -1094,7 +1259,7 @@ export const MyStatusPlugin: Plugin = async () => ({
           return `❌ Failed to read auth file: ${authPath}\n${err instanceof Error ? err.message : String(err)}`;
         }
 
-        const [openaiResult, anthropicResult, googleResult, copilotResult, opencodeGoResult, poeResult] =
+        const [openaiResult, anthropicResult, googleResult, copilotResult, opencodeGoResult, poeResult, zaiResult] =
           await Promise.all([
             queryOpenAI(auth.openai),
             queryAnthropic(auth.anthropic),
@@ -1102,6 +1267,7 @@ export const MyStatusPlugin: Plugin = async () => ({
             queryCopilot(auth["github-copilot"]),
             queryOpenCodeGo(auth["opencode-go"]),
             queryPoe(auth.poe),
+            queryZai(auth["zai-coding-plan"]),
           ]);
 
         const results: string[] = [];
@@ -1113,6 +1279,7 @@ export const MyStatusPlugin: Plugin = async () => ({
         collect(copilotResult, "## GitHub Copilot Account Quota", results, errors);
         collect(opencodeGoResult, "## OpenCode Go Account Quota", results, errors);
         collect(poeResult, "## Poe Account Quota", results, errors);
+        collect(zaiResult, "## Z.AI Coding Plan", results, errors);
 
         let output = results.join("\n").trim();
         if (errors.length) {
