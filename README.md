@@ -5,7 +5,7 @@
 
 **One command. Every AI subscription. All your quota in one place.**
 
-`opencode-mystatus` is an all-in-one quota dashboard for [OpenCode](https://opencode.ai). It reads the credentials OpenCode already stores, talks to each provider's usage API, and renders a unified report of how much you have left and when it resets — across **seven** platforms.
+`opencode-mystatus` is an all-in-one quota dashboard for [OpenCode](https://opencode.ai). It reads the credentials OpenCode already stores, talks to each provider's usage API, and renders a unified report of how much you have left and when it resets — across **nine** platforms.
 
 ```
 /mystatus
@@ -19,107 +19,111 @@
 | **Anthropic**      | Claude Pro / Max          | `auth.json` → `anthropic` (auto-refresh)               |
 | **Google**         | Antigravity free quota    | `antigravity-accounts.json` (multi-account)            |
 | **GitHub Copilot** | Individual / Business     | `auth.json` → `github-copilot` *or* fine-grained PAT   |
-| **OpenCode Go**    | Any Go subscription       | API key from `auth.json` *or* dashboard cookie (multi) |
+| **OpenCode Go+Zen** | Any Go subscription       | API key from `auth.json` *or* dashboard cookie (multi) |
 | **Poe**            | Subscription or pay-go    | `auth.json`, `POE_API_KEY`, or `poe-api-key.json`      |
 | **Z.AI**           | GLM Coding Plan           | `auth.json` → `zai-coding-plan`                        |
+| **xAI/Grok**       | SuperGrok subscription    | `auth.json` → `xai-oauth` (auth check only)            |
 
 Platforms you aren't signed into are skipped silently — you only see what's relevant to you.
 
+## Features
+
+- **Merged OpenCode Go+Zen cells** — Single cell per account shows Go quota windows AND Zen billing/spend
+- **Visual indicators** — Emoji color squares (🟥≤0% 🟧<25% 🟨<50% 🟩≥50%) work everywhere, even when ANSI is stripped
+- **ANSI terminal colors** — Green/yellow/red bars when your terminal supports escape sequences
+- **JSON output** — Machine-readable format via `mystatus --format json`
+- **Threshold alerts** — Automatic warnings for platforms below 25% remaining (configurable)
+- **Parallel queries** — All platforms queried simultaneously for fast response
+- **Multi-account support** — Google, OpenCode Go+Zen display each configured account separately
+
 ## Sample Output
 
-A full run with every platform configured. Platforms you aren't signed into are simply omitted.
+A full run with every platform configured. Platforms you aren't signed into are simply omitted. Threshold alerts appear at the bottom for any platform with low remaining quota.
 
 ```
-## OpenAI Account Quota
+┌── OpenAI Account Quota ──────────────────────┬── Anthropic Account Quota ───────────────────┐
+│ Account:        you@example.com              │ Account:        Claude Pro/Max               │
+│ Plan:           ChatGPT plus                 │                                              │
+│ Credits:        $20.50                       │ 5-hour limit                                 │
+│                                              │ 🟩 ██████████████████████░░░░ 85% remaining   │
+│ 5-hour limit                                 │ Resets in: 2h 15m                            │
+│ 🟨 ██████████████░░░░░░░░░░░░ 52% remaining  │                                              │
+│ Resets in: 3h 30m                            │ 7-day limit                                  │
+│                                              │ 🟧 ████████████░░░░░░░░░░░░░░ 45% remaining  │
+│ 7-day limit                                  │ Resets in: 5d 18h                            │
+│ 🟩 ██████████████████████████ 99% remaining  │                                              │
+│ Resets in: 6d 16h                            │ 7-day (Opus)                                 │
+│                                              │ 🟩 ██████████████████████████ 100% remaining │
+│                                              │ Resets in: 6d 18h                            │
+└──────────────────────────────────────────────┴──────────────────────────────────────────────┘
 
-Account:        you@example.com (plus)
+┌── Google — you@example.com ──────────────────┬── GitHub Copilot ────────────────────────────┐
+│ G3 Pro                                       │ Account:        GitHub Copilot (pro)         │
+│ 🟩 ██████████████████████████ 100% remaining │                                              │
+│ Resets in: 1h 45m                            │ Premium                                      │
+│                                              │ 🟩 ███████████████████░░░░░░ 75% remaining   │
+│ G3 Flash                                     │ Used: 75 / 300                               │
+│ 🟩 ██████████████████████████ 100% remaining │                                              │
+│ Resets in: 1h 45m                            │ Resets in: 28d 6h                            │
+│                                              │                                              │
+│ Claude                                       │                                              │
+│ 🟨 ██████████░░░░░░░░░░░░░░░░ 40% remaining  │                                              │
+│ Resets in: 4d 5h                             │                                              │
+└──────────────────────────────────────────────┴──────────────────────────────────────────────┘
 
-5-hour limit
-██████████████████████████ 99% remaining
-Resets in: 5h
+┌── OpenCode Go Personal ──────────────────────┬── OpenCode Go Alt 1 ─────────────────────────┐
+│ 5h (rolling)                                 │ 5h (rolling)                                 │
+│ 🟩 ██████████████████████████ 100% remaining │ 🟨 ███████████░░░░░░░░░░░░░░░ 45% remaining │
+│ Resets in: 5h                                │ Resets in: 2h 30m                            │
+│                                              │                                              │
+│ Weekly                                       │ Weekly                                       │
+│ 🟩 ██████████████░░░░░░░░░░░░ 52% remaining  │ 🟩 ██████████████████░░░░░░░ 68% remaining   │
+│ Resets in: 19h 18m                           │ Resets in: 15h 45m                           │
+│                                              │                                              │
+│ Monthly                                      │ Monthly                                      │
+│ 🟨 ████████░░░░░░░░░░░░░░░░░░ 32% remaining  │ 🟩 ████████████████░░░░░░░░░ 61% remaining   │
+│ Resets in: 20d 7h                            │ Resets in: 8d 30m                            │
+└──────────────────────────────────────────────┴──────────────────────────────────────────────┘
 
-7-day limit
-████████████░░░░░░░░░░░░░░ 45% remaining
-Resets in: 6d 4h
+┌── OpenCode Zen — OpenCode Go Personal ───────┬── OpenCode Zen — OpenCode Go Alt 1 ──────────┐
+│ Balance:        $45.23                       │ Balance:        $12.50                       │
+│ Payment:        Stripe Link                  │ Payment:        Stripe Link                  │
+│                                              │                                              │
+│ Monthly spend:  $0.00                        │ Monthly spend:  $0.00                        │
+│                                              │                                              │
+│ Zen spend:      $3.45 across 8 models        │ Zen spend:      $1.23 across 5 models        │
+│   gpt-5.5-pro            $1.23 (12)          │   claude-sonnet-4            $0.89 (8)       │
+│   claude-opus-4-6        $0.98 (5)           │   gpt-5.4                    $0.22 (15)      │
+│   gemini-3-pro           $0.67 (23)          │   gemini-3-flash             $0.12 (30)      │
+│   qwen3-max              $0.34 (7)           │                                              │
+│   deepseek-v4            $0.23 (45)          │                                              │
+└──────────────────────────────────────────────┴──────────────────────────────────────────────┘
 
-## Anthropic Account Quota
+┌── Poe Account Quota ─────────────────────────┬── Z.AI (GLM Coding Plan) ────────────────────┐
+│ Balance:        730000 pts ($21.90 USD)      │ Plan:           GLM Coding Lite              │
+│ Daily grant:    +500 (Resets in: 8h)         │ Price:          $18.00/monthly               │
+│                                              │ Valid:          2026-05-31 to 2026-06-30     │
+│ Monthly                                      │ Auto-renews:    2026-06-30                   │
+│ 🟩 ███████████████████░░░░░░░ 73% remaining  │                                              │
+│ Points: 730000 / 1000000                     │ Monthly                                      │
+│ Resets in: 12d 6h                            │ 🟩 ██████████████████████████ 100% remaining │
+│                                              │ Used: 0 / 100                                │
+│                                              │ Resets in: 29d 23h                           │
+│                                              │                                              │
+│                                              │ 5-hour rolling                               │
+│                                              │ 🟩 ███████████████████░░░░░░░░ 75% remaining │
+│                                              │ Resets in: 4h                                │
+│                                              │                                              │
+│                                              │ Weekly                                       │
+│                                              │ 🟩 █████████████████████████░ 95% remaining  │
+│                                              │ Resets in: 6d 23h                            │
+└──────────────────────────────────────────────┴──────────────────────────────────────────────┘
 
-Account:        Claude Pro/Max
-
-5-hour limit
-███████████████████████░░░ 90% remaining
-Resets in: 1h 38m
-
-7-day limit
-████████████░░░░░░░░░░░░░░ 45% remaining
-Resets in: 1d 18m
-
-## Google Account Quota
-
-### you@example.com
-G3 Pro
-██████████████████████████ 100% remaining
-Resets in: 1h 45m
-
-G3 Flash
-██████████████████████████ 100% remaining
-Resets in: 1h 45m
-
-Claude
-██████████░░░░░░░░░░░░░░░░ 40% remaining
-Resets in: 5d 20h
-
-## GitHub Copilot Account Quota
-
-Account:        GitHub Copilot (pro)
-
-Premium
-█████████████████████░░░░░ 82% remaining (54/300)
-
-Resets in: 12d 4h
-
-## OpenCode Go Account Quota
-
-### OpenCode Go Personal
-5h (rolling)
-██████████████████████████ 100% remaining
-Resets in: 5h
-
-Weekly
-██████████████░░░░░░░░░░░░ 52% remaining
-Resets in: 19h 18m
-
-Monthly
-████████░░░░░░░░░░░░░░░░░░ 32% remaining
-Resets in: 20d 7h
-
-## Poe Account Quota
-
-Monthly
-███████████████████░░░░░░░ 73% remaining
-Resets in: 12d 6h
-
-Balance:        730000 pts ($21.90 USD)
-Daily grant:    +500 (Resets in: 8h)
-
-## Z.AI Coding Plan
-
-Plan:           GLM Coding Lite
-Price:          $18.00/monthly
-Valid:          2026-05-31 12:02:51 to 2026-06-30 12:02:51
-Auto-renews:    2026-06-30
-
-Monthly
-██████████████████████████ 100% remaining (0/100)
-Resets in: 29d 23h
-
-5-hour rolling
-███████████████████░░░░░░░ 75% remaining
-Resets in: 4h
-
-Weekly
-█████████████████████████░ 95% remaining
-Resets in: 6d 23h
+⚠️ Low quota alerts:
+  • OpenAI: 52%
+  • Anthropic: 45%
+  • OpenCode Zen — OpenCode Go Alt 1: 45%
+  • OpenCode Go Alt 1: 45%
 ```
 
 ## Installation
@@ -151,7 +155,28 @@ Trigger it however you like:
 - The `/mystatus` slash command
 - Natural language: *"Check my AI quota"*, *"How much Claude do I have left?"*, *"What's my GLM coding plan usage?"*
 
-The tool takes no arguments. It queries every configured platform in parallel and returns a single Markdown report with progress bars and reset countdowns.
+### Output Formats
+
+The tool supports optional parameters:
+
+- `--format ansi` — Default. Box-drawing grid with color-coded bars and emoji indicators (🟥🟧🟨🟩)
+- `--format grid` — Plain box-drawing grid without ANSI color codes (for renderers that strip escape sequences)
+- `--format json` — Machine-readable JSON output with `cells`, `alerts`, and `errors` arrays
+
+Examples:
+```bash
+/mystatus
+/mystatus --format json
+/mystatus --threshold 30
+```
+
+### Threshold Alerts
+
+Platforms with remaining quota below the threshold (default 25%) are listed at the bottom of the output. Adjust with `--threshold <percent>`. Alert levels:
+- 🟥 Red (≤0%): Fully exhausted
+- 🟧 Orange (<25%): Critical
+- 🟨 Yellow (<50%): Low
+- 🟩 Green (≥50%): Healthy
 
 ## Platform Configuration
 
@@ -185,12 +210,30 @@ Valid tiers and their monthly premium-request limits: `free` (50), `pro` (300), 
 
 **2. OAuth from auth.json.** Falls back to the `github-copilot` OAuth token (with automatic token exchange) for accounts authenticated through OpenCode's Copilot provider. Reports Premium, Chat, and Completions breakdowns.
 
-### OpenCode Go
+### OpenCode Go+Zen
 
-Two modes, automatically selected:
+OpenCode Go and OpenCode Zen are merged into a single cell per account. One fetch grabs the Go dashboard, Zen billing page, and Zen usage page simultaneously:
 
-- **API-key probe** — With only an API key (`auth.json` → `opencode-go`), the plugin calls `GET /zen/go/v1/models` to confirm reachability and list models. Quota windows are not exposed by this endpoint.
-- **Dashboard scraping** — To see the rolling 5-hour, weekly, and monthly windows, supply a workspace ID and browser auth cookie. The plugin fetches `opencode.ai/workspace/<id>/go` and parses the SolidJS SSR hydration payload.
+**Quota windows** (from `opencode.ai/workspace/<id>/go`):
+- 5-hour rolling window
+- Weekly window
+- Monthly window
+
+**Zen balance** (from `opencode.ai/workspace/<id>/billing`):
+- Remaining dollar balance
+- Auto-reload configuration
+- Monthly spend and limit
+- Recent payment history
+
+**Per-model spend** (from `opencode.ai/workspace/<id>/usage`):
+- Top 5 models by cost this month
+- Total spend across all models
+- Request counts per model
+
+Two auth modes, automatically selected:
+
+- **API-key probe** — With only an API key (`auth.json` → `opencode-go`), the plugin calls `GET /zen/go/v1/models` to confirm reachability and list models. Quota windows and Zen billing are not exposed by the API key endpoint alone.
+- **Dashboard scraping** — To see quotas + billing + spend together, supply a workspace ID and browser auth cookie. The plugin fetches all three pages in parallel and parses the SolidJS SSR hydration payloads.
 
 Configure one or more accounts in `~/.config/opencode/opencode-go.json`:
 
@@ -219,6 +262,8 @@ Or use environment variables `OPENCODE_GO_WORKSPACE_ID` and `OPENCODE_GO_AUTH_CO
 
 **Auth cookie** — while logged into `opencode.ai`, open DevTools → Application → Cookies → `opencode.ai` and copy the `auth` cookie value. It expires with your browser session.
 
+> **Note:** The billing and usage pages share the same auth cookie as the Go dashboard. One cookie works for all three.
+
 ### Poe
 
 Queries `api.poe.com/usage/current_balance` with a bearer token, resolved in priority order:
@@ -244,6 +289,12 @@ The plugin queries two endpoints on `api.z.ai`:
 
 Reported windows map the API's unit codes to friendly labels: **Monthly** request quota (with used/total count), a **5-hour rolling** token window, and a **Weekly** token window — each with its own progress bar and reset countdown.
 
+### xAI (Grok)
+
+Reads the OAuth token from `auth.json` → `xai-oauth` (populated by the [opencode-grok-auth](https://github.com/schlambos/opencode-mystatus) plugin or similar xAI/Grok auth provider). Probes `api.x.ai/v1/models` with a bearer token to verify the auth is still valid.
+
+> **Note:** xAI does not expose a public usage, billing, or rate-limit API endpoint. The plugin can only confirm whether your auth token is still active. There is no way to programmatically check remaining Grok quota or rate limits.
+
 ## Security & Privacy
 
 `mystatus` is read-only and makes no changes to your system or accounts.
@@ -254,7 +305,7 @@ Reported windows map the API's unit codes to friendly labels: **Monthly** reques
 |------|---------|
 | `~/.local/share/opencode/auth.json` | OpenCode's official credential store |
 | `~/.config/opencode/antigravity-accounts.json` | Antigravity plugin account store |
-| `~/.config/opencode/opencode-go.json` | OpenCode Go dashboard config (optional) |
+| `~/.config/opencode/opencode-go.json` | OpenCode Go+Zen dashboard config (optional) |
 | `~/.config/opencode/copilot-quota-token.json` | Copilot PAT (optional) |
 | `~/.config/opencode/poe-api-key.json` | Poe API key (optional) |
 
@@ -266,9 +317,10 @@ Reported windows map the API's unit codes to friendly labels: **Monthly** reques
 | Anthropic | `api.anthropic.com/api/oauth/usage`, `console.anthropic.com/v1/oauth/token` |
 | Google | `cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels`, `oauth2.googleapis.com/token` |
 | GitHub Copilot | `api.github.com/copilot_internal/*`, `api.github.com/users/*/settings/billing/premium_request/usage` |
-| OpenCode Go | `opencode.ai/zen/go/v1/models`, `opencode.ai/workspace/*/go` |
+| OpenCode Go+Zen | `opencode.ai/zen/go/v1/models`, `opencode.ai/workspace/*/go`, `opencode.ai/workspace/*/billing`, `opencode.ai/workspace/*/usage` |
 | Poe | `api.poe.com/usage/current_balance` |
 | Z.AI | `api.z.ai/api/biz/subscription/list`, `api.z.ai/api/monitor/usage/quota/limit` |
+| xAI/Grok | `api.x.ai/v1/models` |
 
 - Credentials are read locally and sent **only** to their own provider.
 - Nothing is stored, cached, logged, or transmitted anywhere else.
@@ -288,7 +340,7 @@ The plugin is a single self-contained module at `plugin/mystatus.ts`. Each platf
 
 ## Credits
 
-A fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), extended with Anthropic, GitHub Copilot, OpenCode Go (multi-account), Poe, multi-account Google, and Z.AI (GLM Coding Plan) support.
+A fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), extended with Anthropic, GitHub Copilot, OpenCode Go+Zen (merged), Poe, multi-account Google, Z.AI (GLM Coding Plan), and xAI/Grok support. Recent additions include visual color indicators, threshold alerts, JSON output, and per-model Zen spend breakdown.
 
 ## License
 
