@@ -4,20 +4,19 @@
  * Platforms:
  *   - OpenAI      (ChatGPT Plus/Team/Pro)    auth.json → openai
  *   - Anthropic   (Claude.ai)               auth.json → anthropic
- *   - Google      (Antigravity free quota)   antigravity-accounts.json (fixed Windows path)
+ *   - Google      (Antigravity free quota)   antigravity-accounts.json
  *   - GitHub Copilot                        auth.json → github-copilot (+ optional PAT)
- *   - OpenCode Go (dashboard/API probe)     auth.json + optional dashboard scrape config
+ *   - OpenCode Go+Zen (merged cell)         shared dashboard config (workspaceId + authCookie)
  *   - Poe         (points balance)          auth.json, env var, or poe-api-key.json
  *   - Z.AI        (GLM Coding Plan)         auth.json → zai-coding-plan
+ *   - xAI/Grok    (auth check only)         auth.json → xai-oauth (no usage API)
  *
- * Key fixes vs. opencode-mystatus:
- *   - Google path: always uses ~/.config/opencode/ (not APPDATA on Windows)
- *   - Google: uses cachedQuota from antigravity-accounts.json as primary source,
- *             attempts live refresh as secondary enrichment
- *   - Anthropic: added via api.anthropic.com/api/oauth/usage (Claude Code internal endpoint)
- *   - OpenCode Go: scrapes SolidJS SSR hydration output from workspace dashboard
- *   - Poe: queries api.poe.com/usage/current_balance with bearer token
- *   - Z.AI: queries api.z.ai/api/monitor/usage/quota/limit + /api/biz/subscription/list
+ * Features:
+ *   - ANSI color-coded progress bars (red/yellow/green)
+ *   - Zen per-model cost breakdown from usage page SSR
+ *   - Threshold alerts for low-remaining platforms
+ *   - JSON output mode for programmatic consumption
+ *   - Go + Zen merged into single cell per account
  */
 
 import { type Plugin, tool } from "@opencode-ai/plugin";
@@ -25,6 +24,31 @@ import { readFile } from "fs/promises";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+
+// ============================================================
+// ANSI color helpers
+// ============================================================
+
+const ANSI_RESET = "\x1b[0m";
+const ANSI_RED = "\x1b[31m";
+const ANSI_YELLOW = "\x1b[33m";
+const ANSI_GREEN = "\x1b[32m";
+const ANSI_BOLD = "\x1b[1m";
+const ANSI_DIM = "\x1b[2m";
+
+function colorForPercent(pct: number): string {
+  if (pct <= 0) return ANSI_RED;
+  if (pct < 25) return ANSI_RED;
+  if (pct < 50) return ANSI_YELLOW;
+  return ANSI_GREEN;
+}
+
+function emojiForPercent(pct: number): string {
+  if (pct <= 0) return "\ud83d\udfe5"; // red square
+  if (pct < 25) return "\ud83d\udfe7";  // orange square
+  if (pct < 50) return "\ud83d\udfe8"; // yellow square
+  return "\ud83d\udfe9"; // green square
+}
 
 // ============================================================
 // Shared types
@@ -74,6 +98,13 @@ interface ZaiAuthData {
   key?: string;
 }
 
+interface XaiAuthData {
+  type: string;
+  access?: string;
+  refresh?: string;
+  expires?: number;
+}
+
 interface AuthData {
   openai?: OpenAIAuthData;
   anthropic?: AnthropicAuthData;
@@ -81,6 +112,7 @@ interface AuthData {
   "opencode-go"?: OpenCodeGoAuthData;
   poe?: PoeAuthData;
   "zai-coding-plan"?: ZaiAuthData;
+  "xai-oauth"?: XaiAuthData;
 }
 
 interface AntigravityAccount {
@@ -97,14 +129,22 @@ interface AntigravityAccount {
   fingerprint?: { userAgent?: string };
 }
 
+interface JsonCell {
+  title: string;
+  lines: string[];
+}
+
 // ============================================================
 // Shared utilities
 // ============================================================
 
-function createProgressBar(remainPercent: number, width = 26): string {
+function createProgressBar(remainPercent: number, width = 26, useAnsi = false): string {
   const p = Math.max(0, Math.min(100, remainPercent));
   const filled = Math.round((p / 100) * width);
-  return "█".repeat(filled) + "░".repeat(width - filled);
+  const bar = "\u2588".repeat(filled) + "\u2591".repeat(width - filled);
+  const emoji = emojiForPercent(p);
+  if (!useAnsi) return `${emoji} ${bar}`;
+  return `${emoji} ${colorForPercent(p)}${bar}${ANSI_RESET}`;
 }
 
 function formatDuration(totalSeconds: number): string {
@@ -155,11 +195,6 @@ function authJsonPath(): string {
   return join(homedir(), ".local", "share", "opencode", "auth.json");
 }
 
-/**
- * Always resolve to ~/.config/opencode regardless of OS.
- * The original opencode-mystatus plugin incorrectly used APPDATA on Windows,
- * causing Google quota lookups to fail even when the file existed.
- */
 function opencodeConfigDir(): string {
   return join(homedir(), ".config", "opencode");
 }
@@ -205,7 +240,7 @@ interface OpenAIUsage {
   rate_limit_reset_credits?: { available_count?: number } | null;
 }
 
-function formatOpenAIWindow(w: OpenAIWindowData): string[] {
+function formatOpenAIWindow(w: OpenAIWindowData, ansi = false): string[] {
   const remain = Math.round(100 - w.used_percent);
   const sec = w.limit_window_seconds;
   const name =
@@ -214,15 +249,15 @@ function formatOpenAIWindow(w: OpenAIWindowData): string[] {
       : `${Math.round(sec / 3600)}-hour limit`;
   return [
     name,
-    `${createProgressBar(remain)} ${remain}% remaining`,
+    `${createProgressBar(remain, 26, ansi)} ${remain}% remaining`,
     `Resets in: ${formatDuration(w.reset_after_seconds)}`,
   ];
 }
 
-async function queryOpenAI(auth: OpenAIAuthData | undefined): Promise<QueryResult | null> {
+async function queryOpenAI(auth: OpenAIAuthData | undefined, ansi = false): Promise<QueryResult | null> {
   if (!auth || auth.type !== "oauth" || !auth.access) return null;
   if (auth.expires && auth.expires < Date.now())
-    return { success: false, error: "⚠️ OpenAI token expired. Use an OpenAI model in OpenCode to refresh." };
+    return { success: false, error: "\u26a0\ufe0f OpenAI token expired. Use an OpenAI model in OpenCode to refresh." };
 
   try {
     const payload = parseJwtPayload(auth.access);
@@ -247,7 +282,6 @@ async function queryOpenAI(auth: OpenAIAuthData | undefined): Promise<QueryResul
       `Plan:           ChatGPT ${data.plan_type}`,
     ];
 
-    // Credit balance / overage (mirrors Z.AI's subscription header richness)
     const credits = data.credits;
     if (credits) {
       if (credits.unlimited) {
@@ -255,21 +289,21 @@ async function queryOpenAI(auth: OpenAIAuthData | undefined): Promise<QueryResul
       } else if (credits.has_credits || (credits.balance && credits.balance !== "0")) {
         lines.push(`Credits:        ${credits.balance ?? "?"}`);
       }
-      if (credits.overage_limit_reached) lines.push("Overage:        ⚠️ limit reached");
+      if (credits.overage_limit_reached) lines.push("Overage:        \u26a0\ufe0f limit reached");
     }
 
     lines.push("");
 
     if (data.rate_limit?.primary_window)
-      lines.push(...formatOpenAIWindow(data.rate_limit.primary_window));
+      lines.push(...formatOpenAIWindow(data.rate_limit.primary_window, ansi));
     if (data.rate_limit?.secondary_window)
-      lines.push("", ...formatOpenAIWindow(data.rate_limit.secondary_window));
+      lines.push("", ...formatOpenAIWindow(data.rate_limit.secondary_window, ansi));
 
     if (data.rate_limit?.limit_reached) {
       const reason = data.rate_limit_reached_type?.type
         ? ` (${data.rate_limit_reached_type.type})`
         : "";
-      lines.push("", `⚠️ Rate limit reached!${reason}`);
+      lines.push("", `\u26a0\ufe0f Rate limit reached!${reason}`);
       const resetCredits = data.rate_limit_reset_credits?.available_count ?? 0;
       if (resetCredits > 0)
         lines.push(`Reset credits available: ${resetCredits}`);
@@ -285,14 +319,8 @@ async function queryOpenAI(auth: OpenAIAuthData | undefined): Promise<QueryResul
 // Anthropic  (api.anthropic.com/api/oauth/usage — Claude Code internal endpoint)
 // ============================================================
 
-// The client_id used by Claude Code's official OAuth integration.
-// Required for refresh-token exchange (form-encoded POST).
 const ANTHROPIC_CLAUDE_CODE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-
-// beta header required to avoid 401 on the oauth/usage endpoint
 const ANTHROPIC_BETA_HEADER = "oauth-2025-04-20";
-
-// Mimic Claude Code's User-Agent so the server doesn't aggressively rate-limit
 const ANTHROPIC_USER_AGENT = "claude-code/1.0.17";
 
 interface AnthropicWindow {
@@ -316,28 +344,21 @@ interface AnthropicUsageResponse {
   } | null;
 }
 
-// Per-model 7-day windows to render when present (mirrors Z.AI per-model detail)
 const ANTHROPIC_MODEL_WINDOWS: Array<{ key: keyof AnthropicUsageResponse; label: string }> = [
   { key: "seven_day_opus", label: "7-day (Opus)" },
   { key: "seven_day_sonnet", label: "7-day (Sonnet)" },
   { key: "seven_day_cowork", label: "7-day (Cowork)" },
 ];
 
-function formatAnthropicWindow(label: string, w: AnthropicWindow): string[] {
+function formatAnthropicWindow(label: string, w: AnthropicWindow, ansi = false): string[] {
   const remain = Math.round(100 - w.utilization);
   return [
     label,
-    `${createProgressBar(remain)} ${remain}% remaining`,
+    `${createProgressBar(remain, 26, ansi)} ${remain}% remaining`,
     `Resets in: ${formatResetAt(w.resets_at)}`,
   ];
 }
 
-/**
- * Refresh an Anthropic OAuth access token using the refresh token.
- * Returns the new access token string, or null on failure.
- * Note: Anthropic uses refresh token rotation — the returned refresh_token
- * supersedes the old one, but we cannot persist it from here.
- */
 async function refreshAnthropicToken(refreshToken: string): Promise<string | null> {
   try {
     const params = new URLSearchParams({
@@ -358,21 +379,20 @@ async function refreshAnthropicToken(refreshToken: string): Promise<string | nul
   }
 }
 
-async function queryAnthropic(auth: AnthropicAuthData | undefined): Promise<QueryResult | null> {
+async function queryAnthropic(auth: AnthropicAuthData | undefined, ansi = false): Promise<QueryResult | null> {
   if (!auth || auth.type !== "oauth") return null;
 
   let accessToken = auth.access;
 
-  // Refresh if expired or missing
   if (!accessToken || (auth.expires && auth.expires < Date.now())) {
     if (!auth.refresh) {
-      return { success: false, error: "⚠️ Anthropic token expired and no refresh token available." };
+      return { success: false, error: "\u26a0\ufe0f Anthropic token expired and no refresh token available." };
     }
     const refreshed = await refreshAnthropicToken(auth.refresh);
     if (!refreshed) {
       return {
         success: false,
-        error: "⚠️ Anthropic token expired — refresh failed.\nRe-authenticate with Anthropic in OpenCode to get a fresh token.",
+        error: "\u26a0\ufe0f Anthropic token expired \u2014 refresh failed.\nRe-authenticate with Anthropic in OpenCode to get a fresh token.",
       };
     }
     accessToken = refreshed;
@@ -401,23 +421,21 @@ async function queryAnthropic(auth: AnthropicAuthData | undefined): Promise<Quer
     const lines: string[] = ["Account:        Claude Pro/Max", ""];
 
     if (data.five_hour) {
-      lines.push(...formatAnthropicWindow("5-hour limit", data.five_hour));
+      lines.push(...formatAnthropicWindow("5-hour limit", data.five_hour, ansi));
     }
 
     if (data.seven_day) {
       if (lines.length > 2) lines.push("");
-      lines.push(...formatAnthropicWindow("7-day limit", data.seven_day));
+      lines.push(...formatAnthropicWindow("7-day limit", data.seven_day, ansi));
     }
 
-    // Per-model 7-day windows (only shown when the API reports them)
     for (const { key, label } of ANTHROPIC_MODEL_WINDOWS) {
       const w = data[key] as AnthropicWindow | null | undefined;
       if (w && typeof w.utilization === "number") {
-        lines.push("", ...formatAnthropicWindow(label, w));
+        lines.push("", ...formatAnthropicWindow(label, w, ansi));
       }
     }
 
-    // Extra usage / overage billing (mirrors Z.AI subscription detail)
     const extra = data.extra_usage;
     if (extra?.is_enabled) {
       const cur = extra.currency ?? "USD";
@@ -427,7 +445,7 @@ async function queryAnthropic(auth: AnthropicAuthData | undefined): Promise<Quer
       if (typeof limit === "number" && limit > 0) {
         const util = Math.round(extra.utilization ?? (used / limit) * 100);
         const remain = Math.max(0, 100 - util);
-        lines.push(`${createProgressBar(remain)} ${remain}% remaining`);
+        lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
         lines.push(`Used: ${used}/${limit} ${cur}`);
       } else {
         lines.push(`Used: ${used} ${cur}`);
@@ -435,7 +453,7 @@ async function queryAnthropic(auth: AnthropicAuthData | undefined): Promise<Quer
     }
 
     if (!data.five_hour && !data.seven_day) {
-      lines.push("(No rolling-window limits found — may be API-key plan or unlimited)");
+      lines.push("(No rolling-window limits found \u2014 may be API-key plan or unlimited)");
     }
 
     return { success: true, output: lines.join("\n") };
@@ -448,7 +466,7 @@ async function queryAnthropic(auth: AnthropicAuthData | undefined): Promise<Quer
 }
 
 // ============================================================
-// Google Antigravity (fixed Windows path + cached-quota fallback)
+// Google Antigravity (cached-quota + live API fallback)
 // ============================================================
 
 const GOOGLE_CLIENT_ID =
@@ -466,7 +484,6 @@ const GOOGLE_LIVE_MODELS: Array<{ key: string; altKey?: string; display: string 
   },
 ];
 
-// Group keys used in the cachedQuota object
 const GOOGLE_CACHED_GROUPS: Array<{ key: string; display: string }> = [
   { key: "gemini-pro", display: "Gemini Pro" },
   { key: "gemini-flash", display: "Gemini Flash" },
@@ -531,7 +548,7 @@ function formatCachedAgeMinutes(updatedAt: number | undefined): string {
   return ` (${mins} min ago)`;
 }
 
-async function queryGoogle(): Promise<QueryResult> {
+async function queryGoogle(ansi = false): Promise<QueryResult> {
   const filePath = join(opencodeConfigDir(), "antigravity-accounts.json");
 
   if (!existsSync(filePath)) {
@@ -557,7 +574,6 @@ async function queryGoogle(): Promise<QueryResult> {
       const lines: string[] = [`### ${account.email}`];
       const ua = account.fingerprint?.userAgent ?? "antigravity/1.23.2 windows/amd64";
 
-      // Try live API
       let usedLive = false;
       try {
         const accessToken = await refreshGoogleAccessToken(account.refreshToken);
@@ -576,17 +592,15 @@ async function queryGoogle(): Promise<QueryResult> {
               const remain = Math.round((info.quotaInfo?.remainingFraction ?? 0) * 100);
               const reset = formatResetAt(info.quotaInfo?.resetTime ?? "");
               lines.push(model.display);
-              lines.push(`${createProgressBar(remain)} ${remain}% remaining`);
+              lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
               lines.push(`Resets in: ${reset}`);
             }
           }
           usedLive = true;
         }
       } catch {
-        // fall through to cached
       }
 
-      // Fall back to cachedQuota
       if (!usedLive && account.cachedQuota) {
         const age = formatCachedAgeMinutes(account.cachedQuotaUpdatedAt);
         lines.push("", `*(cached${age})*`);
@@ -599,7 +613,7 @@ async function queryGoogle(): Promise<QueryResult> {
             const remain = Math.round(info.remainingFraction * 100);
             const reset = formatResetAt(info.resetTime);
             lines.push(group.display);
-            lines.push(`${createProgressBar(remain)} ${remain}% remaining`);
+            lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
             lines.push(`Resets in: ${reset}`);
           }
         }
@@ -677,11 +691,11 @@ function readCopilotPAT(): CopilotPATConfig | null {
   }
 }
 
-function formatCopilotQuotaLine(label: string, q: CopilotQuotaDetail): string[] {
+function formatCopilotQuotaLine(label: string, q: CopilotQuotaDetail, ansi = false): string[] {
   if (q.unlimited) {
     return [
       label,
-      "██████████████████████████ 100% remaining",
+      `${createProgressBar(100, 26, ansi)} 100% remaining`,
       "Used: Unlimited",
     ];
   }
@@ -689,7 +703,7 @@ function formatCopilotQuotaLine(label: string, q: CopilotQuotaDetail): string[] 
   const used = q.entitlement - q.remaining;
   return [
     label,
-    `${createProgressBar(pct)} ${pct}% remaining`,
+    `${createProgressBar(pct, 26, ansi)} ${pct}% remaining`,
     `Used: ${used} / ${q.entitlement}`,
   ];
 }
@@ -706,7 +720,6 @@ async function queryCopilotViaOAuth(auth: CopilotAuthData): Promise<string> {
   const oauthToken = auth.refresh || auth.access;
   if (!oauthToken) throw new Error("No OAuth token in Copilot auth data");
 
-  // Try direct bearer
   const direct = await fetchTimeout(
     "https://api.github.com/copilot_internal/user",
     {
@@ -719,7 +732,6 @@ async function queryCopilotViaOAuth(auth: CopilotAuthData): Promise<string> {
   );
   if (direct.ok) return direct.text();
 
-  // Try token exchange
   const exchRes = await fetchTimeout(
     "https://api.github.com/copilot_internal/v2/token",
     {
@@ -747,16 +759,15 @@ async function queryCopilotViaOAuth(auth: CopilotAuthData): Promise<string> {
   }
 
   throw new Error(
-    "⚠️ GitHub Copilot quota unavailable via OAuth.\n" +
+    "\u26a0\ufe0f GitHub Copilot quota unavailable via OAuth.\n" +
       "OpenCode's OAuth integration doesn't expose the quota API scope.\n\n" +
-      "Solution: create a fine-grained PAT with Plan → Read-only permission and save to:\n" +
+      "Solution: create a fine-grained PAT with Plan \u2192 Read-only permission and save to:\n" +
       `  ${getCopilotPATPath()}\n` +
       '  {"token": "github_pat_...", "username": "YourUsername", "tier": "pro"}',
   );
 }
 
-async function queryCopilot(auth: CopilotAuthData | undefined): Promise<QueryResult | null> {
-  // Path 1: PAT config
+async function queryCopilot(auth: CopilotAuthData | undefined, ansi = false): Promise<QueryResult | null> {
   const pat = readCopilotPAT();
   if (pat) {
     try {
@@ -792,7 +803,7 @@ async function queryCopilot(auth: CopilotAuthData | undefined): Promise<QueryRes
         `Account:        GitHub Copilot (@${billing.user})`,
         "",
         "Premium",
-        `${createProgressBar(pct)} ${pct}% remaining`,
+        `${createProgressBar(pct, 26, ansi)} ${pct}% remaining`,
         `Used: ${totalUsed} / ${limit}`,
         "",
         `Billing period: ${period}`,
@@ -803,11 +814,7 @@ async function queryCopilot(auth: CopilotAuthData | undefined): Promise<QueryRes
     }
   }
 
-  // Path 2: OAuth from auth.json
-  if (!auth || auth.type !== "oauth" || !auth.refresh) {
-    // Not configured — skip silently rather than showing an error
-    return null;
-  }
+  if (!auth || auth.type !== "oauth" || !auth.refresh) return null;
 
   try {
     const raw = await queryCopilotViaOAuth(auth);
@@ -816,12 +823,12 @@ async function queryCopilot(auth: CopilotAuthData | undefined): Promise<QueryRes
     const lines = [
       `Account:        GitHub Copilot (${data.copilot_plan})`,
       "",
-      ...formatCopilotQuotaLine("Premium", snaps.premium_interactions),
+      ...formatCopilotQuotaLine("Premium", snaps.premium_interactions, ansi),
     ];
     if (snaps.chat && !snaps.chat.unlimited)
-      lines.push(...formatCopilotQuotaLine("Chat", snaps.chat));
+      lines.push(...formatCopilotQuotaLine("Chat", snaps.chat, ansi));
     if (snaps.completions && !snaps.completions.unlimited)
-      lines.push(...formatCopilotQuotaLine("Completions", snaps.completions));
+      lines.push(...formatCopilotQuotaLine("Completions", snaps.completions, ansi));
     if (snaps.premium_interactions.overage_count)
       lines.push("", `Overage: ${snaps.premium_interactions.overage_count} requests`);
     const cd = copilotResetCountdown(data.quota_reset_date);
@@ -833,19 +840,22 @@ async function queryCopilot(auth: CopilotAuthData | undefined): Promise<QueryRes
 }
 
 // ============================================================
-// OpenCode Go (dashboard scraping)
+// OpenCode Go + Zen (merged — shared dashboard config)
 // ============================================================
+//
+// Go quota windows from /workspace/{id}/go SSR
+// Zen balance from /workspace/{id}/billing SSR
+// Zen per-model costs from /workspace/{id}/usage SSR
 
-const OPENCODE_GO_DASHBOARD_PREFIX = "https://opencode.ai/workspace/";
-const OPENCODE_GO_DASHBOARD_SUFFIX = "/go";
+const OPENCODE_DASHBOARD_PREFIX = "https://opencode.ai/workspace/";
+const OPENCODE_GO_SUFFIX = "/go";
+const OPENCODE_ZEN_BILLING_SUFFIX = "/billing";
+const OPENCODE_ZEN_USAGE_SUFFIX = "/usage";
 const OPENCODE_GO_API_BASE = "https://opencode.ai/zen/go/v1";
-const OPENCODE_GO_USER_AGENT =
+const OPENCODE_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Gecko/20100101 Firefox/148.0";
 
-interface OpenCodeGoWindowData {
-  usagePercent: number;
-  resetInSec: number;
-}
+const ZEN_UNITS_PER_DOLLAR = 1e8;
 
 interface OpenCodeGoConfig {
   id?: string;
@@ -859,50 +869,13 @@ interface OpenCodeGoModelsResponse {
   data?: Array<{ id?: string }>;
 }
 
-async function probeOpenCodeGoApiKey(apiKey: string | undefined, label?: string): Promise<QueryResult | null> {
-  if (!apiKey) return null;
-
-  try {
-    const res = await fetchTimeout(`${OPENCODE_GO_API_BASE}/models`, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: "application/json",
-        "User-Agent": "OpenCode-AllStatus/1.0",
-      },
-    });
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      return {
-        success: false,
-        error: `OpenCode Go API error (${res.status}): ${body.slice(0, 200)}`,
-      };
-    }
-
-    const data = (await res.json()) as OpenCodeGoModelsResponse;
-    const models = (data.data ?? []).map((model) => model.id).filter(Boolean) as string[];
-    const shown = models.slice(0, 8).join(", ");
-    const extra = models.length > 8 ? `, +${models.length - 8} more` : "";
-    const header = label ? `### ${label}\n` : "";
-    return {
-      success: true,
-      output: [
-        `${header}API:             reachable`,
-        `Models:          ${models.length}${shown ? ` (${shown}${extra})` : ""}`,
-        "Quota windows:   not exposed by the OpenCode Go API key endpoint",
-        "Dashboard:       add workspaceId + browser auth cookie to show 5h/weekly/monthly quota windows",
-      ].join("\n"),
-    };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
+interface GoWindowData {
+  usagePercent: number;
+  resetInSec: number;
 }
 
-const OPENCODE_GO_SCRAPE_PATTERNS: Array<{
-  key: "rolling" | "weekly" | "monthly";
+const GO_SCRAPE_PATTERNS: Array<{
+  key: string;
   label: string;
   pctFirst: RegExp;
   resetFirst: RegExp;
@@ -939,7 +912,7 @@ const OPENCODE_GO_SCRAPE_PATTERNS: Array<{
   },
 ];
 
-function parseOpenCodeGoWindow(html: string, pattern: (typeof OPENCODE_GO_SCRAPE_PATTERNS)[0]): OpenCodeGoWindowData | null {
+function parseGoWindow(html: string, pattern: (typeof GO_SCRAPE_PATTERNS)[0]): GoWindowData | null {
   const pctMatch = pattern.pctFirst.exec(html);
   if (pctMatch) {
     const usagePercent = Number(pctMatch[1]);
@@ -957,6 +930,73 @@ function parseOpenCodeGoWindow(html: string, pattern: (typeof OPENCODE_GO_SCRAPE
     }
   }
   return null;
+}
+
+function parseZenBillingHtml(html: string): {
+  balance: number;
+  monthlyUsage: number;
+  monthlyLimit: number | null;
+  reloadAmount: number;
+  reloadTrigger: number;
+  paymentMethodType: string | null;
+  paymentMethodLast4: string | null;
+} | null {
+  const balance = html.match(/balance:(\d+)/);
+  const monthlyUsage = html.match(/monthlyUsage:(\d+)/);
+  const monthlyLimit = html.match(/monthlyLimit:(\d+|null)/);
+  const reloadAmount = html.match(/reloadAmount:(\d+)/);
+  const reloadTrigger = html.match(/reloadTrigger:(\d+)/);
+  const payType = html.match(/paymentMethodType:"([^"]+)"/);
+  const payLast4 = html.match(/paymentMethodLast4:"([^"]*)"/);
+
+  if (!balance || !monthlyUsage || !reloadAmount || !reloadTrigger) return null;
+
+  return {
+    balance: Number(balance[1]),
+    monthlyUsage: Number(monthlyUsage[1]),
+    monthlyLimit: monthlyLimit ? (monthlyLimit[1] === "null" ? null : Number(monthlyLimit[1])) : null,
+    reloadAmount: Number(reloadAmount[1]),
+    reloadTrigger: Number(reloadTrigger[1]),
+    paymentMethodType: payType ? payType[1] : null,
+    paymentMethodLast4: payLast4 ? payLast4[1] : null,
+  };
+}
+
+function parseZenPayments(html: string): Array<{ amountUsd: number; timeCreated: string }> {
+  const payments: Array<{ amountUsd: number; timeCreated: string }> = [];
+  const re = /id:"pay_[^"]+",[^]*?amount:(\d+),[^]*?timeCreated:\$R\[\d+\]=new Date\("([^"]+)"\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    payments.push({
+      amountUsd: Number(m[1]) / ZEN_UNITS_PER_DOLLAR,
+      timeCreated: m[2],
+    });
+  }
+  return payments;
+}
+
+function parseZenUsageByModel(html: string): Array<{ model: string; costUsd: number; requests: number }> {
+  const modelMap = new Map<string, { cost: number; requests: number }>();
+  const re = /model:"([^"]+)"[^}]*cost:(\d+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const model = m[1];
+    const cost = Number(m[2]) / ZEN_UNITS_PER_DOLLAR;
+    const existing = modelMap.get(model) ?? { cost: 0, requests: 0 };
+    existing.cost += cost;
+    existing.requests += 1;
+    modelMap.set(model, existing);
+  }
+  return [...modelMap.entries()]
+    .map(([model, v]) => ({ model, costUsd: v.cost, requests: v.requests }))
+    .sort((a, b) => b.costUsd - a.costUsd);
+}
+
+function zenPaymentLabel(type: string | null, last4: string | null): string {
+  if (!type) return "unknown";
+  const labels: Record<string, string> = { link: "Stripe Link", card: "Card", bank_account: "Bank" };
+  const name = labels[type] ?? type;
+  return last4 ? `${name} \u00b7\u00b7\u00b7${last4}` : name;
 }
 
 function resolveOpenCodeGoConfigs(): OpenCodeGoConfig[] {
@@ -997,45 +1037,138 @@ function resolveOpenCodeGoConfigs(): OpenCodeGoConfig[] {
   return [];
 }
 
-async function queryOpenCodeGoSingle(config: OpenCodeGoConfig): Promise<QueryResult> {
-  const label = config.name || config.id || "OpenCode Go";
+async function probeOpenCodeGoApiKey(apiKey: string | undefined): Promise<QueryResult | null> {
+  if (!apiKey) return null;
 
   try {
-    const url = `${OPENCODE_GO_DASHBOARD_PREFIX}${encodeURIComponent(config.workspaceId)}${OPENCODE_GO_DASHBOARD_SUFFIX}`;
-    const res = await fetchTimeout(url, {
-      method: "GET",
+    const res = await fetchTimeout(`${OPENCODE_GO_API_BASE}/models`, {
       headers: {
-        "User-Agent": OPENCODE_GO_USER_AGENT,
-        Accept: "text/html",
-        Cookie: `auth=${config.authCookie}`,
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+        "User-Agent": "OpenCode-AllStatus/1.0",
       },
     });
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`Dashboard error (${res.status}): ${body.slice(0, 200)}`);
+      return {
+        success: false,
+        error: `OpenCode Go API error (${res.status}): ${body.slice(0, 200)}`,
+      };
     }
 
-    const html = await res.text();
-    const now = Date.now();
+    const data = (await res.json()) as OpenCodeGoModelsResponse;
+    const models = (data.data ?? []).map((model) => model.id).filter(Boolean) as string[];
+    const shown = models.slice(0, 8).join(", ");
+    const extra = models.length > 8 ? `, +${models.length - 8} more` : "";
+    return {
+      success: true,
+      output: [
+        "API:             reachable",
+        `Models:          ${models.length}${shown ? ` (${shown}${extra})` : ""}`,
+        "Quota windows:   not exposed by the API key endpoint",
+        "Dashboard:       add workspaceId + browser auth cookie to show quota + Zen balance",
+      ].join("\n"),
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function queryOpenCodeGoZenSingle(config: OpenCodeGoConfig, ansi = false): Promise<QueryResult> {
+  const label = config.name || config.id || "OpenCode";
+
+  const headers = {
+    "User-Agent": OPENCODE_USER_AGENT,
+    Accept: "text/html",
+    Cookie: `auth=${config.authCookie}`,
+  } as const;
+
+  try {
+    const base = OPENCODE_DASHBOARD_PREFIX + encodeURIComponent(config.workspaceId);
+    const [goRes, billingRes, usageRes] = await Promise.all([
+      fetchTimeout(base + OPENCODE_GO_SUFFIX, { headers }),
+      fetchTimeout(base + OPENCODE_ZEN_BILLING_SUFFIX, { headers }),
+      fetchTimeout(base + OPENCODE_ZEN_USAGE_SUFFIX, { headers }),
+    ]);
+
     const lines: string[] = [`### ${label}`];
 
-    for (const pattern of OPENCODE_GO_SCRAPE_PATTERNS) {
-      const data = parseOpenCodeGoWindow(html, pattern);
-      if (!data) continue;
+    // Go quota windows
+    if (goRes.ok) {
+      const goHtml = await goRes.text();
+      const now = Date.now();
+      let hasGoData = false;
+      for (const pattern of GO_SCRAPE_PATTERNS) {
+        const data = parseGoWindow(goHtml, pattern);
+        if (!data) continue;
+        if (hasGoData) lines.push("");
+        hasGoData = true;
+        const remain = Math.round(100 - Math.max(0, data.usagePercent));
+        const resetSec = Math.max(0, data.resetInSec);
+        const resetAt = new Date(now + resetSec * 1000).toISOString();
+        lines.push(pattern.label);
+        lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
+        lines.push(`Resets in: ${formatResetAt(resetAt)}`);
+      }
+    }
+
+    // Zen balance
+    let billing: ReturnType<typeof parseZenBillingHtml> = null;
+    let billingHtml = "";
+    if (billingRes.ok) {
+      billingHtml = await billingRes.text();
+      billing = parseZenBillingHtml(billingHtml);
+    }
+
+    if (billing) {
+      const balanceUsd = billing.balance / ZEN_UNITS_PER_DOLLAR;
+      const monthlyUsd = billing.monthlyUsage / ZEN_UNITS_PER_DOLLAR;
+
       if (lines.length > 1) lines.push("");
-      const remain = Math.round(100 - Math.max(0, data.usagePercent));
-      const resetSec = Math.max(0, data.resetInSec);
-      const resetAt = new Date(now + resetSec * 1000).toISOString();
-      lines.push(pattern.label);
-      lines.push(`${createProgressBar(remain)} ${remain}% remaining`);
-      lines.push(`Resets in: ${formatResetAt(resetAt)}`);
+      lines.push(`Zen balance:    $${balanceUsd.toFixed(2)}`);
+
+      if (billing.paymentMethodType) {
+        lines.push(`Payment:        ${zenPaymentLabel(billing.paymentMethodType, billing.paymentMethodLast4)}`);
+      }
+
+      if (billing.monthlyLimit !== null && billing.monthlyLimit > 0) {
+        const limitUsd = billing.monthlyLimit / ZEN_UNITS_PER_DOLLAR;
+        const pct = Math.max(0, Math.min(100, Math.round((monthlyUsd / limitUsd) * 100)));
+        const remain = 100 - pct;
+        lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% of $${limitUsd.toFixed(0)}/mo`);
+      } else {
+        lines.push(`Monthly spend:  $${monthlyUsd.toFixed(2)}`);
+      }
+
+      const payments = parseZenPayments(billingHtml);
+      if (payments.length > 0) {
+        const latest = payments.slice(0, 2);
+        lines.push("Payments:       " + latest.map((p) => `+$${p.amountUsd.toFixed(2)}`).join(", "));
+      }
+
+      // Zen per-model cost breakdown
+      if (usageRes.ok) {
+        const usageHtml = await usageRes.text();
+        const modelCosts = parseZenUsageByModel(usageHtml);
+        if (modelCosts.length > 0) {
+          const top = modelCosts.slice(0, 5);
+          const totalCost = modelCosts.reduce((s, m) => s + m.costUsd, 0);
+          lines.push("", `Zen spend:      $${totalCost.toFixed(2)} across ${modelCosts.length} models`);
+          for (const m of top) {
+            lines.push(`  ${m.model.padEnd(22)} $${m.costUsd.toFixed(4)} (${m.requests})`);
+          }
+        }
+      }
     }
 
     if (lines.length === 1) {
       return {
         success: false,
-        error: `${label}: could not parse dashboard (rollingUsage/weeklyUsage/monthlyUsage not found).`,
+        error: `${label}: could not parse any dashboard data.`,
       };
     }
 
@@ -1048,14 +1181,14 @@ async function queryOpenCodeGoSingle(config: OpenCodeGoConfig): Promise<QueryRes
   }
 }
 
-async function queryOpenCodeGo(auth: OpenCodeGoAuthData | undefined): Promise<QueryResult | null> {
+async function queryOpenCodeGoZen(auth: OpenCodeGoAuthData | undefined, ansi = false): Promise<QueryResult | null> {
   const configs = resolveOpenCodeGoConfigs();
 
   if (configs.length === 0) {
     return probeOpenCodeGoApiKey(auth?.key);
   }
 
-  const results = await Promise.all(configs.map(queryOpenCodeGoSingle));
+  const results = await Promise.all(configs.map((c) => queryOpenCodeGoZenSingle(c, ansi)));
 
   const successes = results.filter((r) => r.success && r.output);
   const failures = results.filter((r) => !r.success && r.error);
@@ -1066,7 +1199,7 @@ async function queryOpenCodeGo(auth: OpenCodeGoAuthData | undefined): Promise<Qu
 
   const output = successes.map((r) => r.output).join("\n\n");
   const errorTail = failures.length > 0
-    ? `\n\n⚠️ Some accounts failed:\n${failures.map((r) => r.error).join("\n")}`
+    ? `\n\n\u26a0\ufe0f Some accounts failed:\n${failures.map((r) => r.error).join("\n")}`
     : "";
 
   return { success: true, output: output + errorTail };
@@ -1112,7 +1245,7 @@ function resolvePoeApiKey(auth: PoeAuthData | undefined): string | null {
   }
 }
 
-async function queryPoe(auth: PoeAuthData | undefined): Promise<QueryResult | null> {
+async function queryPoe(auth: PoeAuthData | undefined, ansi = false): Promise<QueryResult | null> {
   const apiKey = resolvePoeApiKey(auth);
   if (!apiKey) return null;
 
@@ -1133,7 +1266,6 @@ async function queryPoe(auth: PoeAuthData | undefined): Promise<QueryResult | nu
     const lines: string[] = [];
 
     const monthlyGrant = balance.next_monthly_grant_amount ?? 0;
-    const planPts = typeof balance.plan_points_balance === "number" ? balance.plan_points_balance : 0;
 
     const usd = balance.total_balance_usd ? ` ($${balance.total_balance_usd} USD)` : "";
     lines.push(`Balance:        ${balance.current_point_balance ?? "?"} pts${usd}`);
@@ -1145,7 +1277,7 @@ async function queryPoe(auth: PoeAuthData | undefined): Promise<QueryResult | nu
       const currentPts = balance.current_point_balance ?? 0;
       const remainPct = Math.round((currentPts / monthlyGrant) * 100);
       lines.push("", "Monthly");
-      lines.push(`${createProgressBar(remainPct)} ${remainPct}% remaining`);
+      lines.push(`${createProgressBar(remainPct, 26, ansi)} ${remainPct}% remaining`);
       lines.push(`Points: ${currentPts} / ${monthlyGrant}`);
       const monthly = formatPoeTimestamp(balance.next_monthly_grant_time);
       if (monthly) lines.push(`Resets in: ${monthly}`);
@@ -1161,7 +1293,7 @@ async function queryPoe(auth: PoeAuthData | undefined): Promise<QueryResult | nu
 }
 
 // ============================================================
-// Z.AI Coding Plan (api.z.ai subscription + quota endpoints)
+// Z.AI Coding Plan
 // ============================================================
 
 const ZAI_BASE_URL = "https://api.z.ai";
@@ -1225,7 +1357,7 @@ interface ZaiSubscriptionResponse {
   success: boolean;
 }
 
-async function queryZai(auth: ZaiAuthData | undefined): Promise<QueryResult | null> {
+async function queryZai(auth: ZaiAuthData | undefined, ansi = false): Promise<QueryResult | null> {
   if (!auth?.key) return null;
 
   try {
@@ -1291,10 +1423,10 @@ async function queryZai(auth: ZaiAuthData | undefined): Promise<QueryResult | nu
 
       if (limit.type === "TIME_LIMIT" && typeof limit.remaining === "number" && typeof limit.usage === "number") {
         const total = limit.remaining + limit.usage;
-        lines.push(`${createProgressBar(remain)} ${remain}% remaining`);
+        lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
         lines.push(`Used: ${limit.usage} / ${total}`);
       } else {
-        lines.push(`${createProgressBar(remain)} ${remain}% remaining`);
+        lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
       }
 
       const resetAt = new Date(limit.nextResetTime).toISOString();
@@ -1320,7 +1452,39 @@ async function queryZai(auth: ZaiAuthData | undefined): Promise<QueryResult | nu
 }
 
 // ============================================================
-// Plugin entry point
+// xAI/Grok (auth validity check — no public usage API)
+// ============================================================
+
+async function queryXai(auth: XaiAuthData | undefined): Promise<QueryResult | null> {
+  if (!auth || auth.type !== "oauth" || !auth.access) return null;
+  if (auth.expires && auth.expires < Date.now())
+    return { success: false, error: "\u26a0\ufe0f xAI token expired." };
+
+  try {
+    const res = await fetchTimeout("https://api.x.ai/v1/models", {
+      headers: {
+        Authorization: `Bearer ${auth.access}`,
+        Accept: "application/json",
+        "x-grok-source": "opencode-allstatus",
+      },
+    });
+
+    if (!res.ok) throw new Error(`xAI API error (${res.status})`);
+
+    return {
+      success: true,
+      output: [
+        "Auth:           valid",
+        "Usage API:      xAI does not expose a public usage endpoint",
+      ].join("\n"),
+    };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ============================================================
+// Grid rendering
 // ============================================================
 
 interface GridCell {
@@ -1337,7 +1501,7 @@ function cellTitle(providerTitle: string, subTitle: string): string {
   if (subTitle.toLowerCase().startsWith(short.toLowerCase())) {
     return subTitle;
   }
-  return `${short} — ${subTitle}`;
+  return `${short} \u2014 ${subTitle}`;
 }
 
 function collect(
@@ -1370,11 +1534,72 @@ function collect(
   }
 }
 
+// ============================================================
+// Threshold alert extraction
+// ============================================================
+
+function extractAlerts(cells: GridCell[], threshold = 25): string[] {
+  const alerts: string[] = [];
+  const worst = new Map<string, number>();
+
+  for (const cell of cells) {
+    let cellMin = 101;
+    for (const line of cell.lines) {
+      const m = line.match(/(\d+)% (?:remaining|of)/);
+      if (m) {
+        const pct = parseInt(m[1]);
+        cellMin = Math.min(cellMin, pct);
+      }
+    }
+    if (cellMin <= threshold && cellMin > 0) {
+      worst.set(cell.title, cellMin);
+    }
+  }
+
+  for (const [title, pct] of worst) {
+    alerts.push(`${title}: ${pct}%`);
+  }
+
+  return alerts;
+}
+
+// ============================================================
+// JSON serialization
+// ============================================================
+
+function cellsToJson(cells: GridCell[], alerts: string[], errors: string[]): string {
+  return JSON.stringify(
+    {
+      cells: cells.map((c) => ({ title: c.title, lines: c.lines })),
+      alerts: alerts.length > 0 ? alerts : undefined,
+      errors: errors.length > 0 ? errors : undefined,
+    },
+    null,
+    2,
+  );
+}
+
+// ============================================================
+// Rendering
+// ============================================================
+
 const CELL_W = 46;
 
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, "");
+}
+
 function padLine(s: string, w: number): string {
-  if (s.length > w) return s.slice(0, w - 1) + "\u2026";
-  return s + " ".repeat(Math.max(0, w - s.length));
+  const visual = stripAnsi(s);
+
+  if (visual.length > w) {
+    const cut = visual.slice(0, Math.max(0, w - 1)) + "\u2026";
+    return cut + " ".repeat(Math.max(0, w - cut.length));
+  }
+
+  return s + " ".repeat(Math.max(0, w - visual.length));
 }
 
 function renderGrid(cells: GridCell[]): string {
@@ -1420,31 +1645,43 @@ function renderGrid(cells: GridCell[]): string {
   return out.join("\n");
 }
 
+// ============================================================
+// Plugin entry point
+// ============================================================
+
 export const MyStatusPlugin: Plugin = async () => ({
   tool: {
     mystatus: tool({
       description:
-        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns in a two-column grid. Supports OpenAI, Anthropic (Claude.ai), Google (Antigravity), GitHub Copilot, OpenCode Go, Poe, and Z.AI (GLM Coding Plan).",
-      args: {},
-      async execute() {
+        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), and xAI/Grok.",
+      args: {
+        format: tool.schema.string().optional(),
+        threshold: tool.schema.number().optional(),
+      },
+      async execute(args) {
+        const format = args.format ?? "ansi";
+        const threshold = args.threshold ?? 25;
+        const useAnsi = format !== "json";
+
         const authPath = authJsonPath();
         let auth: AuthData = {};
         try {
           const raw = await readFile(authPath, "utf-8");
           auth = JSON.parse(raw) as AuthData;
         } catch (err) {
-          return `\u274C Failed to read auth file: ${authPath}\n${err instanceof Error ? err.message : String(err)}`;
+          return `\u274c Failed to read auth file: ${authPath}\n${err instanceof Error ? err.message : String(err)}`;
         }
 
-        const [openaiResult, anthropicResult, googleResult, copilotResult, opencodeGoResult, poeResult, zaiResult] =
+        const [openaiResult, anthropicResult, googleResult, copilotResult, goZenResult, poeResult, zaiResult, xaiResult] =
           await Promise.all([
-            queryOpenAI(auth.openai),
-            queryAnthropic(auth.anthropic),
-            queryGoogle(),
-            queryCopilot(auth["github-copilot"]),
-            queryOpenCodeGo(auth["opencode-go"]),
-            queryPoe(auth.poe),
-            queryZai(auth["zai-coding-plan"]),
+            queryOpenAI(auth.openai, useAnsi),
+            queryAnthropic(auth.anthropic, useAnsi),
+            queryGoogle(useAnsi),
+            queryCopilot(auth["github-copilot"], useAnsi),
+            queryOpenCodeGoZen(auth["opencode-go"], useAnsi),
+            queryPoe(auth.poe, useAnsi),
+            queryZai(auth["zai-coding-plan"], useAnsi),
+            queryXai(auth["xai-oauth"]),
           ]);
 
         const cells: GridCell[] = [];
@@ -1454,20 +1691,48 @@ export const MyStatusPlugin: Plugin = async () => ({
         collect(anthropicResult, "Anthropic Account Quota", cells, errors);
         collect(googleResult, "Google Account Quota", cells, errors);
         collect(copilotResult, "GitHub Copilot Account Quota", cells, errors);
-        collect(opencodeGoResult, "OpenCode Go Account Quota", cells, errors);
+        collect(goZenResult, "OpenCode Go+Zen Account Quota", cells, errors);
         collect(poeResult, "Poe Account Quota", cells, errors);
         collect(zaiResult, "Z.AI Coding Plan", cells, errors);
+        collect(xaiResult, "xAI/Grok", cells, errors);
 
         if (cells.length === 0) {
           return errors.length
-            ? `\u274C Failed to query:\n${errors.join("\n\n")}`
+            ? `\u274c Failed to query:\n${errors.join("\n\n")}`
             : "No accounts found.";
         }
 
-        let output = "```\n" + renderGrid(cells).trimEnd() + "\n```";
-        if (errors.length) {
-          output += "\n\n\u274C Failed to query:\n" + errors.join("\n\n");
+        // JSON output mode
+        if (format === "json") {
+          const alerts = extractAlerts(cells, threshold);
+          return cellsToJson(cells, alerts, errors);
         }
+
+        // Alert threshold scan
+        const alerts = extractAlerts(cells, threshold);
+
+        // Grid rendering
+        let output = renderGrid(cells).trimEnd();
+
+        // Threshold alerts footer
+        if (alerts.length > 0) {
+          if (useAnsi) {
+            output += `\n\n${ANSI_BOLD}${ANSI_RED}\u26a0\ufe0f Low quota alerts:${ANSI_RESET}`;
+            for (const alert of alerts) {
+              output += `\n${ANSI_RED}  \u2022 ${alert}${ANSI_RESET}`;
+            }
+          } else {
+            output += `\n\n\u26a0\ufe0f Low quota alerts:`;
+            for (const alert of alerts) {
+              output += `\n  \u2022 ${alert}`;
+            }
+          }
+        }
+
+        if (errors.length) {
+          output += `\n\n\u274c Failed to query:\n${errors.join("\n\n")}`;
+        }
+
         return output;
       },
     }),
