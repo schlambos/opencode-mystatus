@@ -10,6 +10,7 @@
  *   - Poe         (points balance)          auth.json, env var, or poe-api-key.json
  *   - Z.AI        (GLM Coding Plan)         auth.json → zai-coding-plan
  *   - xAI/Grok    (auth check only)         auth.json → xai-oauth (no usage API)
+ *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)
@@ -105,6 +106,11 @@ interface XaiAuthData {
   expires?: number;
 }
 
+interface MiniMaxAuthData {
+  type: string;
+  key?: string;
+}
+
 interface AuthData {
   openai?: OpenAIAuthData;
   anthropic?: AnthropicAuthData;
@@ -113,6 +119,7 @@ interface AuthData {
   poe?: PoeAuthData;
   "zai-coding-plan"?: ZaiAuthData;
   "xai-oauth"?: XaiAuthData;
+  "minimax-coding-plan"?: MiniMaxAuthData;
 }
 
 interface AntigravityAccount {
@@ -1484,6 +1491,195 @@ async function queryXai(auth: XaiAuthData | undefined): Promise<QueryResult | nu
 }
 
 // ============================================================
+// MiniMax Token Plan (minimax.io — Anthropic-compatible API)
+// ============================================================
+//
+//   Quota source:    GET https://api.minimax.io/v1/token_plan/remains
+//   Auth:            Bearer sk-cp-…  (Token Plan Subscription Key)
+//   Response shape:  model_remains[]  with 5h + 7-day windows per bucket
+//   Buckets:         "general" (text/M3), "video", "image", "speech", "audio"
+//   Scope:           chat/agent text usage only — the "video" bucket is
+//                    filtered out below as it is out of scope for this
+//                    plugin. Image/speech/audio buckets are kept for now
+//                    because they typically aren't returned by the account.
+
+const MINIMAX_BASE_URL = "https://api.minimax.io";
+const MINIMAX_PLAN_LABELS: Record<string, string> = {
+  general: "General (text/M3)",
+  image: "Image",
+  speech: "Speech",
+  audio: "Audio",
+};
+const MINIMAX_EXCLUDED_BUCKETS = new Set<string>(["video"]);
+
+interface MiniMaxWindowBucket {
+  model_name?: string;
+  start_time?: number;
+  end_time?: number;
+  remains_time?: number;
+  current_interval_total_count?: number;
+  current_interval_usage_count?: number;
+  current_interval_remaining_percent?: number;
+  current_interval_status?: number;
+  weekly_start_time?: number;
+  weekly_end_time?: number;
+  weekly_remains_time?: number;
+  current_weekly_total_count?: number;
+  current_weekly_usage_count?: number;
+  current_weekly_remaining_percent?: number;
+  current_weekly_status?: number;
+}
+
+interface MiniMaxRemainsResponse {
+  model_remains?: MiniMaxWindowBucket[];
+  base_resp?: { status_code?: number; status_msg?: string };
+}
+
+function minimaxWindowLabel(bucketName: string, kind: "interval" | "weekly"): string {
+  const label = MINIMAX_PLAN_LABELS[bucketName] ?? bucketName;
+  return kind === "interval" ? `${label} — 5h` : `${label} — 7-day`;
+}
+
+function minimaxResetSeconds(raw: number | undefined): number | undefined {
+  if (typeof raw !== "number" || raw <= 0) return undefined;
+  if (raw > 86_400) return Math.floor(raw / 1000);
+  return Math.floor(raw);
+}
+
+function formatMiniMaxWindow(
+  bucketName: string,
+  kind: "interval" | "weekly",
+  pct: number | undefined,
+  used: number | undefined,
+  total: number | undefined,
+  resetRaw: number | undefined,
+  status: number | undefined,
+  ansi: boolean,
+): string[] {
+  const remain = Math.max(0, Math.min(100, Math.round(pct ?? 100)));
+  const title = minimaxWindowLabel(bucketName, kind);
+  const throttled = status !== undefined && status !== 1;
+  const lines: string[] = [title];
+
+  if (throttled) lines.push(`\u26a0\ufe0f throttled (status=${status})`);
+
+  lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
+
+  if (typeof total === "number" && total > 0 && typeof used === "number") {
+    lines.push(`Used: ${used} / ${total}`);
+  }
+
+  const resetSec = minimaxResetSeconds(resetRaw);
+  if (resetSec !== undefined && resetSec > 0) {
+    lines.push(`Resets in: ${formatDuration(resetSec)}`);
+  }
+
+  return lines;
+}
+
+function minimaxBucketSortKey(name: string): number {
+  if (name === "general") return 0;
+  return 1;
+}
+
+async function queryMiniMax(
+  auth: MiniMaxAuthData | undefined,
+  ansi = false,
+): Promise<QueryResult | null> {
+  if (!auth?.key) return null;
+  if (!auth.key.startsWith("sk-cp-")) {
+    return {
+      success: false,
+      error:
+        `\u26a0\ufe0f Key is not a Token Plan subscription key (expected sk-cp- prefix).\n` +
+        `Use the Token Plan key from MiniMax Console \u2192 Billing \u2192 Token Plan.`,
+    };
+  }
+
+  try {
+    const res = await fetchTimeout(`${MINIMAX_BASE_URL}/v1/token_plan/remains`, {
+      headers: {
+        Authorization: `Bearer ${auth.key}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "OpenCode-AllStatus/1.0",
+      },
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`MiniMax API error (${res.status}): ${body.slice(0, 200)}`);
+    }
+
+    const data = (await res.json()) as MiniMaxRemainsResponse;
+
+    if (data.base_resp?.status_code !== undefined && data.base_resp.status_code !== 0) {
+      throw new Error(
+        `MiniMax API error: ${data.base_resp.status_msg ?? `code ${data.base_resp.status_code}`}`,
+      );
+    }
+
+    const buckets = (data.model_remains ?? [])
+      .filter((b) => typeof b.model_name === "string")
+      .filter((b) => !MINIMAX_EXCLUDED_BUCKETS.has(b.model_name!))
+      .sort((a, b) => {
+        const ka = minimaxBucketSortKey(a.model_name!);
+        const kb = minimaxBucketSortKey(b.model_name!);
+        if (ka !== kb) return ka - kb;
+        return a.model_name!.localeCompare(b.model_name!);
+      });
+
+    if (buckets.length === 0) {
+      return {
+        success: true,
+        output: [
+          "Account:        MiniMax Token Plan",
+          "",
+          "Plan:           Token Plan (no active buckets returned)",
+        ].join("\n"),
+      };
+    }
+
+    const cells: string[] = [];
+    for (const b of buckets) {
+      const name = b.model_name!;
+
+      const intervalLines = formatMiniMaxWindow(
+        name,
+        "interval",
+        b.current_interval_remaining_percent,
+        b.current_interval_usage_count,
+        b.current_interval_total_count,
+        b.remains_time,
+        b.current_interval_status,
+        ansi,
+      );
+
+      const weeklyLines = formatMiniMaxWindow(
+        name,
+        "weekly",
+        b.current_weekly_remaining_percent,
+        b.current_weekly_usage_count,
+        b.current_weekly_total_count,
+        b.weekly_remains_time,
+        b.current_weekly_status,
+        ansi,
+      );
+
+      const block = [`### ${name}`, ...intervalLines, "", ...weeklyLines].join("\n");
+      cells.push(block);
+    }
+
+    return { success: true, output: cells.join("\n\n") };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+// ============================================================
 // Grid rendering
 // ============================================================
 
@@ -1653,7 +1849,7 @@ export const MyStatusPlugin: Plugin = async () => ({
   tool: {
     mystatus: tool({
       description:
-        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), and xAI/Grok.",
+        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, and MiniMax Token Plan.",
       args: {
         format: tool.schema.string().optional(),
         threshold: tool.schema.number().optional(),
@@ -1672,7 +1868,7 @@ export const MyStatusPlugin: Plugin = async () => ({
           return `\u274c Failed to read auth file: ${authPath}\n${err instanceof Error ? err.message : String(err)}`;
         }
 
-        const [openaiResult, anthropicResult, googleResult, copilotResult, goZenResult, poeResult, zaiResult, xaiResult] =
+        const [openaiResult, anthropicResult, googleResult, copilotResult, goZenResult, poeResult, zaiResult, xaiResult, minimaxResult] =
           await Promise.all([
             queryOpenAI(auth.openai, useAnsi),
             queryAnthropic(auth.anthropic, useAnsi),
@@ -1682,6 +1878,7 @@ export const MyStatusPlugin: Plugin = async () => ({
             queryPoe(auth.poe, useAnsi),
             queryZai(auth["zai-coding-plan"], useAnsi),
             queryXai(auth["xai-oauth"]),
+            queryMiniMax(auth["minimax-coding-plan"], useAnsi),
           ]);
 
         const cells: GridCell[] = [];
@@ -1695,6 +1892,9 @@ export const MyStatusPlugin: Plugin = async () => ({
         collect(poeResult, "Poe Account Quota", cells, errors);
         collect(zaiResult, "Z.AI Coding Plan", cells, errors);
         collect(xaiResult, "xAI/Grok", cells, errors);
+        collect(minimaxResult, "MiniMax Token Plan", cells, errors);
+
+        cells.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
 
         if (cells.length === 0) {
           return errors.length
