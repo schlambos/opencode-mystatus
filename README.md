@@ -5,7 +5,7 @@
 
 **One command. Every AI subscription. All your quota in one place.**
 
-`opencode-mystatus` is an all-in-one quota dashboard for [OpenCode](https://opencode.ai). It reads the credentials OpenCode already stores, talks to each provider's usage API, and renders a unified report of how much you have left and when it resets — across **nine** platforms.
+`opencode-mystatus` is an all-in-one quota dashboard for [OpenCode](https://opencode.ai). It reads the credentials OpenCode already stores, talks to each provider's usage API, and renders a unified report of how much you have left and when it resets — across **ten** platforms.
 
 ```
 /mystatus
@@ -23,6 +23,7 @@
 | **Poe**            | Subscription or pay-go    | `auth.json`, `POE_API_KEY`, or `poe-api-key.json`      |
 | **Z.AI**           | GLM Coding Plan           | `auth.json` → `zai-coding-plan`                        |
 | **xAI/Grok**       | SuperGrok subscription    | `auth.json` → `xai-oauth` (auth check only)            |
+| **MiniMax**        | Token Plan (minimax.io)   | `auth.json` → `minimax-coding-plan` (Anthropic-compatible) |
 
 Platforms you aren't signed into are skipped silently — you only see what's relevant to you.
 
@@ -117,6 +118,16 @@ A full run with every platform configured. Platforms you aren't signed into are 
 │                                              │ Weekly                                       │
 │                                              │ 🟩 █████████████████████████░ 95% remaining  │
 │                                              │ Resets in: 6d 23h                            │
+└──────────────────────────────────────────────┴──────────────────────────────────────────────┘
+
+┌── MiniMax Token Plan — general ──────────────┬──────────────────────────────────────────────┐
+│ General (text/M3) — 5h                       │                                              │
+│ 🟩 █████████████████████░░░░░ 81% remaining  │                                              │
+│ Resets in: 32m                               │                                              │
+│                                              │                                              │
+│ General (text/M3) — 7-day                    │                                              │
+│ 🟩 █████████████████████████░ 98% remaining  │                                              │
+│ Resets in: 5d 19h                            │                                              │
 └──────────────────────────────────────────────┴──────────────────────────────────────────────┘
 
 ⚠️ Low quota alerts:
@@ -295,6 +306,16 @@ Reads the OAuth token from `auth.json` → `xai-oauth` (populated by the [openco
 
 > **Note:** xAI does not expose a public usage, billing, or rate-limit API endpoint. The plugin can only confirm whether your auth token is still active. There is no way to programmatically check remaining Grok quota or rate limits.
 
+### MiniMax (Token Plan)
+
+Reads the Token Plan Subscription Key from `auth.json` → `minimax-coding-plan` (populated when you authenticate the MiniMax / minimax.io provider in OpenCode as an Anthropic-compatible endpoint). The key must use the `sk-cp-` prefix used by Token Plan subscriptions — the plugin validates the prefix and surfaces a clear error otherwise.
+
+Queries `GET https://api.minimax.io/v1/token_plan/remains` and reports a 5-hour rolling window and a 7-day window per bucket returned by the API.
+
+**Scope:** chat / agent text usage only. The `video` bucket is filtered out before rendering since it is out of scope for an LLM quota dashboard. Image, speech, and audio buckets are kept in the label map but are typically not returned for a Token Plan account focused on text models.
+
+No additional configuration is required beyond authenticating the provider in OpenCode.
+
 ## Security & Privacy
 
 `mystatus` is read-only and makes no changes to your system or accounts.
@@ -321,6 +342,7 @@ Reads the OAuth token from `auth.json` → `xai-oauth` (populated by the [openco
 | Poe | `api.poe.com/usage/current_balance` |
 | Z.AI | `api.z.ai/api/biz/subscription/list`, `api.z.ai/api/monitor/usage/quota/limit` |
 | xAI/Grok | `api.x.ai/v1/models` |
+| MiniMax | `api.minimax.io/v1/token_plan/remains` |
 
 - Credentials are read locally and sent **only** to their own provider.
 - Nothing is stored, cached, logged, or transmitted anywhere else.
@@ -340,7 +362,7 @@ The plugin is a single self-contained module at `plugin/mystatus.ts`. Each platf
 
 ## Credits
 
-A fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), extended with Anthropic, GitHub Copilot, OpenCode Go+Zen (merged), Poe, multi-account Google, Z.AI (GLM Coding Plan), and xAI/Grok support. Recent additions include visual color indicators, threshold alerts, JSON output, and per-model Zen spend breakdown.
+A fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), extended with Anthropic, GitHub Copilot, OpenCode Go+Zen (merged), Poe, multi-account Google, Z.AI (GLM Coding Plan), xAI/Grok, and MiniMax (Token Plan, chat scope) support. Recent additions include visual color indicators, threshold alerts, JSON output, per-model Zen spend breakdown, and alphabetical panel sorting.
 
 ## License
 
