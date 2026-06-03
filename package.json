@@ -46,6 +46,10 @@
     "minimax",
     "nanogpt"
   ],
+  "author": "Matthew Gibbons",
+  "contributors": [
+    "javazys (original opencode-mystatus)"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
