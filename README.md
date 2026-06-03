@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/mystatus-banner-en.jpeg" alt="opencode-mystatus" width="100%">
-</p>
-
 <h1 align="center">opencode-mystatus</h1>
 
 <p align="center">
