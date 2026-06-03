@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-06-03
+
+### Added
+
+- **NanoGPT** provider — USD/Nano balance via `/api/check-balance` plus subscription allowances (weekly input tokens, daily images, renewal date) via `/api/subscription/v1/usage`.
+- **Summary card** — account tally (🟩/🟨/🟧), lowest window, and soonest reset, rendered at the top.
+- **Usage trends** — per-window history (`~/.config/opencode/mystatus-history.json`) drives a trend line under each bar: delta, sparkline, and a "~Xh to empty (before reset)" projection. Configurable via `trend: off | compact | full`.
+- **Urgency sorting** — cards order by lowest remaining first by default; also `name` and `reset` modes (`sort`).
+- **Cache fallback & resilience** — successful results are cached and reused when a live fetch fails (`mystatus-cache.json`); HTTP requests now retry on 429/5xx with backoff, and each provider runs under a hard deadline so one slow API can't stall the report.
+- **Configuration file** — `~/.config/opencode/mystatus.json` (JSONC, comments allowed) for persistent defaults; every option is also a per-call tool arg. See `mystatus.example.json`.
+- **New tool args** — `width`, `sort`, `summary`, `trend`, `only`, `exclude`, `fresh`.
+- **`/usage` command** alias alongside `/mystatus`.
+- **xAI/Grok** now reports a token-expiry countdown.
+
+### Changed
+
+- **Responsive single-column layout** — providers render as full-width cards that size to the terminal (or `width` / `MYSTATUS_WIDTH` / `COLUMNS`) and never wrap, replacing the fixed two-column grid. Progress bars scale to the card.
+- **Structured rendering** — providers now emit a typed `ProviderCard` model (header / windows / footer) consumed by a single renderer, making metrics, sorting, summary, and trends exact rather than parsed from text.
+- **Provider registry** — providers are declared in one array; filtering and ordering build on it.
+
+### Fixed
+
+- **Z.AI "Invalid Date"** — a missing/empty `nextResetTime` no longer throws (`new Date(undefined).toISOString()`) and kills the card; reset is handled safely.
+- **Trend sparklines** are no longer mistaken for progress bars and stretched to full width (the ramp no longer uses the █ glyph).
+
 ## [2.0.0] - 2026-05-30
 
 ### Added

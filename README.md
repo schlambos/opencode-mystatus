@@ -1,147 +1,124 @@
-# opencode-mystatus
+<p align="center">
+  <img src="assets/mystatus-banner-en.jpeg" alt="opencode-mystatus" width="100%">
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![OpenCode Plugin](https://img.shields.io/badge/OpenCode-plugin-black.svg)](https://opencode.ai)
+<h1 align="center">opencode-mystatus</h1>
 
-**One command. Every AI subscription. All your quota in one place.**
+<p align="center">
+  <strong>All your AI usage, in one glance.</strong><br>
+  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — ten providers, one command.
+</p>
 
-`opencode-mystatus` is an all-in-one quota dashboard for [OpenCode](https://opencode.ai). It reads the credentials OpenCode already stores, talks to each provider's usage API, and renders a unified report of how much you have left and when it resets — across **ten** platforms.
+<p align="center">
+  <a href="https://www.npmjs.com/package/opencode-mystatus"><img src="https://img.shields.io/npm/v/opencode-mystatus?color=cb3837&label=npm" alt="npm version"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://opencode.ai"><img src="https://img.shields.io/badge/OpenCode-plugin-black.svg" alt="OpenCode Plugin"></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A518-3c873a.svg" alt="Node >= 18">
+</p>
+
+---
+
+Subscriptions pile up — ChatGPT, Claude, Gemini, Copilot, Grok, and a handful of API plans — and every one of them has its own dashboard, its own reset clock, and its own way of telling you you're out. **opencode-mystatus** pulls them all together. It reads the credentials OpenCode already stores, asks each provider how much you have left, and renders one clean, sorted, at-a-glance report — right inside your terminal.
 
 ```
 /mystatus
 ```
 
-## Supported Platforms
+## Why you'll want it
 
-| Platform           | Account Type              | Source / Auth                                          |
-|--------------------|---------------------------|--------------------------------------------------------|
-| **OpenAI**         | ChatGPT Plus / Team / Pro | `auth.json` → `openai`                                 |
-| **Anthropic**      | Claude Pro / Max          | `auth.json` → `anthropic` (auto-refresh)               |
-| **Google**         | Antigravity free quota    | `antigravity-accounts.json` (multi-account)            |
-| **GitHub Copilot** | Individual / Business     | `auth.json` → `github-copilot` *or* fine-grained PAT   |
-| **OpenCode Go+Zen** | Any Go subscription       | API key from `auth.json` *or* dashboard cookie (multi) |
-| **Poe**            | Subscription or pay-go    | `auth.json`, `POE_API_KEY`, or `poe-api-key.json`      |
-| **Z.AI**           | GLM Coding Plan           | `auth.json` → `zai-coding-plan`                        |
-| **xAI/Grok**       | SuperGrok subscription    | `auth.json` → `xai-oauth` (auth check only)            |
-| **MiniMax**        | Token Plan (minimax.io)   | `auth.json` → `minimax-coding-plan` (Anthropic-compatible) |
+- **Never get surprised by a limit again.** See what's running low *before* it blocks you, with projected "time to empty" estimates.
+- **One place for everything.** Ten providers, multiple accounts each, in a single scrollable view.
+- **Zero busywork.** If you've signed into a provider in OpenCode, it just works — no extra keys to wire up.
+- **Built for the terminal.** Responsive cards that size to your window, color-coded bars, and a summary up top.
 
-Platforms you aren't signed into are skipped silently — you only see what's relevant to you.
+## Highlights
 
-## Features
+- 🧭 **Summary card** — account tally, your lowest window, and the next thing to reset, right at the top.
+- 🚦 **Urgency-first ordering** — whatever's closest to empty floats to the top (or sort by name / reset time).
+- 📈 **Usage trends** — sparklines, deltas, and a *"~1h 40m to empty (before reset)"* projection drawn from your own history.
+- 🟩 **Color-coded at a glance** — emoji + ANSI bars (🟥 ≤0 · 🟧 <25 · 🟨 <50 · 🟩 ≥50) that survive even when ANSI is stripped.
+- 📐 **Responsive layout** — single-column cards that resize to your terminal and never wrap.
+- 💸 **Spend insight** — OpenCode Zen per-model cost breakdowns and balances alongside quota.
+- 🛟 **Resilient** — automatic retries, a cache fallback when a provider is flaky, and graceful per-provider errors.
+- 🤖 **Scriptable** — `format: json` for machine-readable output.
 
-- **Merged OpenCode Go+Zen cells** — Single cell per account shows Go quota windows AND Zen billing/spend
-- **Visual indicators** — Emoji color squares (🟥≤0% 🟧<25% 🟨<50% 🟩≥50%) work everywhere, even when ANSI is stripped
-- **ANSI terminal colors** — Green/yellow/red bars when your terminal supports escape sequences
-- **JSON output** — Machine-readable format via `mystatus --format json`
-- **Threshold alerts** — Automatic warnings for platforms below 25% remaining (configurable)
-- **Parallel queries** — All platforms queried simultaneously for fast response
-- **Multi-account support** — Google, OpenCode Go+Zen display each configured account separately
+## What it looks like
 
-## Sample Output
+A single-column stack of cards, sorted by urgency, with a summary on top and low-quota alerts at the bottom *(abridged)*:
 
-A full run with every platform configured. Platforms you aren't signed into are simply omitted. Threshold alerts appear at the bottom for any platform with low remaining quota.
+```text
+╭─ Summary ────────────────────────────────────────────────────────╮
+│                                                                  │
+│  Accounts:       10   🟩 7  🟨 2  🟧 1                           │
+│  Lowest:         OpenCode Go+Zen — OpenCode Go Personal · Mont…  │
+│  Soonest reset:  OpenCode Go+Zen — OpenCode Go Alt 1 · 5h (rol…  │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
 
-```
-┌── OpenAI Account Quota ──────────────────────┬── Anthropic Account Quota ───────────────────┐
-│ Account:        you@example.com              │ Account:        Claude Pro/Max               │
-│ Plan:           ChatGPT plus                 │                                              │
-│ Credits:        $20.50                       │ 5-hour limit                                 │
-│                                              │ 🟩 ██████████████████████░░░░ 85% remaining   │
-│ 5-hour limit                                 │ Resets in: 2h 15m                            │
-│ 🟨 ██████████████░░░░░░░░░░░░ 52% remaining  │                                              │
-│ Resets in: 3h 30m                            │ 7-day limit                                  │
-│                                              │ 🟧 ████████████░░░░░░░░░░░░░░ 45% remaining  │
-│ 7-day limit                                  │ Resets in: 5d 18h                            │
-│ 🟩 ██████████████████████████ 99% remaining  │                                              │
-│ Resets in: 6d 16h                            │ 7-day (Opus)                                 │
-│                                              │ 🟩 ██████████████████████████ 100% remaining │
-│                                              │ Resets in: 6d 18h                            │
-└──────────────────────────────────────────────┴──────────────────────────────────────────────┘
+╭─ Anthropic Account Quota ────────────────────────────────────────╮
+│                                                                  │
+│  Account:        Claude Pro/Max                                  │
+│                                                                  │
+│  5-hour limit                                                    │
+│  🟩 ███████████████████████░░░░░░░░░░░░░░░░░░░░░░ 50% remaining  │
+│     trend ▼2%/4m · ▅▄▄ · ~1h 40m to empty (before reset)         │
+│  Resets in: 2h 51m                                               │
+│                                                                  │
+│  7-day limit                                                     │
+│  🟩 ████████████████████████████░░░░░░░░░░░░░░░░░ 61% remaining  │
+│     trend → 0% · ▅▅▅                                             │
+│  Resets in: 5d 31m                                               │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
 
-┌── Google — you@example.com ──────────────────┬── GitHub Copilot ────────────────────────────┐
-│ G3 Pro                                       │ Account:        GitHub Copilot (pro)         │
-│ 🟩 ██████████████████████████ 100% remaining │                                              │
-│ Resets in: 1h 45m                            │ Premium                                      │
-│                                              │ 🟩 ███████████████████░░░░░░ 75% remaining   │
-│ G3 Flash                                     │ Used: 75 / 300                               │
-│ 🟩 ██████████████████████████ 100% remaining │                                              │
-│ Resets in: 1h 45m                            │ Resets in: 28d 6h                            │
-│                                              │                                              │
-│ Claude                                       │                                              │
-│ 🟨 ██████████░░░░░░░░░░░░░░░░ 40% remaining  │                                              │
-│ Resets in: 4d 5h                             │                                              │
-└──────────────────────────────────────────────┴──────────────────────────────────────────────┘
-
-┌── OpenCode Go Personal ──────────────────────┬── OpenCode Go Alt 1 ─────────────────────────┐
-│ 5h (rolling)                                 │ 5h (rolling)                                 │
-│ 🟩 ██████████████████████████ 100% remaining │ 🟨 ███████████░░░░░░░░░░░░░░░ 45% remaining │
-│ Resets in: 5h                                │ Resets in: 2h 30m                            │
-│                                              │                                              │
-│ Weekly                                       │ Weekly                                       │
-│ 🟩 ██████████████░░░░░░░░░░░░ 52% remaining  │ 🟩 ██████████████████░░░░░░░ 68% remaining   │
-│ Resets in: 19h 18m                           │ Resets in: 15h 45m                           │
-│                                              │                                              │
-│ Monthly                                      │ Monthly                                      │
-│ 🟨 ████████░░░░░░░░░░░░░░░░░░ 32% remaining  │ 🟩 ████████████████░░░░░░░░░ 61% remaining   │
-│ Resets in: 20d 7h                            │ Resets in: 8d 30m                            │
-└──────────────────────────────────────────────┴──────────────────────────────────────────────┘
-
-┌── OpenCode Zen — OpenCode Go Personal ───────┬── OpenCode Zen — OpenCode Go Alt 1 ──────────┐
-│ Balance:        $45.23                       │ Balance:        $12.50                       │
-│ Payment:        Stripe Link                  │ Payment:        Stripe Link                  │
-│                                              │                                              │
-│ Monthly spend:  $0.00                        │ Monthly spend:  $0.00                        │
-│                                              │                                              │
-│ Zen spend:      $3.45 across 8 models        │ Zen spend:      $1.23 across 5 models        │
-│   gpt-5.5-pro            $1.23 (12)          │   claude-sonnet-4            $0.89 (8)       │
-│   claude-opus-4-6        $0.98 (5)           │   gpt-5.4                    $0.22 (15)      │
-│   gemini-3-pro           $0.67 (23)          │   gemini-3-flash             $0.12 (30)      │
-│   qwen3-max              $0.34 (7)           │                                              │
-│   deepseek-v4            $0.23 (45)          │                                              │
-└──────────────────────────────────────────────┴──────────────────────────────────────────────┘
-
-┌── Poe Account Quota ─────────────────────────┬── Z.AI (GLM Coding Plan) ────────────────────┐
-│ Balance:        730000 pts ($21.90 USD)      │ Plan:           GLM Coding Lite              │
-│ Daily grant:    +500 (Resets in: 8h)         │ Price:          $18.00/monthly               │
-│                                              │ Valid:          2026-05-31 to 2026-06-30     │
-│ Monthly                                      │ Auto-renews:    2026-06-30                   │
-│ 🟩 ███████████████████░░░░░░░ 73% remaining  │                                              │
-│ Points: 730000 / 1000000                     │ Monthly                                      │
-│ Resets in: 12d 6h                            │ 🟩 ██████████████████████████ 100% remaining │
-│                                              │ Used: 0 / 100                                │
-│                                              │ Resets in: 29d 23h                           │
-│                                              │                                              │
-│                                              │ 5-hour rolling                               │
-│                                              │ 🟩 ███████████████████░░░░░░░░ 75% remaining │
-│                                              │ Resets in: 4h                                │
-│                                              │                                              │
-│                                              │ Weekly                                       │
-│                                              │ 🟩 █████████████████████████░ 95% remaining  │
-│                                              │ Resets in: 6d 23h                            │
-└──────────────────────────────────────────────┴──────────────────────────────────────────────┘
-
-┌── MiniMax Token Plan — general ──────────────┬──────────────────────────────────────────────┐
-│ General (text/M3) — 5h                       │                                              │
-│ 🟩 █████████████████████░░░░░ 81% remaining  │                                              │
-│ Resets in: 32m                               │                                              │
-│                                              │                                              │
-│ General (text/M3) — 7-day                    │                                              │
-│ 🟩 █████████████████████████░ 98% remaining  │                                              │
-│ Resets in: 5d 19h                            │                                              │
-└──────────────────────────────────────────────┴──────────────────────────────────────────────┘
+╭─ NanoGPT Account Quota ──────────────────────────────────────────╮
+│                                                                  │
+│  Balance:        $4.20                                           │
+│  Plan:           Subscription (stripe)                           │
+│                                                                  │
+│  Weekly input tokens                                             │
+│  🟩 █████████████████████████████░░░░░░░░░░░░░░░░ 65% remaining  │
+│     trend ▼4%/4m · ▅▅ · ~1h 5m to empty (before reset)           │
+│  Used: 21M / 60M                                                 │
+│  Resets in: 4d 19h 31m                                           │
+│                                                                  │
+│  Daily images                                                    │
+│  🟩 ████████████████████████████████████████████ 100% remaining  │
+│  Used: 0 / 100                                                   │
+│  Resets in: 19h 31m                                              │
+│                                                                  │
+│  Renews:         29d 22h 21m                                     │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
 
 ⚠️ Low quota alerts:
-  • OpenAI: 52%
-  • Anthropic: 45%
-  • OpenCode Zen — OpenCode Go Alt 1: 45%
-  • OpenCode Go Alt 1: 45%
+  • OpenCode Go+Zen — OpenCode Go Personal: 4%
 ```
+
+## Supported providers
+
+| Provider | Account type | What you see |
+|---|---|---|
+| **OpenAI** | ChatGPT Plus / Team / Pro | 5-hour &amp; 7-day rolling windows, credits |
+| **Anthropic** | Claude Pro / Max | 5-hour, 7-day, and per-model windows (auto token refresh) |
+| **Google** | Antigravity free quota | Gemini Pro / Flash / Claude, per account |
+| **GitHub Copilot** | Individual / Business | Premium, Chat &amp; Completions usage |
+| **OpenCode Go+Zen** | Any Go subscription | Rolling/weekly/monthly quota **+** Zen balance &amp; per-model spend |
+| **Poe** | Subscription or pay-go | Monthly points, daily grant, USD value |
+| **Z.AI** | GLM Coding Plan | Plan details + rolling / weekly / monthly windows |
+| **xAI / Grok** | SuperGrok | Auth validity &amp; token-expiry countdown* |
+| **MiniMax** | Token Plan | 5-hour &amp; 7-day text windows |
+| **NanoGPT** | Balance + subscription | USD balance, weekly tokens &amp; daily image allowances |
+
+Providers you aren't signed into are skipped silently — you only ever see what's relevant to you.
+
+<sub>\* xAI does not expose a public usage API, so only auth validity and token expiry can be reported.</sub>
 
 ## Installation
 
 ### From npm (recommended)
 
-Add the plugin and a slash command to `~/.config/opencode/opencode.json`:
+Add the plugin to `~/.config/opencode/opencode.json`. The optional `command` block gives you a `/mystatus` (and `/usage`) shortcut:
 
 ```json
 {
@@ -149,104 +126,115 @@ Add the plugin and a slash command to `~/.config/opencode/opencode.json`:
   "command": {
     "mystatus": {
       "description": "Query quota usage for all AI accounts",
-      "template": "Use the mystatus tool to query quota usage. Return the result as-is without modification."
+      "template": "Use the mystatus tool to query quota usage. Output is a single-column stack of provider cards — if you know the user's terminal width, pass it as the `width` argument so the cards size to the terminal and never wrap. Wrap the entire returned output in a single fenced ```text code block so the box-drawing borders and alignment are preserved exactly."
     }
   }
 }
 ```
 
+Restart OpenCode and run `/mystatus`.
+
 ### From source
 
-Copy `plugin/mystatus.ts` into `~/.config/opencode/plugin/` and `command/mystatus.md` into `~/.config/opencode/command/`, then restart OpenCode.
+Copy `plugin/mystatus.ts` into `~/.config/opencode/plugin/` and (optionally) `command/mystatus.md` + `command/usage.md` into `~/.config/opencode/command/`, then restart OpenCode.
 
 ## Usage
 
-Trigger it however you like:
+Trigger it however feels natural:
 
-- The `/mystatus` slash command
-- Natural language: *"Check my AI quota"*, *"How much Claude do I have left?"*, *"What's my GLM coding plan usage?"*
+- The **`/mystatus`** or **`/usage`** slash command
+- Plain language — *"check my AI quota"*, *"how much Claude do I have left?"*, *"am I about to run out of anything?"*
 
-### Output Formats
+### Options
 
-The tool supports optional parameters:
+All options are optional and can be set per-call or as [defaults in your config](#configuration):
 
-- `--format ansi` — Default. Box-drawing grid with color-coded bars and emoji indicators (🟥🟧🟨🟩)
-- `--format grid` — Plain box-drawing grid without ANSI color codes (for renderers that strip escape sequences)
-- `--format json` — Machine-readable JSON output with `cells`, `alerts`, and `errors` arrays
+| Option | Values | Default | Description |
+|---|---|---|---|
+| `width` | number | auto | Target terminal width; cards size to fit and never wrap |
+| `sort` | `urgency` · `name` · `reset` | `urgency` | Card ordering |
+| `summary` | boolean | `true` | Show the summary card on top |
+| `trend` | `off` · `compact` · `full` | `compact` | Trend line under each bar (`full` adds projection) |
+| `threshold` | number | `25` | Percent below which a window triggers a low-quota alert |
+| `only` | comma list | — | Show only these provider ids |
+| `exclude` | comma list | — | Hide these provider ids |
+| `fresh` | boolean | `false` | Bypass the cache and force a live fetch |
+| `format` | `ansi` · `json` | `ansi` | `json` returns machine-readable output |
 
-Examples:
-```bash
-/mystatus
-/mystatus --format json
-/mystatus --threshold 30
+Provider ids: `openai`, `anthropic`, `google`, `copilot`, `opencode-go`, `poe`, `zai`, `xai`, `minimax`, `nanogpt`.
+
+## Configuration
+
+Most setups need **no configuration at all**. To set persistent defaults, create `~/.config/opencode/mystatus.json` (comments are allowed). A fully documented sample lives at [`mystatus.example.json`](mystatus.example.json):
+
+```jsonc
+{
+  "sort": "urgency",        // urgency | name | reset
+  "summary": true,          // show the summary card
+  "trend": "full",          // off | compact | full
+  "cacheTtlSec": 0,         // 0 = always live; cache is used only as a failure fallback
+  "historyMax": 60,         // trend snapshots to retain
+  "historyMinIntervalSec": 60,
+  "providers": {
+    "disabled": [],         // e.g. ["xai"]
+    "order": []             // preferred ordering before sort
+  }
+  // "width": 100           // uncomment to pin a render width
+}
 ```
 
-### Threshold Alerts
+**Width resolution order:** `width` arg → `MYSTATUS_WIDTH` / `COLUMNS` env → live TTY → config `width` → safe default.
 
-Platforms with remaining quota below the threshold (default 25%) are listed at the bottom of the output. Adjust with `--threshold <percent>`. Alert levels:
-- 🟥 Red (≤0%): Fully exhausted
-- 🟧 Orange (<25%): Critical
-- 🟨 Yellow (<50%): Low
-- 🟩 Green (≥50%): Healthy
+> Trends need at least two snapshots, so the very first run shows none — they appear from the second run onward.
 
-## Platform Configuration
+## Provider setup
 
-Most platforms work with **zero configuration** — if you've authenticated the provider inside OpenCode, the credentials are already in `auth.json` and `mystatus` will use them. The sections below cover the per-platform details and the few optional config files.
+Anything authenticated inside OpenCode is detected automatically. The collapsible sections below cover the handful of providers with optional extra setup.
 
-### OpenAI
+<details>
+<summary><strong>Zero-config providers</strong> — OpenAI, Anthropic, Z.AI, MiniMax, NanoGPT, xAI</summary>
 
-Reads the ChatGPT OAuth token from `auth.json` and calls `chatgpt.com/backend-api/wham/usage`. Reports the plan type plus the 5-hour and 7-day rolling windows. No setup beyond signing into the OpenAI provider in OpenCode.
+<br>
 
-### Anthropic (Claude.ai)
+These read their credentials straight from OpenCode's `auth.json` once you've signed into the provider:
 
-Reads the Claude OAuth session from `auth.json`, automatically refreshes the access token via the Claude Code OAuth client, then queries `api.anthropic.com/api/oauth/usage`. Reports the 5-hour and 7-day rolling windows. No setup beyond signing into the Anthropic provider in OpenCode.
+- **OpenAI** — calls `chatgpt.com/backend-api/wham/usage`; reports plan, credits, and 5h/7d windows.
+- **Anthropic** — refreshes the Claude Code OAuth token and queries `api.anthropic.com/api/oauth/usage`.
+- **Z.AI (GLM Coding Plan)** — reads `zai-coding-plan`; shows plan details plus rolling/weekly/monthly windows.
+- **MiniMax (Token Plan)** — reads `minimax-coding-plan` (key must start with `sk-cp-`); shows 5h and 7-day text windows.
+- **NanoGPT** — reads `nano-gpt`; shows USD/Nano balance and, for subscribers, weekly-token and daily-image allowances with renewal date.
+- **xAI / Grok** — reads `xai-oauth`; confirms the token is valid and shows its expiry (no public usage API exists).
+</details>
 
-### Google (Antigravity)
+<details>
+<summary><strong>Google (Antigravity)</strong> — requires the auth plugin</summary>
 
-Requires the [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) plugin with at least one account signed in. Accounts are read from `~/.config/opencode/antigravity-accounts.json`.
+<br>
 
-For each account the plugin attempts a **live** fetch (refresh token → `fetchAvailableModels`) and falls back to the **cached** quota stored by the auth plugin if the live call fails (the cached value is labelled with its age). Multiple accounts are listed separately, each showing G3 Pro, G3 Flash, G3 Image, and Claude model quotas.
+Install [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) and sign into at least one account. Accounts are read from `~/.config/opencode/antigravity-accounts.json`. Each account attempts a live fetch and falls back to the cached quota (labelled with its age) if the live call fails. Multiple accounts render as separate cards.
+</details>
 
-### GitHub Copilot
+<details>
+<summary><strong>GitHub Copilot</strong> — optional PAT for the most reliable numbers</summary>
 
-Two authentication paths, tried in order:
+<br>
 
-**1. Fine-grained PAT (most reliable).** Create a fine-grained personal access token with **Plan → Read-only** permission at <https://github.com/settings/tokens?type=beta>, then save `~/.config/opencode/copilot-quota-token.json`:
+Two auth paths are tried in order:
 
-```json
-{ "token": "github_pat_...", "username": "YourGitHubUsername", "tier": "pro" }
-```
+1. **Fine-grained PAT (recommended).** Create a token with **Plan → Read-only** at <https://github.com/settings/tokens?type=beta>, then save `~/.config/opencode/copilot-quota-token.json`:
+   ```json
+   { "token": "github_pat_...", "username": "YourGitHubUsername", "tier": "pro" }
+   ```
+   Tiers &amp; monthly premium limits: `free` (50), `pro` (300), `pro+` (1500), `business` (300), `enterprise` (1000).
+2. **OAuth fallback** from `auth.json` → `github-copilot` (with automatic token exchange).
+</details>
 
-Valid tiers and their monthly premium-request limits: `free` (50), `pro` (300), `pro+` (1500), `business` (300), `enterprise` (1000). This uses GitHub's public billing API.
+<details>
+<summary><strong>OpenCode Go+Zen</strong> — add a workspace cookie for full quota + spend</summary>
 
-**2. OAuth from auth.json.** Falls back to the `github-copilot` OAuth token (with automatic token exchange) for accounts authenticated through OpenCode's Copilot provider. Reports Premium, Chat, and Completions breakdowns.
+<br>
 
-### OpenCode Go+Zen
-
-OpenCode Go and OpenCode Zen are merged into a single cell per account. One fetch grabs the Go dashboard, Zen billing page, and Zen usage page simultaneously:
-
-**Quota windows** (from `opencode.ai/workspace/<id>/go`):
-- 5-hour rolling window
-- Weekly window
-- Monthly window
-
-**Zen balance** (from `opencode.ai/workspace/<id>/billing`):
-- Remaining dollar balance
-- Auto-reload configuration
-- Monthly spend and limit
-- Recent payment history
-
-**Per-model spend** (from `opencode.ai/workspace/<id>/usage`):
-- Top 5 models by cost this month
-- Total spend across all models
-- Request counts per model
-
-Two auth modes, automatically selected:
-
-- **API-key probe** — With only an API key (`auth.json` → `opencode-go`), the plugin calls `GET /zen/go/v1/models` to confirm reachability and list models. Quota windows and Zen billing are not exposed by the API key endpoint alone.
-- **Dashboard scraping** — To see quotas + billing + spend together, supply a workspace ID and browser auth cookie. The plugin fetches all three pages in parallel and parses the SolidJS SSR hydration payloads.
-
-Configure one or more accounts in `~/.config/opencode/opencode-go.json`:
+With just an API key (`auth.json` → `opencode-go`) the plugin confirms reachability. To see quota windows **and** Zen balance/spend together, add a workspace ID + browser auth cookie to `~/.config/opencode/opencode-go.json`:
 
 ```json
 {
@@ -261,109 +249,69 @@ Configure one or more accounts in `~/.config/opencode/opencode-go.json`:
 }
 ```
 
-Single-account shorthand:
+Single-account shorthand `{ "workspaceId": "...", "authCookie": "..." }` or the `OPENCODE_GO_WORKSPACE_ID` / `OPENCODE_GO_AUTH_COOKIE` env vars also work.
 
-```json
-{ "workspaceId": "your_workspace_id", "authCookie": "the_auth_cookie_value" }
-```
+- **Workspace ID** — from the URL at <https://opencode.ai/workspace> (`.../workspace/<uuid>/go`).
+- **Auth cookie** — DevTools → Application → Cookies → `opencode.ai` → `auth` (expires with your browser session).
+</details>
 
-Or use environment variables `OPENCODE_GO_WORKSPACE_ID` and `OPENCODE_GO_AUTH_COOKIE`.
+<details>
+<summary><strong>Poe</strong> — auto-detected, or bring your own key</summary>
 
-**Workspace ID** — open <https://opencode.ai/workspace>, select your Go workspace, and copy the UUID from the URL (`.../workspace/<uuid>/go`).
+<br>
 
-**Auth cookie** — while logged into `opencode.ai`, open DevTools → Application → Cookies → `opencode.ai` and copy the `auth` cookie value. It expires with your browser session.
+Resolved in priority order: `auth.json` → `poe` (populated when you use a Poe model in OpenCode), then `POE_API_KEY`, then `~/.config/opencode/poe-api-key.json` (`{ "apiKey": "..." }`). Get a key at <https://poe.com/api_key>.
+</details>
 
-> **Note:** The billing and usage pages share the same auth cookie as the Go dashboard. One cookie works for all three.
+## Security &amp; privacy
 
-### Poe
+`mystatus` is **read-only** for your accounts and contacts each provider's own API only.
 
-Queries `api.poe.com/usage/current_balance` with a bearer token, resolved in priority order:
+- Credentials are read locally and sent **only** to their respective provider.
+- The only files it *writes* are local, non-sensitive helpers in `~/.config/opencode/`: a small cache (`mystatus-cache.json`) and trend history (`mystatus-history.json`).
+- Nothing is logged or transmitted anywhere else. The full source is open for review.
 
-1. `access` / `refresh` token from `auth.json` → `poe` (populated automatically when you use a Poe model in OpenCode)
-2. `POE_API_KEY` environment variable
-3. `~/.config/opencode/poe-api-key.json`:
+<details>
+<summary>Files read &amp; endpoints contacted</summary>
 
-```json
-{ "apiKey": "your_poe_api_key" }
-```
+<br>
 
-Get a key at <https://poe.com/api_key>. Output shows the monthly point balance, daily grant countdown, and USD equivalent.
-
-### Z.AI (GLM Coding Plan)
-
-Reads the API key from `auth.json` → `zai-coding-plan` (populated when you authenticate the Z.AI / GLM Coding provider in OpenCode). No additional configuration required.
-
-The plugin queries two endpoints on `api.z.ai`:
-
-- `GET /api/biz/subscription/list` — plan name, price, billing cycle, validity period, and auto-renew status
-- `GET /api/monitor/usage/quota/limit` — usage windows with percentage used, remaining, and reset timestamps, plus per-model breakdowns
-
-Reported windows map the API's unit codes to friendly labels: **Monthly** request quota (with used/total count), a **5-hour rolling** token window, and a **Weekly** token window — each with its own progress bar and reset countdown.
-
-### xAI (Grok)
-
-Reads the OAuth token from `auth.json` → `xai-oauth` (populated by the [opencode-grok-auth](https://github.com/schlambos/opencode-mystatus) plugin or similar xAI/Grok auth provider). Probes `api.x.ai/v1/models` with a bearer token to verify the auth is still valid.
-
-> **Note:** xAI does not expose a public usage, billing, or rate-limit API endpoint. The plugin can only confirm whether your auth token is still active. There is no way to programmatically check remaining Grok quota or rate limits.
-
-### MiniMax (Token Plan)
-
-Reads the Token Plan Subscription Key from `auth.json` → `minimax-coding-plan` (populated when you authenticate the MiniMax / minimax.io provider in OpenCode as an Anthropic-compatible endpoint). The key must use the `sk-cp-` prefix used by Token Plan subscriptions — the plugin validates the prefix and surfaces a clear error otherwise.
-
-Queries `GET https://api.minimax.io/v1/token_plan/remains` and reports a 5-hour rolling window and a 7-day window per bucket returned by the API.
-
-**Scope:** chat / agent text usage only. The `video` bucket is filtered out before rendering since it is out of scope for an LLM quota dashboard. Image, speech, and audio buckets are kept in the label map but are typically not returned for a Token Plan account focused on text models.
-
-No additional configuration is required beyond authenticating the provider in OpenCode.
-
-## Security & Privacy
-
-`mystatus` is read-only and makes no changes to your system or accounts.
-
-**Files read (never written):**
-
-| File | Purpose |
-|------|---------|
-| `~/.local/share/opencode/auth.json` | OpenCode's official credential store |
-| `~/.config/opencode/antigravity-accounts.json` | Antigravity plugin account store |
-| `~/.config/opencode/opencode-go.json` | OpenCode Go+Zen dashboard config (optional) |
-| `~/.config/opencode/copilot-quota-token.json` | Copilot PAT (optional) |
-| `~/.config/opencode/poe-api-key.json` | Poe API key (optional) |
-
-**Endpoints contacted (all first-party provider APIs):**
+**Read (never modified):** `~/.local/share/opencode/auth.json`, and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json` under `~/.config/opencode/`.
 
 | Provider | Endpoint(s) |
-|----------|-------------|
+|---|---|
 | OpenAI | `chatgpt.com/backend-api/wham/usage` |
 | Anthropic | `api.anthropic.com/api/oauth/usage`, `console.anthropic.com/v1/oauth/token` |
-| Google | `cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels`, `oauth2.googleapis.com/token` |
-| GitHub Copilot | `api.github.com/copilot_internal/*`, `api.github.com/users/*/settings/billing/premium_request/usage` |
-| OpenCode Go+Zen | `opencode.ai/zen/go/v1/models`, `opencode.ai/workspace/*/go`, `opencode.ai/workspace/*/billing`, `opencode.ai/workspace/*/usage` |
+| Google | `cloudcode-pa.googleapis.com/...:fetchAvailableModels`, `oauth2.googleapis.com/token` |
+| GitHub Copilot | `api.github.com/copilot_internal/*`, `api.github.com/users/*/settings/billing/...` |
+| OpenCode Go+Zen | `opencode.ai/zen/go/v1/models`, `opencode.ai/workspace/*/{go,billing,usage}` |
 | Poe | `api.poe.com/usage/current_balance` |
 | Z.AI | `api.z.ai/api/biz/subscription/list`, `api.z.ai/api/monitor/usage/quota/limit` |
-| xAI/Grok | `api.x.ai/v1/models` |
+| xAI / Grok | `api.x.ai/v1/models` |
 | MiniMax | `api.minimax.io/v1/token_plan/remains` |
+| NanoGPT | `nano-gpt.com/api/check-balance`, `nano-gpt.com/api/subscription/v1/usage` |
 
-- Credentials are read locally and sent **only** to their own provider.
-- Nothing is stored, cached, logged, or transmitted anywhere else.
-- The full source is open for review.
-
-> **Note:** Some provider usage endpoints are internal/undocumented and may change without notice. The plugin degrades gracefully — a failing platform reports an error and the others still render.
+Some usage endpoints are internal/undocumented and may change without notice; the plugin degrades gracefully when one is unavailable.
+</details>
 
 ## Development
 
 ```bash
 npm install
-npm run typecheck   # tsc --noEmit
+npm run typecheck   # tsc --noEmit (strict)
 npm run build       # tsc → dist/
 ```
 
-The plugin is a single self-contained module at `plugin/mystatus.ts`. Each platform is an independent `query*` function returning a `{ success, output | error }` result, run in parallel and collected into the final report — making it straightforward to add a new provider.
+The plugin is a single self-contained module at `plugin/mystatus.ts`. Providers are registered in one array — each is an independent `query*` function that returns a structured `ProviderCard`, so adding a new one is a small, contained change.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Credits
 
-A fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), extended with Anthropic, GitHub Copilot, OpenCode Go+Zen (merged), Poe, multi-account Google, Z.AI (GLM Coding Plan), xAI/Grok, and MiniMax (Token Plan, chat scope) support. Recent additions include visual color indicators, threshold alerts, JSON output, per-model Zen spend breakdown, and alphabetical panel sorting.
+Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, GitHub Copilot, OpenCode Go+Zen, Poe, multi-account Google, Z.AI, xAI/Grok, MiniMax, and NanoGPT.
 
 ## License
 
-MIT
+[MIT](LICENSE)

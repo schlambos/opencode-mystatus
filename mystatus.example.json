@@ -1,0 +1,49 @@
+{
+  // ────────────────────────────────────────────────────────────────────
+  //  mystatus / allstatus plugin configuration
+  //
+  //  Read by ~/.config/opencode/plugin/allstatus.ts (loadConfig).
+  //  Comments (// and /* */) and are stripped before parsing — but trailing
+  //  commas are NOT allowed. Every tool arg overrides the value here, e.g.
+  //  `mystatus sort=name trend=off`.
+  //  Reload opencode after editing for changes to take effect.
+  // ────────────────────────────────────────────────────────────────────
+
+  // Target render width in columns. Cards are a single column capped at ~68
+  // wide, so values above ~70 mainly add right margin. Leave unset to use
+  // MYSTATUS_WIDTH / COLUMNS env, then a safe default (100).
+  // "width": 100,
+
+  // Card order: "urgency" (lowest remaining first), "name", or "reset"
+  // (soonest reset first).
+  "sort": "urgency",
+
+  // Prepend a summary card (account count, status tally, lowest, soonest reset).
+  "summary": true,
+
+  // Trend line under each bar built from usage history:
+  //   "off"     — no trend line
+  //   "compact" — delta (▲/▼) + sparkline
+  //   "full"    — adds age (▼3%/30m) and a "~Xh to empty (before reset)" projection
+  // Trends need at least two recorded snapshots, so the first run shows none.
+  "trend": "full",
+
+  // Cache time-to-live in seconds for repeated calls.
+  //   0  — always fetch live; the cache is still written and used only as a
+  //        fallback when a live fetch fails (shows "cached Nm ago").
+  //   60 — serve cached results for up to a minute (fewer API calls).
+  "cacheTtlSec": 0,
+
+  // Usage history (powers trends), stored in mystatus-history.json.
+  "historyMax": 60,            // snapshots to retain (ring buffer)
+  "historyMinIntervalSec": 60, // ignore snapshots taken sooner than this
+
+  // Provider control. Ids: openai, anthropic, google, copilot, opencode-go,
+  // poe, zai, xai, minimax, nanogpt.
+  "providers": {
+    // Hide providers entirely (also via the `exclude` arg):
+    "disabled": [],
+    // Preferred ordering before the sort runs (any omitted ids keep default order):
+    "order": []
+  }
+}

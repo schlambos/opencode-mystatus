@@ -1,5 +1,5 @@
 /**
- * allstatus.ts — All-in-one AI quota status plugin for OpenCode
+ * mystatus.ts — All-in-one AI quota status plugin for OpenCode
  *
  * Platforms:
  *   - OpenAI      (ChatGPT Plus/Team/Pro)    auth.json → openai
@@ -9,20 +9,27 @@
  *   - OpenCode Go+Zen (merged cell)         shared dashboard config (workspaceId + authCookie)
  *   - Poe         (points balance)          auth.json, env var, or poe-api-key.json
  *   - Z.AI        (GLM Coding Plan)         auth.json → zai-coding-plan
- *   - xAI/Grok    (auth check only)         auth.json → xai-oauth (no usage API)
+ *   - xAI/Grok    (token-expiry check)      auth.json → xai-oauth (no usage API)
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
+ *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt
  *
  * Features:
+ *   - Responsive single-column stack of provider cards (sizes to the terminal)
+ *   - Structured quota model → per-window metrics (remaining %, reset countdown)
+ *   - Summary card: account tally, lowest window, soonest reset
+ *   - Urgency sort (lowest remaining first); also name / reset ordering
+ *   - Usage history & trends: delta, sparkline, "~Xh to empty" projection
+ *   - Cache fallback on fetch failure + retry/backoff + per-provider deadline
  *   - ANSI color-coded progress bars (red/yellow/green)
  *   - Zen per-model cost breakdown from usage page SSR
  *   - Threshold alerts for low-remaining platforms
  *   - JSON output mode for programmatic consumption
- *   - Go + Zen merged into single cell per account
+ *   - Config file (~/.config/opencode/mystatus.json) + per-call tool args
  */
 
 import { type Plugin, tool } from "@opencode-ai/plugin";
 import { readFile } from "fs/promises";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -55,9 +62,32 @@ function emojiForPercent(pct: number): string {
 // Shared types
 // ============================================================
 
+// A single quota window (the things we track, sort, and trend on).
+interface QuotaWindow {
+  label: string; // "5-hour limit", "G3 Pro", "Weekly"
+  remaining: number; // 0-100
+  resetAt?: string; // ISO timestamp
+  resetInSec?: number; // seconds-until-reset (alternative to resetAt)
+  resetText?: string; // pre-formatted countdown (e.g. Copilot "5d 3h")
+  suffix?: string; // overrides the "NN% remaining" text after the bar
+  detail?: string[]; // lines after the bar, before the reset line
+  extra?: string[]; // lines after the reset line
+  warn?: string; // a warning line shown under the label (throttled, etc.)
+}
+
+// One rendered panel. Free-form header/footer lines plus structured windows.
+interface ProviderCard {
+  subtitle?: string; // sub-account (email, "Alt 1"); composed with provider title
+  note?: string; // e.g. "(cached 3m ago)" shown at the top
+  header?: string[]; // "Account: …", "Plan: …"
+  windows?: QuotaWindow[];
+  footer?: string[]; // Zen balance, payments, model spend, etc.
+}
+
 interface QueryResult {
   success: boolean;
-  output?: string;
+  cards?: ProviderCard[]; // structured output (preferred)
+  output?: string; // legacy free-form fallback
   error?: string;
 }
 
@@ -111,6 +141,11 @@ interface MiniMaxAuthData {
   key?: string;
 }
 
+interface NanoGptAuthData {
+  type: string;
+  key?: string;
+}
+
 interface AuthData {
   openai?: OpenAIAuthData;
   anthropic?: AnthropicAuthData;
@@ -120,6 +155,7 @@ interface AuthData {
   "zai-coding-plan"?: ZaiAuthData;
   "xai-oauth"?: XaiAuthData;
   "minimax-coding-plan"?: MiniMaxAuthData;
+  "nano-gpt"?: NanoGptAuthData;
 }
 
 interface AntigravityAccount {
@@ -176,22 +212,46 @@ function formatResetAt(isoTime: string): string {
   }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const backoffDelay = (attempt: number) => 300 * 2 ** attempt + Math.floor(Math.random() * 150);
+
+// GET-style fetch with a per-attempt timeout and bounded retries. Retries on
+// 429/5xx (honoring Retry-After) and fast network errors with exponential
+// backoff + jitter. Timeouts are NOT retried (they'd multiply latency).
 async function fetchTimeout(
   url: string,
   options: RequestInit,
   ms = 10_000,
+  retries = 2,
 ): Promise<Response> {
-  const ctrl = new AbortController();
-  const id = setTimeout(() => ctrl.abort(), ms);
-  try {
-    return await fetch(url, { ...options, signal: ctrl.signal });
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError")
-      throw new Error(`Request timed out after ${ms / 1000}s`);
-    throw err;
-  } finally {
-    clearTimeout(id);
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const ctrl = new AbortController();
+    const id = setTimeout(() => ctrl.abort(), ms);
+    try {
+      const res = await fetch(url, { ...options, signal: ctrl.signal });
+      if ((res.status === 429 || res.status >= 500) && attempt < retries) {
+        const ra = Number(res.headers.get("retry-after"));
+        const wait = Number.isFinite(ra) && ra > 0 ? Math.min(ra * 1000, 5000) : backoffDelay(attempt);
+        await sleep(wait);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new Error(`Request timed out after ${ms / 1000}s`);
+      }
+      lastErr = err;
+      if (attempt < retries) {
+        await sleep(backoffDelay(attempt));
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(id);
+    }
   }
+  throw lastErr ?? new Error("fetch failed after retries");
 }
 
 // ============================================================
@@ -247,18 +307,13 @@ interface OpenAIUsage {
   rate_limit_reset_credits?: { available_count?: number } | null;
 }
 
-function formatOpenAIWindow(w: OpenAIWindowData, ansi = false): string[] {
-  const remain = Math.round(100 - w.used_percent);
+function openAIWindow(w: OpenAIWindowData): QuotaWindow {
   const sec = w.limit_window_seconds;
-  const name =
+  const label =
     sec >= 86400
       ? `${Math.round(sec / 86400)}-day limit`
       : `${Math.round(sec / 3600)}-hour limit`;
-  return [
-    name,
-    `${createProgressBar(remain, 26, ansi)} ${remain}% remaining`,
-    `Resets in: ${formatDuration(w.reset_after_seconds)}`,
-  ];
+  return { label, remaining: Math.round(100 - w.used_percent), resetInSec: w.reset_after_seconds };
 }
 
 async function queryOpenAI(auth: OpenAIAuthData | undefined, ansi = false): Promise<QueryResult | null> {
@@ -284,7 +339,8 @@ async function queryOpenAI(auth: OpenAIAuthData | undefined, ansi = false): Prom
     if (!res.ok) throw new Error(`OpenAI API error (${res.status})`);
 
     const data = (await res.json()) as OpenAIUsage;
-    const lines: string[] = [
+
+    const header: string[] = [
       `Account:        ${data.email ?? email ?? "unknown"}`,
       `Plan:           ChatGPT ${data.plan_type}`,
     ];
@@ -292,31 +348,31 @@ async function queryOpenAI(auth: OpenAIAuthData | undefined, ansi = false): Prom
     const credits = data.credits;
     if (credits) {
       if (credits.unlimited) {
-        lines.push("Credits:        unlimited");
+        header.push("Credits:        unlimited");
       } else if (credits.has_credits || (credits.balance && credits.balance !== "0")) {
-        lines.push(`Credits:        ${credits.balance ?? "?"}`);
+        header.push(`Credits:        ${credits.balance ?? "?"}`);
       }
-      if (credits.overage_limit_reached) lines.push("Overage:        \u26a0\ufe0f limit reached");
+      if (credits.overage_limit_reached) header.push("Overage:        \u26a0\ufe0f limit reached");
     }
 
-    lines.push("");
+    const windows: QuotaWindow[] = [];
+    if (data.rate_limit?.primary_window) windows.push(openAIWindow(data.rate_limit.primary_window));
+    if (data.rate_limit?.secondary_window) windows.push(openAIWindow(data.rate_limit.secondary_window));
 
-    if (data.rate_limit?.primary_window)
-      lines.push(...formatOpenAIWindow(data.rate_limit.primary_window, ansi));
-    if (data.rate_limit?.secondary_window)
-      lines.push("", ...formatOpenAIWindow(data.rate_limit.secondary_window, ansi));
-
+    const footer: string[] = [];
     if (data.rate_limit?.limit_reached) {
       const reason = data.rate_limit_reached_type?.type
         ? ` (${data.rate_limit_reached_type.type})`
         : "";
-      lines.push("", `\u26a0\ufe0f Rate limit reached!${reason}`);
+      footer.push(`\u26a0\ufe0f Rate limit reached!${reason}`);
       const resetCredits = data.rate_limit_reset_credits?.available_count ?? 0;
-      if (resetCredits > 0)
-        lines.push(`Reset credits available: ${resetCredits}`);
+      if (resetCredits > 0) footer.push(`Reset credits available: ${resetCredits}`);
     }
 
-    return { success: true, output: lines.join("\n") };
+    return {
+      success: true,
+      cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+    };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -357,13 +413,8 @@ const ANTHROPIC_MODEL_WINDOWS: Array<{ key: keyof AnthropicUsageResponse; label:
   { key: "seven_day_cowork", label: "7-day (Cowork)" },
 ];
 
-function formatAnthropicWindow(label: string, w: AnthropicWindow, ansi = false): string[] {
-  const remain = Math.round(100 - w.utilization);
-  return [
-    label,
-    `${createProgressBar(remain, 26, ansi)} ${remain}% remaining`,
-    `Resets in: ${formatResetAt(w.resets_at)}`,
-  ];
+function anthropicWindow(label: string, w: AnthropicWindow): QuotaWindow {
+  return { label, remaining: Math.round(100 - w.utilization), resetAt: w.resets_at };
 }
 
 async function refreshAnthropicToken(refreshToken: string): Promise<string | null> {
@@ -425,45 +476,42 @@ async function queryAnthropic(auth: AnthropicAuthData | undefined, ansi = false)
 
     const data = (await res.json()) as AnthropicUsageResponse;
 
-    const lines: string[] = ["Account:        Claude Pro/Max", ""];
+    const header = ["Account:        Claude Pro/Max"];
+    const windows: QuotaWindow[] = [];
 
-    if (data.five_hour) {
-      lines.push(...formatAnthropicWindow("5-hour limit", data.five_hour, ansi));
-    }
-
-    if (data.seven_day) {
-      if (lines.length > 2) lines.push("");
-      lines.push(...formatAnthropicWindow("7-day limit", data.seven_day, ansi));
-    }
+    if (data.five_hour) windows.push(anthropicWindow("5-hour limit", data.five_hour));
+    if (data.seven_day) windows.push(anthropicWindow("7-day limit", data.seven_day));
 
     for (const { key, label } of ANTHROPIC_MODEL_WINDOWS) {
       const w = data[key] as AnthropicWindow | null | undefined;
-      if (w && typeof w.utilization === "number") {
-        lines.push("", ...formatAnthropicWindow(label, w, ansi));
-      }
+      if (w && typeof w.utilization === "number") windows.push(anthropicWindow(label, w));
     }
 
+    const footer: string[] = [];
     const extra = data.extra_usage;
     if (extra?.is_enabled) {
       const cur = extra.currency ?? "USD";
       const used = extra.used_credits ?? 0;
       const limit = extra.monthly_limit;
-      lines.push("", "Extra usage (overage)");
+      footer.push("Extra usage (overage)");
       if (typeof limit === "number" && limit > 0) {
         const util = Math.round(extra.utilization ?? (used / limit) * 100);
         const remain = Math.max(0, 100 - util);
-        lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
-        lines.push(`Used: ${used}/${limit} ${cur}`);
+        footer.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
+        footer.push(`Used: ${used}/${limit} ${cur}`);
       } else {
-        lines.push(`Used: ${used} ${cur}`);
+        footer.push(`Used: ${used} ${cur}`);
       }
     }
 
     if (!data.five_hour && !data.seven_day) {
-      lines.push("(No rolling-window limits found \u2014 may be API-key plan or unlimited)");
+      footer.push("(No rolling-window limits found \u2014 may be API-key plan or unlimited)");
     }
 
-    return { success: true, output: lines.join("\n") };
+    return {
+      success: true,
+      cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+    };
   } catch (err) {
     return {
       success: false,
@@ -575,11 +623,12 @@ async function queryGoogle(ansi = false): Promise<QueryResult> {
     if (!accounts.length)
       return { success: true, output: "No enabled Google accounts found." };
 
-    const outputs: string[] = [];
+    const cards: ProviderCard[] = [];
 
     for (const account of accounts) {
-      const lines: string[] = [`### ${account.email}`];
       const ua = account.fingerprint?.userAgent ?? "antigravity/1.23.2 windows/amd64";
+      const windows: QuotaWindow[] = [];
+      let note: string | undefined;
 
       let usedLive = false;
       try {
@@ -588,19 +637,16 @@ async function queryGoogle(ansi = false): Promise<QueryResult> {
         const liveData = await fetchGoogleLiveQuota(accessToken, projectId, ua);
 
         if (liveData?.models) {
-          let firstLive = true;
           for (const model of GOOGLE_LIVE_MODELS) {
             const info =
               liveData.models[model.key] ??
               (model.altKey ? liveData.models[model.altKey] : undefined);
             if (info) {
-              if (!firstLive) lines.push("");
-              firstLive = false;
-              const remain = Math.round((info.quotaInfo?.remainingFraction ?? 0) * 100);
-              const reset = formatResetAt(info.quotaInfo?.resetTime ?? "");
-              lines.push(model.display);
-              lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
-              lines.push(`Resets in: ${reset}`);
+              windows.push({
+                label: model.display,
+                remaining: Math.round((info.quotaInfo?.remainingFraction ?? 0) * 100),
+                resetAt: info.quotaInfo?.resetTime,
+              });
             }
           }
           usedLive = true;
@@ -609,27 +655,23 @@ async function queryGoogle(ansi = false): Promise<QueryResult> {
       }
 
       if (!usedLive && account.cachedQuota) {
-        const age = formatCachedAgeMinutes(account.cachedQuotaUpdatedAt);
-        lines.push("", `*(cached${age})*`);
-        let firstCached = true;
+        note = `cached${formatCachedAgeMinutes(account.cachedQuotaUpdatedAt)}`;
         for (const group of GOOGLE_CACHED_GROUPS) {
           const info = account.cachedQuota[group.key];
           if (info) {
-            if (!firstCached) lines.push("");
-            firstCached = false;
-            const remain = Math.round(info.remainingFraction * 100);
-            const reset = formatResetAt(info.resetTime);
-            lines.push(group.display);
-            lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
-            lines.push(`Resets in: ${reset}`);
+            windows.push({
+              label: group.display,
+              remaining: Math.round(info.remainingFraction * 100),
+              resetAt: info.resetTime,
+            });
           }
         }
       }
 
-      outputs.push(lines.join("\n"));
+      cards.push({ subtitle: account.email, note, windows });
     }
 
-    return { success: true, output: outputs.join("\n\n") };
+    return { success: true, cards };
   } catch (err) {
     return {
       success: false,
@@ -698,21 +740,11 @@ function readCopilotPAT(): CopilotPATConfig | null {
   }
 }
 
-function formatCopilotQuotaLine(label: string, q: CopilotQuotaDetail, ansi = false): string[] {
-  if (q.unlimited) {
-    return [
-      label,
-      `${createProgressBar(100, 26, ansi)} 100% remaining`,
-      "Used: Unlimited",
-    ];
-  }
+function copilotWindow(label: string, q: CopilotQuotaDetail): QuotaWindow {
+  if (q.unlimited) return { label, remaining: 100, detail: ["Used: Unlimited"] };
   const pct = Math.round(q.percent_remaining);
   const used = q.entitlement - q.remaining;
-  return [
-    label,
-    `${createProgressBar(pct, 26, ansi)} ${pct}% remaining`,
-    `Used: ${used} / ${q.entitlement}`,
-  ];
+  return { label, remaining: pct, detail: [`Used: ${used} / ${q.entitlement}`] };
 }
 
 function copilotResetCountdown(date: string): string {
@@ -806,16 +838,18 @@ async function queryCopilot(auth: CopilotAuthData | undefined, ansi = false): Pr
         ? `${billing.timePeriod.year}-${String(billing.timePeriod.month).padStart(2, "0")}`
         : String(billing.timePeriod.year);
 
-      const lines = [
-        `Account:        GitHub Copilot (@${billing.user})`,
-        "",
-        "Premium",
-        `${createProgressBar(pct, 26, ansi)} ${pct}% remaining`,
-        `Used: ${totalUsed} / ${limit}`,
-        "",
-        `Billing period: ${period}`,
-      ];
-      return { success: true, output: lines.join("\n") };
+      return {
+        success: true,
+        cards: [
+          {
+            header: [`Account:        GitHub Copilot (@${billing.user})`],
+            windows: [
+              { label: "Premium", remaining: pct, detail: [`Used: ${totalUsed} / ${limit}`] },
+            ],
+            footer: [`Billing period: ${period}`],
+          },
+        ],
+      };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
@@ -827,20 +861,23 @@ async function queryCopilot(auth: CopilotAuthData | undefined, ansi = false): Pr
     const raw = await queryCopilotViaOAuth(auth);
     const data = JSON.parse(raw) as CopilotUsageData;
     const snaps = data.quota_snapshots;
-    const lines = [
-      `Account:        GitHub Copilot (${data.copilot_plan})`,
-      "",
-      ...formatCopilotQuotaLine("Premium", snaps.premium_interactions, ansi),
-    ];
-    if (snaps.chat && !snaps.chat.unlimited)
-      lines.push(...formatCopilotQuotaLine("Chat", snaps.chat, ansi));
+
+    const windows: QuotaWindow[] = [copilotWindow("Premium", snaps.premium_interactions)];
+    if (snaps.chat && !snaps.chat.unlimited) windows.push(copilotWindow("Chat", snaps.chat));
     if (snaps.completions && !snaps.completions.unlimited)
-      lines.push(...formatCopilotQuotaLine("Completions", snaps.completions, ansi));
+      windows.push(copilotWindow("Completions", snaps.completions));
+
+    const footer: string[] = [];
     if (snaps.premium_interactions.overage_count)
-      lines.push("", `Overage: ${snaps.premium_interactions.overage_count} requests`);
-    const cd = copilotResetCountdown(data.quota_reset_date);
-    lines.push("", `Resets in: ${cd}`);
-    return { success: true, output: lines.join("\n") };
+      footer.push(`Overage: ${snaps.premium_interactions.overage_count} requests`, "");
+    footer.push(`Resets in: ${copilotResetCountdown(data.quota_reset_date)}`);
+
+    return {
+      success: true,
+      cards: [
+        { header: [`Account:        GitHub Copilot (${data.copilot_plan})`], windows, footer },
+      ],
+    };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -1102,28 +1139,24 @@ async function queryOpenCodeGoZenSingle(config: OpenCodeGoConfig, ansi = false):
       fetchTimeout(base + OPENCODE_ZEN_USAGE_SUFFIX, { headers }),
     ]);
 
-    const lines: string[] = [`### ${label}`];
+    const windows: QuotaWindow[] = [];
 
     // Go quota windows
     if (goRes.ok) {
       const goHtml = await goRes.text();
-      const now = Date.now();
-      let hasGoData = false;
       for (const pattern of GO_SCRAPE_PATTERNS) {
         const data = parseGoWindow(goHtml, pattern);
         if (!data) continue;
-        if (hasGoData) lines.push("");
-        hasGoData = true;
-        const remain = Math.round(100 - Math.max(0, data.usagePercent));
-        const resetSec = Math.max(0, data.resetInSec);
-        const resetAt = new Date(now + resetSec * 1000).toISOString();
-        lines.push(pattern.label);
-        lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
-        lines.push(`Resets in: ${formatResetAt(resetAt)}`);
+        windows.push({
+          label: pattern.label,
+          remaining: Math.round(100 - Math.max(0, data.usagePercent)),
+          resetInSec: Math.max(0, data.resetInSec),
+        });
       }
     }
 
-    // Zen balance
+    // Zen balance / spend footer
+    const footer: string[] = [];
     let billing: ReturnType<typeof parseZenBillingHtml> = null;
     let billingHtml = "";
     if (billingRes.ok) {
@@ -1135,26 +1168,25 @@ async function queryOpenCodeGoZenSingle(config: OpenCodeGoConfig, ansi = false):
       const balanceUsd = billing.balance / ZEN_UNITS_PER_DOLLAR;
       const monthlyUsd = billing.monthlyUsage / ZEN_UNITS_PER_DOLLAR;
 
-      if (lines.length > 1) lines.push("");
-      lines.push(`Zen balance:    $${balanceUsd.toFixed(2)}`);
+      footer.push(`Zen balance:    $${balanceUsd.toFixed(2)}`);
 
       if (billing.paymentMethodType) {
-        lines.push(`Payment:        ${zenPaymentLabel(billing.paymentMethodType, billing.paymentMethodLast4)}`);
+        footer.push(`Payment:        ${zenPaymentLabel(billing.paymentMethodType, billing.paymentMethodLast4)}`);
       }
 
       if (billing.monthlyLimit !== null && billing.monthlyLimit > 0) {
         const limitUsd = billing.monthlyLimit / ZEN_UNITS_PER_DOLLAR;
         const pct = Math.max(0, Math.min(100, Math.round((monthlyUsd / limitUsd) * 100)));
         const remain = 100 - pct;
-        lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% of $${limitUsd.toFixed(0)}/mo`);
+        footer.push(`${createProgressBar(remain, 26, ansi)} ${remain}% of $${limitUsd.toFixed(0)}/mo`);
       } else {
-        lines.push(`Monthly spend:  $${monthlyUsd.toFixed(2)}`);
+        footer.push(`Monthly spend:  $${monthlyUsd.toFixed(2)}`);
       }
 
       const payments = parseZenPayments(billingHtml);
       if (payments.length > 0) {
         const latest = payments.slice(0, 2);
-        lines.push("Payments:       " + latest.map((p) => `+$${p.amountUsd.toFixed(2)}`).join(", "));
+        footer.push("Payments:       " + latest.map((p) => `+$${p.amountUsd.toFixed(2)}`).join(", "));
       }
 
       // Zen per-model cost breakdown
@@ -1164,22 +1196,25 @@ async function queryOpenCodeGoZenSingle(config: OpenCodeGoConfig, ansi = false):
         if (modelCosts.length > 0) {
           const top = modelCosts.slice(0, 5);
           const totalCost = modelCosts.reduce((s, m) => s + m.costUsd, 0);
-          lines.push("", `Zen spend:      $${totalCost.toFixed(2)} across ${modelCosts.length} models`);
+          footer.push("", `Zen spend:      $${totalCost.toFixed(2)} across ${modelCosts.length} models`);
           for (const m of top) {
-            lines.push(`  ${m.model.padEnd(22)} $${m.costUsd.toFixed(4)} (${m.requests})`);
+            footer.push(`  ${m.model.padEnd(22)} $${m.costUsd.toFixed(4)} (${m.requests})`);
           }
         }
       }
     }
 
-    if (lines.length === 1) {
+    if (windows.length === 0 && footer.length === 0) {
       return {
         success: false,
         error: `${label}: could not parse any dashboard data.`,
       };
     }
 
-    return { success: true, output: lines.join("\n") };
+    return {
+      success: true,
+      cards: [{ subtitle: label, windows, footer: footer.length ? footer : undefined }],
+    };
   } catch (err) {
     return {
       success: false,
@@ -1197,19 +1232,30 @@ async function queryOpenCodeGoZen(auth: OpenCodeGoAuthData | undefined, ansi = f
 
   const results = await Promise.all(configs.map((c) => queryOpenCodeGoZenSingle(c, ansi)));
 
-  const successes = results.filter((r) => r.success && r.output);
-  const failures = results.filter((r) => !r.success && r.error);
-
-  if (successes.length === 0 && failures.length > 0) {
-    return { success: false, error: failures.map((r) => r.error).join("\n\n") };
+  const cards: ProviderCard[] = [];
+  const failures: string[] = [];
+  for (const r of results) {
+    if (r.success && r.cards?.length) cards.push(...r.cards);
+    else if (r.error) failures.push(r.error);
   }
 
-  const output = successes.map((r) => r.output).join("\n\n");
-  const errorTail = failures.length > 0
-    ? `\n\n\u26a0\ufe0f Some accounts failed:\n${failures.map((r) => r.error).join("\n")}`
-    : "";
+  if (cards.length === 0) {
+    return failures.length > 0
+      ? { success: false, error: failures.join("\n\n") }
+      : { success: true, cards: [] };
+  }
 
-  return { success: true, output: output + errorTail };
+  // Surface any partial failures as a trailing note on the last card.
+  if (failures.length > 0) {
+    const last = cards[cards.length - 1];
+    last.footer = [
+      ...(last.footer ?? []),
+      "",
+      `\u26a0\ufe0f Some accounts failed: ${failures.join("; ")}`,
+    ];
+  }
+
+  return { success: true, cards };
 }
 
 // ============================================================
@@ -1270,30 +1316,35 @@ async function queryPoe(auth: PoeAuthData | undefined, ansi = false): Promise<Qu
     }
     const balance = (await balanceRes.json()) as PoeBalanceResponse;
 
-    const lines: string[] = [];
-
     const monthlyGrant = balance.next_monthly_grant_amount ?? 0;
 
     const usd = balance.total_balance_usd ? ` ($${balance.total_balance_usd} USD)` : "";
-    lines.push(`Balance:        ${balance.current_point_balance ?? "?"} pts${usd}`);
+    const header: string[] = [`Balance:        ${balance.current_point_balance ?? "?"} pts${usd}`];
 
     const daily = formatPoeTimestamp(balance.next_daily_grant_time);
-    if (daily) lines.push(`Daily grant:    +${balance.next_daily_grant_amount ?? "?"} (Resets in: ${daily})`);
+    if (daily) header.push(`Daily grant:    +${balance.next_daily_grant_amount ?? "?"} (Resets in: ${daily})`);
 
+    const windows: QuotaWindow[] = [];
     if (monthlyGrant > 0) {
       const currentPts = balance.current_point_balance ?? 0;
       const remainPct = Math.round((currentPts / monthlyGrant) * 100);
-      lines.push("", "Monthly");
-      lines.push(`${createProgressBar(remainPct, 26, ansi)} ${remainPct}% remaining`);
-      lines.push(`Points: ${currentPts} / ${monthlyGrant}`);
       const monthly = formatPoeTimestamp(balance.next_monthly_grant_time);
-      if (monthly) lines.push(`Resets in: ${monthly}`);
+      windows.push({
+        label: "Monthly",
+        remaining: remainPct,
+        detail: [`Points: ${currentPts} / ${monthlyGrant}`],
+        resetText: monthly ?? undefined,
+      });
     }
 
+    const footer: string[] = [];
     if (typeof balance.addon_point_balance === "number" && balance.addon_point_balance > 0)
-      lines.push("", `Add-on points:  ${balance.addon_point_balance}`);
+      footer.push(`Add-on points:  ${balance.addon_point_balance}`);
 
-    return { success: true, output: lines.join("\n") };
+    return {
+      success: true,
+      cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+    };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -1364,6 +1415,16 @@ interface ZaiSubscriptionResponse {
   success: boolean;
 }
 
+// Robustly convert Z.AI's nextResetTime (epoch s or ms; may be missing/NaN) to
+// an ISO string. Returns undefined instead of throwing on bad input — this is
+// the fix for the long-standing "Invalid Date" failure that killed the card.
+function zaiResetAt(raw: number | null | undefined): string | undefined {
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return undefined;
+  const ms = raw < 1e12 ? raw * 1000 : raw; // seconds vs milliseconds heuristic
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
 async function queryZai(auth: ZaiAuthData | undefined, ansi = false): Promise<QueryResult | null> {
   if (!auth?.key) return null;
 
@@ -1413,43 +1474,47 @@ async function queryZai(auth: ZaiAuthData | undefined, ansi = false): Promise<Qu
       }
     }
 
-    const lines: string[] = [`Plan:           ${planLabel}`];
-    if (priceLine) lines.push(priceLine);
-    if (validityLine) lines.push(validityLine);
-    if (renewalLine) lines.push(renewalLine);
+    const header: string[] = [`Plan:           ${planLabel}`];
+    if (priceLine) header.push(priceLine);
+    if (validityLine) header.push(validityLine);
+    if (renewalLine) header.push(renewalLine);
 
     const limits = [...quota.data.limits].sort((a, b) => {
       const weight = (u: number) => (u === 3 ? 1 : u === 6 ? 2 : u === 5 ? 3 : 99);
       return weight(a.unit) - weight(b.unit);
     });
+
+    const windows: QuotaWindow[] = [];
     for (const limit of limits) {
       const remain = Math.round(100 - Math.max(0, Math.min(100, limit.percentage)));
-      const label = zaiUnitLabel(limit.unit, limit.number);
 
-      lines.push("", label);
-
-      if (limit.type === "TIME_LIMIT" && typeof limit.remaining === "number" && typeof limit.usage === "number") {
-        const total = limit.remaining + limit.usage;
-        lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
-        lines.push(`Used: ${limit.usage} / ${total}`);
-      } else {
-        lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
+      const detail: string[] = [];
+      if (
+        limit.type === "TIME_LIMIT" &&
+        typeof limit.remaining === "number" &&
+        typeof limit.usage === "number"
+      ) {
+        detail.push(`Used: ${limit.usage} / ${limit.remaining + limit.usage}`);
       }
 
-      const resetAt = new Date(limit.nextResetTime).toISOString();
-      lines.push(`Resets in: ${formatResetAt(resetAt)}`);
-
+      const extra: string[] = [];
       if (limit.usageDetails?.length) {
         const withUsage = limit.usageDetails.filter((d) => d.usage > 0);
         if (withUsage.length) {
-          lines.push(
-            "  " + withUsage.map((d) => `${d.modelCode}: ${d.usage}`).join(", "),
-          );
+          extra.push("  " + withUsage.map((d) => `${d.modelCode}: ${d.usage}`).join(", "));
         }
       }
+
+      windows.push({
+        label: zaiUnitLabel(limit.unit, limit.number),
+        remaining: remain,
+        resetAt: zaiResetAt(limit.nextResetTime),
+        detail,
+        extra,
+      });
     }
 
-    return { success: true, output: lines.join("\n") };
+    return { success: true, cards: [{ header, windows }] };
   } catch (err) {
     return {
       success: false,
@@ -1478,13 +1543,13 @@ async function queryXai(auth: XaiAuthData | undefined): Promise<QueryResult | nu
 
     if (!res.ok) throw new Error(`xAI API error (${res.status})`);
 
-    return {
-      success: true,
-      output: [
-        "Auth:           valid",
-        "Usage API:      xAI does not expose a public usage endpoint",
-      ].join("\n"),
-    };
+    const header = ["Auth:           valid"];
+    if (typeof auth.expires === "number" && auth.expires > Date.now()) {
+      header.push(`Token expires:  ${formatDuration(Math.floor((auth.expires - Date.now()) / 1000))}`);
+    }
+    header.push("Usage API:      xAI does not expose a public usage endpoint");
+
+    return { success: true, cards: [{ header }] };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -1546,7 +1611,7 @@ function minimaxResetSeconds(raw: number | undefined): number | undefined {
   return Math.floor(raw);
 }
 
-function formatMiniMaxWindow(
+function minimaxWindow(
   bucketName: string,
   kind: "interval" | "weekly",
   pct: number | undefined,
@@ -1554,27 +1619,21 @@ function formatMiniMaxWindow(
   total: number | undefined,
   resetRaw: number | undefined,
   status: number | undefined,
-  ansi: boolean,
-): string[] {
+): QuotaWindow {
   const remain = Math.max(0, Math.min(100, Math.round(pct ?? 100)));
-  const title = minimaxWindowLabel(bucketName, kind);
   const throttled = status !== undefined && status !== 1;
-  const lines: string[] = [title];
-
-  if (throttled) lines.push(`\u26a0\ufe0f throttled (status=${status})`);
-
-  lines.push(`${createProgressBar(remain, 26, ansi)} ${remain}% remaining`);
-
+  const detail: string[] = [];
   if (typeof total === "number" && total > 0 && typeof used === "number") {
-    lines.push(`Used: ${used} / ${total}`);
+    detail.push(`Used: ${used} / ${total}`);
   }
-
   const resetSec = minimaxResetSeconds(resetRaw);
-  if (resetSec !== undefined && resetSec > 0) {
-    lines.push(`Resets in: ${formatDuration(resetSec)}`);
-  }
-
-  return lines;
+  return {
+    label: minimaxWindowLabel(bucketName, kind),
+    remaining: remain,
+    warn: throttled ? `\u26a0\ufe0f throttled (status=${status})` : undefined,
+    detail,
+    resetInSec: resetSec !== undefined && resetSec > 0 ? resetSec : undefined,
+  };
 }
 
 function minimaxBucketSortKey(name: string): number {
@@ -1632,45 +1691,40 @@ async function queryMiniMax(
     if (buckets.length === 0) {
       return {
         success: true,
-        output: [
-          "Account:        MiniMax Token Plan",
-          "",
-          "Plan:           Token Plan (no active buckets returned)",
-        ].join("\n"),
+        cards: [{ header: ["Plan:           Token Plan (no active buckets returned)"] }],
       };
     }
 
-    const cells: string[] = [];
+    const multi = buckets.length > 1;
+    const cards: ProviderCard[] = [];
     for (const b of buckets) {
       const name = b.model_name!;
-
-      const intervalLines = formatMiniMaxWindow(
-        name,
-        "interval",
-        b.current_interval_remaining_percent,
-        b.current_interval_usage_count,
-        b.current_interval_total_count,
-        b.remains_time,
-        b.current_interval_status,
-        ansi,
-      );
-
-      const weeklyLines = formatMiniMaxWindow(
-        name,
-        "weekly",
-        b.current_weekly_remaining_percent,
-        b.current_weekly_usage_count,
-        b.current_weekly_total_count,
-        b.weekly_remains_time,
-        b.current_weekly_status,
-        ansi,
-      );
-
-      const block = [`### ${name}`, ...intervalLines, "", ...weeklyLines].join("\n");
-      cells.push(block);
+      cards.push({
+        subtitle: multi ? name : undefined,
+        windows: [
+          minimaxWindow(
+            name,
+            "interval",
+            b.current_interval_remaining_percent,
+            b.current_interval_usage_count,
+            b.current_interval_total_count,
+            b.remains_time,
+            b.current_interval_status,
+          ),
+          minimaxWindow(
+            name,
+            "weekly",
+            b.current_weekly_remaining_percent,
+            b.current_weekly_usage_count,
+            b.current_weekly_total_count,
+            b.weekly_remains_time,
+            b.current_weekly_status,
+          ),
+        ],
+      });
     }
 
-    return { success: true, output: cells.join("\n\n") };
+    return { success: true, cards };
   } catch (err) {
     return {
       success: false,
@@ -1680,13 +1734,175 @@ async function queryMiniMax(
 }
 
 // ============================================================
+// NanoGPT (nano-gpt.com)
+// ============================================================
+//
+//   Balance:       POST /api/check-balance          → usd_balance, nano_balance
+//   Subscription:  GET  /api/subscription/v1/usage  → metered allowances
+//   Auth:          x-api-key: sk-nano-…
+//   Subscription windows expose used/remaining/percentUsed (fraction) and a
+//   per-window resetAt (epoch ms); pay-as-you-go accounts only show balance.
+
+const NANOGPT_BASE_URL = "https://nano-gpt.com";
+
+interface NanoGptBalance {
+  usd_balance?: string;
+  nano_balance?: string;
+}
+
+interface NanoGptSubWindow {
+  used?: number;
+  remaining?: number;
+  percentUsed?: number; // fraction 0-1
+  resetAt?: number; // epoch ms
+}
+
+interface NanoGptSubscription {
+  active?: boolean;
+  provider?: string;
+  cancelAtPeriodEnd?: boolean;
+  limits?: {
+    weeklyInputTokens?: number | null;
+    dailyInputTokens?: number | null;
+    dailyImages?: number | null;
+  };
+  period?: { currentPeriodEnd?: string };
+  weeklyInputTokens?: NanoGptSubWindow | null;
+  dailyInputTokens?: NanoGptSubWindow | null;
+  dailyImages?: NanoGptSubWindow | null;
+}
+
+function nanoGptResetAt(ms: number | undefined): string | undefined {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return undefined;
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
+function humanCount(n: number): string {
+  if (!Number.isFinite(n)) return String(n);
+  const abs = Math.abs(n);
+  const trim = (v: number, dp: number) => v.toFixed(dp).replace(/\.0$/, "");
+  if (abs >= 1e9) return trim(n / 1e9, abs >= 1e10 ? 0 : 1) + "B";
+  if (abs >= 1e6) return trim(n / 1e6, abs >= 1e7 ? 0 : 1) + "M";
+  if (abs >= 1e3) return trim(n / 1e3, abs >= 1e4 ? 0 : 1) + "K";
+  return String(n);
+}
+
+function nanoGptWindow(
+  label: string,
+  w: NanoGptSubWindow | null | undefined,
+  limit: number | null | undefined,
+  unit: "tokens" | "images",
+): QuotaWindow | null {
+  if (!w) return null;
+  const used = w.used ?? 0;
+  const remaining = w.remaining ?? 0;
+  const total = typeof limit === "number" && limit > 0 ? limit : used + remaining;
+
+  let remainPct: number;
+  if (total > 0) remainPct = Math.round((remaining / total) * 100);
+  else if (typeof w.percentUsed === "number") remainPct = Math.round(100 - w.percentUsed * 100);
+  else remainPct = 100;
+
+  const fmt = unit === "tokens" ? humanCount : (x: number) => String(x);
+  return {
+    label,
+    remaining: remainPct,
+    resetAt: nanoGptResetAt(w.resetAt),
+    detail: total > 0 ? [`Used: ${fmt(used)} / ${fmt(total)}`] : [`Used: ${fmt(used)}`],
+  };
+}
+
+async function queryNanoGpt(
+  auth: NanoGptAuthData | undefined,
+  ansi = false,
+): Promise<QueryResult | null> {
+  if (!auth?.key) return null;
+
+  try {
+    const headers: Record<string, string> = {
+      "x-api-key": auth.key,
+      "Content-Type": "application/json",
+      "User-Agent": "OpenCode-AllStatus/1.0",
+    };
+
+    const [balRes, subRes] = await Promise.all([
+      fetchTimeout(`${NANOGPT_BASE_URL}/api/check-balance`, { method: "POST", headers }),
+      fetchTimeout(`${NANOGPT_BASE_URL}/api/subscription/v1/usage`, { method: "GET", headers }),
+    ]);
+
+    if (!balRes.ok) {
+      const body = await balRes.text().catch(() => "");
+      throw new Error(`NanoGPT balance API error (${balRes.status}): ${body.slice(0, 200)}`);
+    }
+    const bal = (await balRes.json()) as NanoGptBalance;
+
+    const header: string[] = [];
+    const usd = Number(bal.usd_balance ?? "0");
+    header.push(`Balance:        $${(Number.isFinite(usd) ? usd : 0).toFixed(2)}`);
+    const nano = Number(bal.nano_balance ?? "0");
+    if (Number.isFinite(nano) && nano > 0) header.push(`Nano (XNO):     ${nano.toFixed(4)}`);
+
+    let sub: NanoGptSubscription | null = null;
+    if (subRes.ok) {
+      try {
+        sub = (await subRes.json()) as NanoGptSubscription;
+      } catch {
+        /* no subscription body */
+      }
+    }
+
+    const windows: QuotaWindow[] = [];
+    const footer: string[] = [];
+
+    if (sub?.active) {
+      header.push(`Plan:           Subscription${sub.provider ? ` (${sub.provider})` : ""}`);
+      const built = [
+        nanoGptWindow("Weekly input tokens", sub.weeklyInputTokens, sub.limits?.weeklyInputTokens, "tokens"),
+        nanoGptWindow("Daily input tokens", sub.dailyInputTokens, sub.limits?.dailyInputTokens, "tokens"),
+        nanoGptWindow("Daily images", sub.dailyImages, sub.limits?.dailyImages, "images"),
+      ];
+      for (const w of built) if (w) windows.push(w);
+
+      const end = sub.period?.currentPeriodEnd;
+      if (end) footer.push(`${sub.cancelAtPeriodEnd ? "Ends" : "Renews"}:         ${formatResetAt(end)}`);
+    } else {
+      header.push("Plan:           Pay-as-you-go");
+    }
+
+    return {
+      success: true,
+      cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+    };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ============================================================
 // Grid rendering
 // ============================================================
+
+interface WindowMetric {
+  cellTitle: string;
+  label: string;
+  remaining: number; // 0-100
+  resetMs?: number; // ms until reset
+}
 
 interface GridCell {
   title: string;
   lines: string[];
+  metrics?: WindowMetric[];
 }
+
+// Annotation hook: returns a trend line to insert under a window's bar.
+type TrendFn = (
+  cellTitle: string,
+  label: string,
+  remaining: number,
+  resetMs: number | undefined,
+) => string | null;
 
 function shortProvider(title: string): string {
   return title.replace(/ (Account Quota|Coding Plan)$/i, "");
@@ -1700,13 +1916,105 @@ function cellTitle(providerTitle: string, subTitle: string): string {
   return `${short} \u2014 ${subTitle}`;
 }
 
+// Parse a "5d 2h 30m" / "4h" / "10m" / "now" / "resetting" countdown back to ms.
+function parseResetToMs(text: string | undefined): number | undefined {
+  if (!text) return undefined;
+  const t = text.trim().toLowerCase();
+  if (t === "resetting" || t === "now" || t === "resets soon") return 0;
+  let ms = 0;
+  let matched = false;
+  const re = /(\d+)\s*([dhm])/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t)) !== null) {
+    matched = true;
+    const n = Number(m[1]);
+    ms += m[2] === "d" ? n * 86_400_000 : m[2] === "h" ? n * 3_600_000 : n * 60_000;
+  }
+  return matched ? ms : undefined;
+}
+
+// Resolve a window's countdown text + ms-until-reset from whatever it carries.
+function windowReset(w: QuotaWindow): { text?: string; ms?: number } {
+  if (w.resetText) return { text: w.resetText, ms: parseResetToMs(w.resetText) };
+  if (w.resetAt) {
+    const ms = new Date(w.resetAt).getTime() - Date.now();
+    if (!Number.isFinite(ms)) return {};
+    if (ms <= 0) return { text: "resetting", ms: 0 };
+    return { text: formatDuration(Math.floor(ms / 1000)), ms };
+  }
+  if (typeof w.resetInSec === "number" && Number.isFinite(w.resetInSec)) {
+    const s = Math.max(0, w.resetInSec);
+    return { text: s <= 0 ? "resetting" : formatDuration(Math.floor(s)), ms: s * 1000 };
+  }
+  return {};
+}
+
+// Render a structured card into grid-cell lines + window metrics.
+function cardToCell(
+  card: ProviderCard,
+  providerTitle: string,
+  ansi: boolean,
+  trend?: TrendFn,
+): GridCell {
+  const title = card.subtitle ? cellTitle(providerTitle, card.subtitle) : providerTitle;
+  const lines: string[] = [];
+  const metrics: WindowMetric[] = [];
+
+  if (card.note) lines.push(ansi ? `${ANSI_DIM}${card.note}${ANSI_RESET}` : card.note);
+  if (card.header?.length) lines.push(...card.header);
+
+  let needBlank = lines.length > 0; // separate header/note from first window
+  for (const w of card.windows ?? []) {
+    if (needBlank) lines.push("");
+    needBlank = true;
+
+    if (w.label) lines.push(w.label);
+    if (w.warn) lines.push(w.warn);
+
+    const remain = Math.max(0, Math.min(100, Math.round(w.remaining)));
+    const suffix = w.suffix ?? `${remain}% remaining`;
+    lines.push(`${createProgressBar(remain, 26, ansi)} ${suffix}`);
+
+    const { text: resetText, ms: resetMs } = windowReset(w);
+
+    if (trend) {
+      const annotation = trend(title, w.label, remain, resetMs);
+      if (annotation) lines.push(annotation);
+    }
+
+    if (w.detail?.length) lines.push(...w.detail);
+    if (resetText) lines.push(`Resets in: ${resetText}`);
+    if (w.extra?.length) lines.push(...w.extra);
+
+    if (w.label) metrics.push({ cellTitle: title, label: w.label, remaining: remain, resetMs });
+  }
+
+  if (card.footer?.length) {
+    if (lines.length > 0) lines.push("");
+    lines.push(...card.footer);
+  }
+
+  return { title, lines, metrics };
+}
+
 function collect(
   result: QueryResult | null,
   providerTitle: string,
   cells: GridCell[],
   errors: string[],
+  ansi: boolean,
+  trend?: TrendFn,
 ): void {
   if (!result) return;
+
+  if (result.success && result.cards?.length) {
+    for (const card of result.cards) {
+      cells.push(cardToCell(card, providerTitle, ansi, trend));
+    }
+    return;
+  }
+
+  // Legacy free-form fallback (kept so unconverted output still renders).
   if (result.success && result.output) {
     const parts = result.output.split(/\n\n(?=### )/);
     if (parts.length > 1) {
@@ -1715,9 +2023,7 @@ function collect(
         if (!trimmed) continue;
         const m = trimmed.match(/^### (.+)\n?([\s\S]*)/);
         if (m) {
-          const subTitle = m[1].trim();
-          const body = (m[2] ?? "").split("\n");
-          cells.push({ title: cellTitle(providerTitle, subTitle), lines: body });
+          cells.push({ title: cellTitle(providerTitle, m[1].trim()), lines: (m[2] ?? "").split("\n") });
         } else {
           cells.push({ title: providerTitle, lines: trimmed.split("\n") });
         }
@@ -1731,31 +2037,46 @@ function collect(
 }
 
 // ============================================================
-// Threshold alert extraction
+// Metrics, alerts & summary
 // ============================================================
+
+function gatherMetrics(cells: GridCell[]): WindowMetric[] {
+  const all: WindowMetric[] = [];
+  for (const c of cells) if (c.metrics?.length) all.push(...c.metrics);
+  return all;
+}
+
+// Minimum remaining % for a cell (structured metrics, with a legacy parse fallback).
+function cellMinRemaining(cell: GridCell): number {
+  let min = 101;
+  if (cell.metrics?.length) {
+    for (const m of cell.metrics) min = Math.min(min, m.remaining);
+  } else {
+    for (const line of cell.lines) {
+      const m = line.match(/(\d+)% (?:remaining|of)/);
+      if (m) min = Math.min(min, parseInt(m[1], 10));
+    }
+  }
+  return min;
+}
+
+// Soonest reset across a cell's windows (ms), if any.
+function cellSoonestReset(cell: GridCell): number | undefined {
+  let soonest: number | undefined;
+  for (const m of cell.metrics ?? []) {
+    if (typeof m.resetMs === "number" && (soonest === undefined || m.resetMs < soonest)) {
+      soonest = m.resetMs;
+    }
+  }
+  return soonest;
+}
 
 function extractAlerts(cells: GridCell[], threshold = 25): string[] {
   const alerts: string[] = [];
-  const worst = new Map<string, number>();
-
   for (const cell of cells) {
-    let cellMin = 101;
-    for (const line of cell.lines) {
-      const m = line.match(/(\d+)% (?:remaining|of)/);
-      if (m) {
-        const pct = parseInt(m[1]);
-        cellMin = Math.min(cellMin, pct);
-      }
-    }
-    if (cellMin <= threshold && cellMin > 0) {
-      worst.set(cell.title, cellMin);
-    }
+    const min = cellMinRemaining(cell);
+    if (min > 0 && min <= threshold) alerts.push(`${cell.title}: ${min}%`);
   }
-
-  for (const [title, pct] of worst) {
-    alerts.push(`${title}: ${pct}%`);
-  }
-
   return alerts;
 }
 
@@ -1766,7 +2087,11 @@ function extractAlerts(cells: GridCell[], threshold = 25): string[] {
 function cellsToJson(cells: GridCell[], alerts: string[], errors: string[]): string {
   return JSON.stringify(
     {
-      cells: cells.map((c) => ({ title: c.title, lines: c.lines })),
+      cells: cells.map((c) => ({
+        title: c.title,
+        lines: c.lines.map((l) => l.replace(ANSI_RE, "")),
+        metrics: c.metrics?.length ? c.metrics : undefined,
+      })),
       alerts: alerts.length > 0 ? alerts : undefined,
       errors: errors.length > 0 ? errors : undefined,
     },
@@ -1779,66 +2104,666 @@ function cellsToJson(cells: GridCell[], alerts: string[], errors: string[]): str
 // Rendering
 // ============================================================
 
-const CELL_W = 46;
-
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
 function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, "");
 }
 
-function padLine(s: string, w: number): string {
-  const visual = stripAnsi(s);
-
-  if (visual.length > w) {
-    const cut = visual.slice(0, Math.max(0, w - 1)) + "\u2026";
-    return cut + " ".repeat(Math.max(0, w - cut.length));
+// Returns the number of terminal columns a string occupies.
+// Wide characters (emoji, CJK, etc.) count as 2 columns; most others as 1.
+function displayWidth(s: string): number {
+  let w = 0;
+  for (const cp of s) {
+    const code = cp.codePointAt(0) ?? 0;
+    // Emoji / pictographs / misc symbols that render as 2-wide in terminals
+    if (
+      (code >= 0x1f300 && code <= 0x1f9ff) || // Misc symbols, emoticons, transport, etc.
+      (code >= 0x2600  && code <= 0x27bf) ||  // Misc symbols & dingbats
+      (code >= 0xfe00  && code <= 0xfe0f) ||  // Variation selectors
+      (code >= 0x1f000 && code <= 0x1f02f) || // Mahjong / domino
+      (code >= 0x1fa00 && code <= 0x1fa9f) || // Chess / symbols
+      (code >= 0x4e00  && code <= 0xa4ff) ||  // CJK unified ideographs
+      (code >= 0xac00  && code <= 0xd7af) ||  // Hangul syllables
+      (code >= 0x20000 && code <= 0x2a6df) || // CJK extension B
+      (code >= 0x2f800 && code <= 0x2fa1f)    // CJK compatibility supplement
+    ) {
+      w += 2;
+    } else {
+      w += 1;
+    }
   }
-
-  return s + " ".repeat(Math.max(0, w - visual.length));
+  return w;
 }
 
-function renderGrid(cells: GridCell[]): string {
-  const out: string[] = [];
-  for (let r = 0; r * 2 < cells.length; r++) {
-    const left = cells[r * 2];
-    const right = cells[r * 2 + 1];
+function padLine(s: string, w: number): string {
+  const visual = stripAnsi(s);
+  const vw = displayWidth(visual);
 
-    const rawLT = left ? ` ${left.title} ` : "";
-    const rawRT = right ? ` ${right.title} ` : "";
-    const maxTitleW = CELL_W - 4;
-    const lTitle = rawLT.length > maxTitleW ? rawLT.slice(0, maxTitleW) + "\u2026 " : rawLT;
-    const rTitle = rawRT.length > maxTitleW ? rawRT.slice(0, maxTitleW) + "\u2026 " : rawRT;
-    const lHdr =
-      "\u2500\u2500" +
-      lTitle +
-      "\u2500".repeat(Math.max(0, CELL_W - 2 - lTitle.length));
-    const rHdr = right
-      ? "\u2500\u2500" +
-        rTitle +
-        "\u2500".repeat(Math.max(0, CELL_W - 2 - rTitle.length))
-      : "\u2500".repeat(CELL_W);
-    out.push("\u250C" + lHdr + "\u252C" + rHdr + "\u2510");
-
-    const lLines = left ? [...left.lines] : [];
-    const rLines = right ? [...right.lines] : [];
-    const h = Math.max(lLines.length, rLines.length);
-    for (let i = 0; i < h; i++) {
-      const lContent = " " + padLine(lLines[i] ?? "", CELL_W - 1);
-      const rContent = " " + padLine(rLines[i] ?? "", CELL_W - 1);
-      out.push("\u2502" + lContent + "\u2502" + rContent + "\u2502");
+  if (vw > w) {
+    // Truncate by walking codepoints until we hit the width limit
+    let acc = 0;
+    let cut = "";
+    for (const cp of visual) {
+      const cw = displayWidth(cp);
+      if (acc + cw > w - 1) break;
+      cut += cp;
+      acc += cw;
     }
+    cut += "\u2026";
+    return cut + " ".repeat(Math.max(0, w - displayWidth(cut)));
+  }
 
+  return s + " ".repeat(Math.max(0, w - vw));
+}
+
+// ============================================================
+// Single-column card layout
+// ============================================================
+//
+// Every provider is rendered as its own full-width card, stacked vertically
+// with internal padding and a blank line of breathing room between cards.
+// Cards size to the target width (capped so they stay readable) and embedded
+// progress bars are rescaled to fit, so borders stay aligned at any size.
+
+const MIN_INNER = 30; // narrowest interior (between the │ borders)
+const MAX_INNER = 66; // widest interior, so cards stay readable on big screens
+const PAD_X = 2; // left/right interior padding
+const DEFAULT_WIDTH = 100; // fallback when no width can be determined
+
+// Rounded outer corners: a clean, modern card frame.
+const BOX = {
+  tl: "\u256d", // ╭
+  tr: "\u256e", // ╮
+  bl: "\u2570", // ╰
+  br: "\u256f", // ╯
+  h: "\u2500", // ─
+  v: "\u2502", // │
+};
+
+// Truncate to a display width, appending an ellipsis when clipped.
+function truncateW(s: string, w: number): string {
+  if (displayWidth(s) <= w) return s;
+  let acc = 0;
+  let cut = "";
+  for (const cp of s) {
+    const cw = displayWidth(cp);
+    if (acc + cw > w - 1) break;
+    cut += cp;
+    acc += cw;
+  }
+  return cut + "\u2026";
+}
+
+// Rescale an embedded progress bar (a run of █/░) to fit the space left in
+// its panel, preserving the original fill ratio. Surrounding ANSI color
+// codes and the emoji/label sit outside the glyph run, so they're untouched.
+function fitBar(line: string, budget: number): string {
+  const m = line.match(/[\u2588\u2591]+/);
+  if (!m || m.index === undefined) return line;
+  const run = m[0];
+  const total = run.length;
+  const filled = (run.match(/\u2588/g) ?? []).length;
+  const ratio = total > 0 ? filled / total : 0;
+  const before = line.slice(0, m.index);
+  const after = line.slice(m.index + total);
+  const rest = displayWidth(stripAnsi(before + after));
+  const barW = Math.max(6, budget - rest);
+  const nf = Math.round(ratio * barW);
+  return before + "\u2588".repeat(nf) + "\u2591".repeat(Math.max(0, barW - nf)) + after;
+}
+
+function renderGrid(cells: GridCell[], termWidth: number): string {
+  const innerW = Math.max(MIN_INNER, Math.min(MAX_INNER, termWidth - 2));
+  const contentW = innerW - PAD_X * 2; // usable text width inside the padding
+  const out: string[] = [];
+
+  // A fully blank interior row, used for top/bottom vertical padding.
+  const blankRow = BOX.v + " ".repeat(innerW) + BOX.v;
+
+  for (const cell of cells) {
+    // Header: ╭─ Title ─────────╮
+    const title = truncateW(cell.title, innerW - 4);
     out.push(
-      "\u2514" +
-        "\u2500".repeat(CELL_W) +
-        "\u2534" +
-        "\u2500".repeat(CELL_W) +
-        "\u2518",
+      BOX.tl +
+        BOX.h +
+        " " +
+        title +
+        " " +
+        BOX.h.repeat(Math.max(0, innerW - 3 - displayWidth(title))) +
+        BOX.tr,
     );
+
+    // Body with vertical padding and left/right interior padding.
+    out.push(blankRow);
+    for (const raw of cell.lines) {
+      const line = fitBar(raw, contentW);
+      out.push(
+        BOX.v +
+          " ".repeat(PAD_X) +
+          padLine(line, contentW) +
+          " ".repeat(PAD_X) +
+          BOX.v,
+      );
+    }
+    out.push(blankRow);
+
+    // Footer: ╰──────────────────╯
+    out.push(BOX.bl + BOX.h.repeat(innerW) + BOX.br);
+
+    // Spacing between providers.
     out.push("");
   }
+
   return out.join("\n");
+}
+
+// ============================================================
+// Configuration (~/.config/opencode/mystatus.json)
+// ============================================================
+
+interface MyStatusConfig {
+  width?: number;
+  sort?: "urgency" | "name" | "reset";
+  summary?: boolean;
+  trend?: "off" | "compact" | "full";
+  cacheTtlSec?: number;
+  historyMax?: number;
+  historyMinIntervalSec?: number;
+  providers?: { disabled?: string[]; order?: string[] };
+}
+
+function configFile(name: string): string {
+  return join(homedir(), ".config", "opencode", name);
+}
+
+// Strip // line and /* */ block comments (string-aware) so the config file
+// can be self-documenting like opencode's own .jsonc files.
+function stripJsonComments(input: string): string {
+  let out = "";
+  let inString = false;
+  let inLine = false;
+  let inBlock = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    const next = input[i + 1];
+    if (inLine) {
+      if (ch === "\n") {
+        inLine = false;
+        out += ch;
+      }
+      continue;
+    }
+    if (inBlock) {
+      if (ch === "*" && next === "/") {
+        inBlock = false;
+        i++;
+      }
+      continue;
+    }
+    if (inString) {
+      out += ch;
+      if (ch === "\\") {
+        out += next ?? "";
+        i++;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+    } else if (ch === "/" && next === "/") {
+      inLine = true;
+      i++;
+    } else if (ch === "/" && next === "*") {
+      inBlock = true;
+      i++;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+function loadConfig(): MyStatusConfig {
+  try {
+    const raw = readFileSync(configFile("mystatus.json"), "utf-8");
+    return JSON.parse(stripJsonComments(raw)) as MyStatusConfig;
+  } catch {
+    return {};
+  }
+}
+
+// Resolve render width: explicit arg → env → live TTY → config → safe default.
+// The plugin runs in a non-TTY server process, so the override path matters
+// more than auto-detection.
+function resolveWidth(explicit: number | undefined, cfg: MyStatusConfig): number {
+  const clamp = (n: number) => Math.max(24, Math.min(400, Math.floor(n)));
+  if (typeof explicit === "number" && explicit > 0) return clamp(explicit);
+  const env = process.env.MYSTATUS_WIDTH ?? process.env.COLUMNS;
+  if (env) {
+    const n = parseInt(env, 10);
+    if (Number.isFinite(n) && n > 0) return clamp(n);
+  }
+  const cols = (process.stdout as { columns?: number } | undefined)?.columns;
+  if (typeof cols === "number" && cols > 0) return clamp(cols);
+  if (typeof cfg.width === "number" && cfg.width > 0) return clamp(cfg.width);
+  return DEFAULT_WIDTH;
+}
+
+// ============================================================
+// Provider registry
+// ============================================================
+
+interface Provider {
+  id: string;
+  title: string;
+  query: (auth: AuthData, ansi: boolean) => Promise<QueryResult | null>;
+}
+
+const PROVIDERS: Provider[] = [
+  { id: "openai", title: "OpenAI Account Quota", query: (a, ansi) => queryOpenAI(a.openai, ansi) },
+  { id: "anthropic", title: "Anthropic Account Quota", query: (a, ansi) => queryAnthropic(a.anthropic, ansi) },
+  { id: "google", title: "Google Account Quota", query: (_a, ansi) => queryGoogle(ansi) },
+  { id: "copilot", title: "GitHub Copilot Account Quota", query: (a, ansi) => queryCopilot(a["github-copilot"], ansi) },
+  { id: "opencode-go", title: "OpenCode Go+Zen Account Quota", query: (a, ansi) => queryOpenCodeGoZen(a["opencode-go"], ansi) },
+  { id: "poe", title: "Poe Account Quota", query: (a, ansi) => queryPoe(a.poe, ansi) },
+  { id: "zai", title: "Z.AI Coding Plan", query: (a, ansi) => queryZai(a["zai-coding-plan"], ansi) },
+  { id: "xai", title: "xAI/Grok", query: (a) => queryXai(a["xai-oauth"]) },
+  { id: "minimax", title: "MiniMax Token Plan", query: (a, ansi) => queryMiniMax(a["minimax-coding-plan"], ansi) },
+  { id: "nanogpt", title: "NanoGPT Account Quota", query: (a, ansi) => queryNanoGpt(a["nano-gpt"], ansi) },
+];
+
+function splitIds(s: string | undefined): string[] {
+  return (s ?? "")
+    .split(",")
+    .map((x) => x.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function selectProviders(cfg: MyStatusConfig, only?: string, exclude?: string): Provider[] {
+  const onlySet = only ? new Set(splitIds(only)) : null;
+  const exclSet = new Set([
+    ...(cfg.providers?.disabled ?? []).map((s) => s.toLowerCase()),
+    ...splitIds(exclude),
+  ]);
+  let list = PROVIDERS.filter((p) => (!onlySet || onlySet.has(p.id)) && !exclSet.has(p.id));
+  const order = cfg.providers?.order;
+  if (order?.length) {
+    const rank = new Map(order.map((id, i) => [id.toLowerCase(), i] as const));
+    list = [...list].sort((a, b) => (rank.get(a.id) ?? 999) - (rank.get(b.id) ?? 999));
+  }
+  return list;
+}
+
+// ============================================================
+// Per-provider cache (fallback) + bounded deadline
+// ============================================================
+
+interface CacheEntry {
+  ts: number;
+  result: QueryResult;
+}
+type CacheFile = Record<string, CacheEntry>;
+
+function loadCache(): CacheFile {
+  try {
+    return JSON.parse(readFileSync(configFile("mystatus-cache.json"), "utf-8")) as CacheFile;
+  } catch {
+    return {};
+  }
+}
+function saveCache(cache: CacheFile): void {
+  try {
+    writeFileSync(configFile("mystatus-cache.json"), JSON.stringify(cache));
+  } catch {
+    /* best-effort */
+  }
+}
+
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`exceeded ${ms / 1000}s deadline`)), ms),
+    ),
+  ]);
+}
+
+function noteCards(result: QueryResult, note: string): QueryResult {
+  if (!result.cards) return result;
+  return { ...result, cards: result.cards.map((c) => ({ ...c, note: c.note ?? note })) };
+}
+
+interface RanProvider {
+  title: string;
+  result: QueryResult | null;
+}
+
+// Run one provider with a hard deadline; on failure fall back to a cached
+// snapshot (annotated). Successful results refresh the cache.
+async function runProvider(
+  p: Provider,
+  auth: AuthData,
+  ansi: boolean,
+  cache: CacheFile,
+  ttlMs: number,
+  fresh: boolean,
+  deadlineMs: number,
+): Promise<RanProvider> {
+  const cached = cache[p.id];
+  const ageNote = (ts: number) => `cached${formatCachedAgeMinutes(ts)}`;
+
+  if (!fresh && ttlMs > 0 && cached && Date.now() - cached.ts < ttlMs) {
+    return { title: p.title, result: noteCards(cached.result, ageNote(cached.ts)) };
+  }
+
+  try {
+    const result = await withDeadline(p.query(auth, ansi), deadlineMs);
+    if (result === null) return { title: p.title, result: null };
+    if (result.success && result.cards) {
+      cache[p.id] = { ts: Date.now(), result };
+      return { title: p.title, result };
+    }
+    // Live attempt errored → fall back to a previous good snapshot if we have one.
+    if (cached?.result.success) {
+      return { title: p.title, result: noteCards(cached.result, ageNote(cached.ts)) };
+    }
+    return { title: p.title, result };
+  } catch (err) {
+    if (cached?.result.success) {
+      return { title: p.title, result: noteCards(cached.result, ageNote(cached.ts)) };
+    }
+    return {
+      title: p.title,
+      result: { success: false, error: err instanceof Error ? err.message : String(err) },
+    };
+  }
+}
+
+// ============================================================
+// Usage history & trends
+// ============================================================
+
+interface HistorySnapshot {
+  ts: number;
+  values: Record<string, number>;
+}
+interface HistoryFile {
+  version: number;
+  snapshots: HistorySnapshot[];
+}
+
+function loadHistory(): HistoryFile {
+  try {
+    const h = JSON.parse(readFileSync(configFile("mystatus-history.json"), "utf-8")) as HistoryFile;
+    if (h && Array.isArray(h.snapshots)) return h;
+  } catch {
+    /* no history yet */
+  }
+  return { version: 1, snapshots: [] };
+}
+function saveHistory(h: HistoryFile): void {
+  try {
+    writeFileSync(configFile("mystatus-history.json"), JSON.stringify(h));
+  } catch {
+    /* best-effort */
+  }
+}
+
+// Ramp deliberately excludes █ (\u2588) and ░ (\u2591) so the renderer's
+// progress-bar rescaler (fitBar) never mistakes a sparkline for a bar.
+const SPARK = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587";
+function sparkline(values: number[]): string {
+  return values
+    .map((v) => {
+      const idx = Math.round((Math.max(0, Math.min(100, v)) / 100) * 6);
+      return SPARK[Math.max(0, Math.min(6, idx))];
+    })
+    .join("");
+}
+
+function buildSeries(h: HistoryFile): Map<string, { ts: number; value: number }[]> {
+  const map = new Map<string, { ts: number; value: number }[]>();
+  for (const snap of h.snapshots) {
+    for (const [k, v] of Object.entries(snap.values)) {
+      const arr = map.get(k);
+      if (arr) arr.push({ ts: snap.ts, value: v });
+      else map.set(k, [{ ts: snap.ts, value: v }]);
+    }
+  }
+  return map;
+}
+
+function makeTrendFn(
+  series: Map<string, { ts: number; value: number }[]>,
+  mode: "off" | "compact" | "full",
+  ansi: boolean,
+  now: number,
+): TrendFn {
+  if (mode === "off") return () => null;
+  return (cellTitle, label, remaining, resetMs) => {
+    if (!label) return null;
+    const hist = series.get(`${cellTitle}::${label}`) ?? [];
+    const recent = [...hist.map((p) => p.value), remaining].slice(-10);
+    const spark = recent.length >= 2 ? sparkline(recent) : "";
+
+    const parts: string[] = [];
+    if (hist.length > 0) {
+      const prev = hist[hist.length - 1];
+      const delta = remaining - prev.value;
+      const ageMs = now - prev.ts;
+      const ageStr = mode === "full" ? `/${formatDuration(Math.floor(ageMs / 1000))}` : "";
+
+      if (delta > 5) parts.push("\u2191 reset");
+      else if (delta >= 1) parts.push(`\u25b2${delta}%${ageStr}`);
+      else if (delta <= -1) parts.push(`\u25bc${Math.abs(delta)}%${ageStr}`);
+      else parts.push("\u2192 0%");
+
+      if (spark) parts.push(spark);
+
+      if (mode === "full" && delta < 0 && ageMs > 0) {
+        const ratePerMs = (prev.value - remaining) / ageMs; // %/ms
+        if (ratePerMs > 0) {
+          const msToEmpty = remaining / ratePerMs;
+          if (resetMs === undefined || msToEmpty < resetMs) {
+            const within = resetMs !== undefined ? " (before reset)" : "";
+            parts.push(`~${formatDuration(Math.floor(msToEmpty / 1000))} to empty${within}`);
+          }
+        }
+      }
+    } else if (spark) {
+      parts.push(spark);
+    }
+
+    if (parts.length === 0) return null;
+    const text = `   trend ${parts.join(" \u00b7 ")}`;
+    return ansi ? `${ANSI_DIM}${text}${ANSI_RESET}` : text;
+  };
+}
+
+function recordSnapshot(
+  history: HistoryFile,
+  metrics: WindowMetric[],
+  cfg: MyStatusConfig,
+  now: number,
+): void {
+  const minIntervalMs = (cfg.historyMinIntervalSec ?? 60) * 1000;
+  const last = history.snapshots[history.snapshots.length - 1];
+  if (last && now - last.ts < minIntervalMs) return;
+
+  const values: Record<string, number> = {};
+  for (const m of metrics) values[`${m.cellTitle}::${m.label}`] = m.remaining;
+  if (Object.keys(values).length === 0) return;
+
+  history.snapshots.push({ ts: now, values });
+  const max = Math.max(2, cfg.historyMax ?? 60);
+  if (history.snapshots.length > max) history.snapshots = history.snapshots.slice(-max);
+  saveHistory(history);
+}
+
+// ============================================================
+// Summary card + sorting
+// ============================================================
+
+function buildSummaryCell(
+  cells: GridCell[],
+  metrics: WindowMetric[],
+  threshold: number,
+  ansi: boolean,
+): GridCell {
+  let green = 0;
+  let yellow = 0;
+  let red = 0;
+  for (const cell of cells) {
+    const min = cellMinRemaining(cell);
+    if (min > 100) continue;
+    if (min >= 50) green++;
+    else if (min >= threshold) yellow++;
+    else red++;
+  }
+
+  let lowest: WindowMetric | undefined;
+  for (const m of metrics) if (!lowest || m.remaining < lowest.remaining) lowest = m;
+
+  let soonest: WindowMetric | undefined;
+  for (const m of metrics) {
+    if (typeof m.resetMs === "number" && (!soonest || (soonest.resetMs ?? Infinity) > m.resetMs)) {
+      soonest = m;
+    }
+  }
+
+  const header: string[] = [
+    `Accounts:       ${cells.length}   \ud83d\udfe9 ${green}  \ud83d\udfe8 ${yellow}  \ud83d\udfe7 ${red}`,
+  ];
+  if (lowest) {
+    header.push(`Lowest:         ${lowest.cellTitle} \u00b7 ${lowest.label}  ${lowest.remaining}%`);
+  }
+  if (soonest && typeof soonest.resetMs === "number") {
+    header.push(
+      `Soonest reset:  ${soonest.cellTitle} \u00b7 ${soonest.label}  ${formatDuration(Math.floor(soonest.resetMs / 1000))}`,
+    );
+  }
+  return cardToCell({ header }, "Summary", ansi);
+}
+
+function sortCells(cells: GridCell[], mode: "urgency" | "name" | "reset"): void {
+  if (mode === "name") {
+    cells.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
+  } else if (mode === "reset") {
+    cells.sort((a, b) => (cellSoonestReset(a) ?? Infinity) - (cellSoonestReset(b) ?? Infinity));
+  } else {
+    cells.sort((a, b) => {
+      const ra = cellMinRemaining(a);
+      const rb = cellMinRemaining(b);
+      const na = ra > 100 ? 101 : ra;
+      const nb = rb > 100 ? 101 : rb;
+      if (na !== nb) return na - nb;
+      const sa = cellSoonestReset(a) ?? Infinity;
+      const sb = cellSoonestReset(b) ?? Infinity;
+      if (sa !== sb) return sa - sb;
+      return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+    });
+  }
+}
+
+// ============================================================
+// Core runner
+// ============================================================
+
+interface MyStatusArgs {
+  format?: string;
+  threshold?: number;
+  width?: number;
+  sort?: string;
+  summary?: boolean;
+  trend?: string;
+  only?: string;
+  exclude?: string;
+  fresh?: boolean;
+}
+
+async function runMyStatus(args: MyStatusArgs): Promise<string> {
+  const now = Date.now();
+  const cfg = loadConfig();
+
+  const format = args.format ?? "ansi";
+  const isJson = format === "json";
+  const useAnsi = !isJson;
+  const threshold = args.threshold ?? 25;
+  const termWidth = resolveWidth(args.width, cfg);
+  const sortMode = (args.sort ?? cfg.sort ?? "urgency") as "urgency" | "name" | "reset";
+  const showSummary = (args.summary ?? cfg.summary ?? true) && !isJson;
+  const trendMode = (isJson ? "off" : (args.trend ?? cfg.trend ?? "compact")) as
+    | "off"
+    | "compact"
+    | "full";
+  const cacheTtlMs = Math.max(0, cfg.cacheTtlSec ?? 0) * 1000;
+  const fresh = args.fresh === true;
+
+  const authPath = authJsonPath();
+  let auth: AuthData = {};
+  try {
+    const raw = await readFile(authPath, "utf-8");
+    auth = JSON.parse(raw) as AuthData;
+  } catch (err) {
+    return `\u274c Failed to read auth file: ${authPath}\n${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  const providers = selectProviders(cfg, args.only, args.exclude);
+  const cache = loadCache();
+  const ran = await Promise.all(
+    providers.map((p) => runProvider(p, auth, useAnsi, cache, cacheTtlMs, fresh, 15_000)),
+  );
+  saveCache(cache);
+
+  // Build trend annotations from prior history, record the new snapshot after.
+  const history = loadHistory();
+  const trend = makeTrendFn(buildSeries(history), trendMode, useAnsi, now);
+
+  const cells: GridCell[] = [];
+  const errors: string[] = [];
+  for (const { title, result } of ran) {
+    collect(result, title, cells, errors, useAnsi, trend);
+  }
+
+  if (cells.length === 0) {
+    return errors.length
+      ? `\u274c Failed to query:\n${errors.join("\n\n")}`
+      : "No accounts found.";
+  }
+
+  const metrics = gatherMetrics(cells);
+  recordSnapshot(history, metrics, cfg, now);
+
+  const alerts = extractAlerts(cells, threshold);
+
+  if (isJson) {
+    return cellsToJson(cells, alerts, errors);
+  }
+
+  sortCells(cells, sortMode);
+  if (showSummary) cells.unshift(buildSummaryCell(cells, metrics, threshold, useAnsi));
+
+  let output = renderGrid(cells, termWidth).trimEnd();
+
+  if (alerts.length > 0) {
+    if (useAnsi) {
+      output += `\n\n${ANSI_BOLD}${ANSI_RED}\u26a0\ufe0f Low quota alerts:${ANSI_RESET}`;
+      for (const alert of alerts) output += `\n${ANSI_RED}  \u2022 ${alert}${ANSI_RESET}`;
+    } else {
+      output += `\n\n\u26a0\ufe0f Low quota alerts:`;
+      for (const alert of alerts) output += `\n  \u2022 ${alert}`;
+    }
+  }
+
+  if (errors.length) {
+    output += `\n\n\u274c Failed to query:\n${errors.join("\n\n")}`;
+  }
+
+  return output;
 }
 
 // ============================================================
@@ -1849,91 +2774,20 @@ export const MyStatusPlugin: Plugin = async () => ({
   tool: {
     mystatus: tool({
       description:
-        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, and MiniMax Token Plan.",
+        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, and NanoGPT. Output is a single-column stack of provider cards, sorted by urgency, with a summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: openai,anthropic,google,copilot,opencode-go,poe,zai,xai,minimax,nanogpt), fresh (bool), threshold (number), format (ansi|json).",
       args: {
         format: tool.schema.string().optional(),
         threshold: tool.schema.number().optional(),
+        width: tool.schema.number().optional(),
+        sort: tool.schema.string().optional(),
+        summary: tool.schema.boolean().optional(),
+        trend: tool.schema.string().optional(),
+        only: tool.schema.string().optional(),
+        exclude: tool.schema.string().optional(),
+        fresh: tool.schema.boolean().optional(),
       },
       async execute(args) {
-        const format = args.format ?? "ansi";
-        const threshold = args.threshold ?? 25;
-        const useAnsi = format !== "json";
-
-        const authPath = authJsonPath();
-        let auth: AuthData = {};
-        try {
-          const raw = await readFile(authPath, "utf-8");
-          auth = JSON.parse(raw) as AuthData;
-        } catch (err) {
-          return `\u274c Failed to read auth file: ${authPath}\n${err instanceof Error ? err.message : String(err)}`;
-        }
-
-        const [openaiResult, anthropicResult, googleResult, copilotResult, goZenResult, poeResult, zaiResult, xaiResult, minimaxResult] =
-          await Promise.all([
-            queryOpenAI(auth.openai, useAnsi),
-            queryAnthropic(auth.anthropic, useAnsi),
-            queryGoogle(useAnsi),
-            queryCopilot(auth["github-copilot"], useAnsi),
-            queryOpenCodeGoZen(auth["opencode-go"], useAnsi),
-            queryPoe(auth.poe, useAnsi),
-            queryZai(auth["zai-coding-plan"], useAnsi),
-            queryXai(auth["xai-oauth"]),
-            queryMiniMax(auth["minimax-coding-plan"], useAnsi),
-          ]);
-
-        const cells: GridCell[] = [];
-        const errors: string[] = [];
-
-        collect(openaiResult, "OpenAI Account Quota", cells, errors);
-        collect(anthropicResult, "Anthropic Account Quota", cells, errors);
-        collect(googleResult, "Google Account Quota", cells, errors);
-        collect(copilotResult, "GitHub Copilot Account Quota", cells, errors);
-        collect(goZenResult, "OpenCode Go+Zen Account Quota", cells, errors);
-        collect(poeResult, "Poe Account Quota", cells, errors);
-        collect(zaiResult, "Z.AI Coding Plan", cells, errors);
-        collect(xaiResult, "xAI/Grok", cells, errors);
-        collect(minimaxResult, "MiniMax Token Plan", cells, errors);
-
-        cells.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
-
-        if (cells.length === 0) {
-          return errors.length
-            ? `\u274c Failed to query:\n${errors.join("\n\n")}`
-            : "No accounts found.";
-        }
-
-        // JSON output mode
-        if (format === "json") {
-          const alerts = extractAlerts(cells, threshold);
-          return cellsToJson(cells, alerts, errors);
-        }
-
-        // Alert threshold scan
-        const alerts = extractAlerts(cells, threshold);
-
-        // Grid rendering
-        let output = renderGrid(cells).trimEnd();
-
-        // Threshold alerts footer
-        if (alerts.length > 0) {
-          if (useAnsi) {
-            output += `\n\n${ANSI_BOLD}${ANSI_RED}\u26a0\ufe0f Low quota alerts:${ANSI_RESET}`;
-            for (const alert of alerts) {
-              output += `\n${ANSI_RED}  \u2022 ${alert}${ANSI_RESET}`;
-            }
-          } else {
-            output += `\n\n\u26a0\ufe0f Low quota alerts:`;
-            for (const alert of alerts) {
-              output += `\n  \u2022 ${alert}`;
-            }
-          }
-        }
-
-        if (errors.length) {
-          output += `\n\n\u274c Failed to query:\n${errors.join("\n\n")}`;
-        }
-
-        return output;
+        return runMyStatus(args);
       },
     }),
   },
