@@ -46,50 +46,70 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 ```text
 ╭─ Summary ────────────────────────────────────────────────────────╮
 │                                                                  │
-│  Accounts:       10   🟩 7  🟨 2  🟧 1                           │
+│  Accounts:       10   🟩 4  🟨 2  🟧 4                            │
 │  Lowest:         OpenCode Go+Zen — OpenCode Go Personal · Mont…  │
-│  Soonest reset:  OpenCode Go+Zen — OpenCode Go Alt 1 · 5h (rol…  │
+│  Soonest reset:  OpenAI Account Quota · 5-hour limit  7m         │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
-╭─ Anthropic Account Quota ────────────────────────────────────────╮
+╭─ OpenCode Go+Zen — OpenCode Go Personal ─────────────────────────╮
 │                                                                  │
-│  Account:        Claude Pro/Max                                  │
+│  5h (rolling)                                                    │
+│  🟩 ████████████████████████████████████████████ 100% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Resets in: 5h                                                   │
 │                                                                  │
-  │  5-hour limit                                                    │
-  │  🟩 ███████████████████░░░░░░░░░░░░░░░░░░░░░░░░░ 43% remaining  │
-  │     ▼2%/4m ▅▄▄  ~1h 40m to empty                                  │
-  │  Resets in: 2h 51m                                               │
-  │                                                                  │
-  │  7-day limit                                                     │
-  │  🟩 ████████████████████████████░░░░░░░░░░░░░░░░░ 61% remaining  │
-  │     → 0% ▅▅▅                                                     │
-│  Resets in: 5d 31m                                               │
+│  Weekly                                                          │
+│  🟨 █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 37% remaining  │
+│     → 0% ▃▃▃▃▃▃▃▃▃▃                                              │
+│  Resets in: 3d 8h 24m                                            │
+│                                                                  │
+│  Monthly                                                         │
+│  🟥 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0% remaining  │
+│     → 0% ▁▁▁▁▁▁▁▁▁▁                                              │
+│  Resets in: 15d 20h 23m                                          │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
 ╭─ NanoGPT Account Quota ──────────────────────────────────────────╮
 │                                                                  │
-│  Balance:        $4.20                                           │
+│  Balance:        $0.00                                           │
 │  Plan:           Subscription (stripe)                           │
 │                                                                  │
-  │  Weekly input tokens                                             │
-  │  🟩 █████████████████████████████░░░░░░░░░░░░░░░░ 65% remaining  │
-  │     ▼4%/4m ▅▅  ~1h 5m to empty                                    │
-│  Used: 21M / 60M                                                 │
-│  Resets in: 4d 19h 31m                                           │
+│  Weekly input tokens                                             │
+│  🟥 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0% remaining  │
+│     → 0% ▂▂▂▂▁▁▁▁▁▁                                              │
+│  Used: 60M / 60M                                                 │
+│  Resets in: 3d 8h 24m                                            │
 │                                                                  │
 │  Daily images                                                    │
 │  🟩 ████████████████████████████████████████████ 100% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
 │  Used: 0 / 100                                                   │
-│  Resets in: 19h 31m                                              │
+│  Resets in: 8h 24m                                               │
 │                                                                  │
-│  Renews:         29d 22h 21m                                     │
+│  Renews:         28d 11h 14m                                     │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ Poe Account Quota ──────────────────────────────────────────────╮
+│                                                                  │
+│  Balance:        14109 pts ($0.43 USD)                           │
+│  Daily grant:    +300 (Resets in: 8h 24m)                        │
+│                                                                  │
+│  Monthly                                                         │
+│  🟧 ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 2% remaining  │
+│     → 0% ▂▁▁▁▁▁▁▁▁▁                                              │
+│  Points: 14109 / 660000                                          │
+│  Resets in: 23d 23h 5m                                           │
+│                                                                  │
+│  Add-on points:  14109                                           │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
 ⚠️ Low quota alerts:
-  • OpenCode Go+Zen — OpenCode Go Personal: 4%
+  • OpenCode Go+Zen — OpenCode Go Alt 1: 15%
+  • Poe Account Quota: 2%
 ```
 
 ## Supported providers
