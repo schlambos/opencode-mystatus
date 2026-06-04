@@ -31,12 +31,13 @@ Subscriptions pile up — ChatGPT, Claude, Gemini, Copilot, Grok, and a handful 
 
 - 🧭 **Summary card** — account tally, your lowest window, and the next thing to reset, right at the top.
 - 🚦 **Urgency-first ordering** — whatever's closest to empty floats to the top (or sort by name / reset time).
-- 📈 **Usage trends** — sparklines, deltas, and a *"~1h 40m to empty (before reset)"* projection drawn from your own history.
+- 📈 **Usage trends** — color-coded sparklines (green/yellow/red per data point), deltas, and *"~Xm to empty"* projection drawn from your own history.
 - 🟩 **Color-coded at a glance** — emoji + ANSI bars (🟥 ≤0 · 🟧 <25 · 🟨 <50 · 🟩 ≥50) that survive even when ANSI is stripped.
 - 📐 **Responsive layout** — single-column cards that resize to your terminal and never wrap.
 - 💸 **Spend insight** — OpenCode Zen per-model cost breakdowns and balances alongside quota.
 - 🛟 **Resilient** — automatic retries, a cache fallback when a provider is flaky, and graceful per-provider errors.
 - 🤖 **Scriptable** — `format: json` for machine-readable output.
+- 🏃 **Standalone CLI** — run `mystatus` or `usage` from any terminal, no OpenCode session needed.
 
 ## What it looks like
 
@@ -55,14 +56,14 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │                                                                  │
 │  Account:        Claude Pro/Max                                  │
 │                                                                  │
-│  5-hour limit                                                    │
-│  🟩 ███████████████████████░░░░░░░░░░░░░░░░░░░░░░ 50% remaining  │
-│     trend ▼2%/4m · ▅▄▄ · ~1h 40m to empty (before reset)         │
-│  Resets in: 2h 51m                                               │
-│                                                                  │
-│  7-day limit                                                     │
-│  🟩 ████████████████████████████░░░░░░░░░░░░░░░░░ 61% remaining  │
-│     trend → 0% · ▅▅▅                                             │
+  │  5-hour limit                                                    │
+  │  🟩 ███████████████████░░░░░░░░░░░░░░░░░░░░░░░░░ 43% remaining  │
+  │     ▼2%/4m ▅▄▄  ~1h 40m to empty                                  │
+  │  Resets in: 2h 51m                                               │
+  │                                                                  │
+  │  7-day limit                                                     │
+  │  🟩 ████████████████████████████░░░░░░░░░░░░░░░░░ 61% remaining  │
+  │     → 0% ▅▅▅                                                     │
 │  Resets in: 5d 31m                                               │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
@@ -72,9 +73,9 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │  Balance:        $4.20                                           │
 │  Plan:           Subscription (stripe)                           │
 │                                                                  │
-│  Weekly input tokens                                             │
-│  🟩 █████████████████████████████░░░░░░░░░░░░░░░░ 65% remaining  │
-│     trend ▼4%/4m · ▅▅ · ~1h 5m to empty (before reset)           │
+  │  Weekly input tokens                                             │
+  │  🟩 █████████████████████████████░░░░░░░░░░░░░░░░ 65% remaining  │
+  │     ▼4%/4m ▅▅  ~1h 5m to empty                                    │
 │  Used: 21M / 60M                                                 │
 │  Resets in: 4d 19h 31m                                           │
 │                                                                  │
@@ -132,13 +133,52 @@ Restart OpenCode and run `/mystatus`.
 
 ### From source
 
-Copy `plugin/mystatus.ts` into `~/.config/opencode/plugin/` and (optionally) `command/mystatus.md` + `command/usage.md` into `~/.config/opencode/command/`, then restart OpenCode.
+```bash
+cp plugin/mystatus.ts ~/.config/opencode/plugin/
+cp command/mystatus.md command/usage.md ~/.config/opencode/command/
+cp bin/mystatus bin/mystatus-cli.ts ~/.local/bin/
+chmod +x ~/.local/bin/mystatus
+ln -sf ~/.local/bin/mystatus ~/.local/bin/usage
+```
+
+Then restart OpenCode.
+
+## Standalone CLI
+
+The plugin ships with a terminal CLI so you can check your quotas without launching OpenCode at all. It uses `bun` to call the same core logic directly.
+
+```bash
+mystatus                    # all providers, ANSI
+mystatus --only openai      # single provider
+mystatus --format json      # machine-readable
+mystatus --trend full       # with projections
+mystatus --fresh            # bypass cache
+mystatus --help             # all options
+```
+
+An alias `usage` is also installed (symlinked to `mystatus`).
+
+### Install via the repo
+
+```bash
+git clone https://github.com/schlambos/opencode-mystatus.git
+cd opencode-mystatus
+./bin/mystatus --install
+```
+
+This symlinks `mystatus` and `usage` into `~/.local/bin/` (or a target of your choice).
+
+### Requirements
+
+- [bun](https://bun.sh) — the CLI wrapper imports the plugin source directly via `bin/mystatus-cli.ts`.
+- Your credentials are read from OpenCode's standard locations (`~/.local/share/opencode/auth.json`, `~/.config/opencode/mystatus.json`, etc.) — no extra setup needed if you've already signed into providers.
 
 ## Usage
 
 Trigger it however feels natural:
 
-- The **`/mystatus`** or **`/usage`** slash command
+- The **`/mystatus`** or **`/usage`** slash command inside OpenCode
+- **`mystatus`** from any terminal (see [standalone CLI](#standalone-cli))
 - Plain language — *"check my AI quota"*, *"how much Claude do I have left?"*, *"am I about to run out of anything?"*
 
 ### Options
@@ -150,7 +190,7 @@ All options are optional and can be set per-call or as [defaults in your config]
 | `width` | number | auto | Target terminal width; cards size to fit and never wrap |
 | `sort` | `urgency` · `name` · `reset` | `urgency` | Card ordering |
 | `summary` | boolean | `true` | Show the summary card on top |
-| `trend` | `off` · `compact` · `full` | `compact` | Trend line under each bar (`full` adds projection) |
+| `trend` | `off` · `compact` · `full` | `compact` | Trend line under each bar with color-coded sparkline (`full` adds projection) |
 | `threshold` | number | `25` | Percent below which a window triggers a low-quota alert |
 | `only` | comma list | — | Show only these provider ids |
 | `exclude` | comma list | — | Hide these provider ids |
@@ -299,6 +339,8 @@ npm run build       # tsc → dist/
 ```
 
 The plugin is a single self-contained module at `plugin/mystatus.ts`. Providers are registered in one array — each is an independent `query*` function that returns a structured `ProviderCard`, so adding a new one is a small, contained change.
+
+The standalone CLI lives at `bin/mystatus-cli.ts` — a thin wrapper that imports `MyStatusPlugin` and calls `execute()` directly, bypassing OpenCode. The `bin/mystatus` bash script finds its way via `dirname $0` so it works from any location after `--install`.
 
 ## Changelog
 

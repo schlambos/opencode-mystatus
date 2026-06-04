@@ -1,5 +1,5 @@
 /**
- * mystatus.ts — All-in-one AI quota status plugin for OpenCode
+ * allstatus.ts — All-in-one AI quota status plugin for OpenCode
  *
  * Platforms:
  *   - OpenAI      (ChatGPT Plus/Team/Pro)    auth.json → openai
@@ -9,22 +9,15 @@
  *   - OpenCode Go+Zen (merged cell)         shared dashboard config (workspaceId + authCookie)
  *   - Poe         (points balance)          auth.json, env var, or poe-api-key.json
  *   - Z.AI        (GLM Coding Plan)         auth.json → zai-coding-plan
- *   - xAI/Grok    (token-expiry check)      auth.json → xai-oauth (no usage API)
+ *   - xAI/Grok    (auth check only)         auth.json → xai-oauth (no usage API)
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
- *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt
  *
  * Features:
- *   - Responsive single-column stack of provider cards (sizes to the terminal)
- *   - Structured quota model → per-window metrics (remaining %, reset countdown)
- *   - Summary card: account tally, lowest window, soonest reset
- *   - Urgency sort (lowest remaining first); also name / reset ordering
- *   - Usage history & trends: delta, sparkline, "~Xh to empty" projection
- *   - Cache fallback on fetch failure + retry/backoff + per-provider deadline
  *   - ANSI color-coded progress bars (red/yellow/green)
  *   - Zen per-model cost breakdown from usage page SSR
  *   - Threshold alerts for low-remaining platforms
  *   - JSON output mode for programmatic consumption
- *   - Config file (~/.config/opencode/mystatus.json) + per-call tool args
+ *   - Go + Zen merged into single cell per account
  */
 
 import { type Plugin, tool } from "@opencode-ai/plugin";
@@ -2141,7 +2134,6 @@ function padLine(s: string, w: number): string {
   const vw = displayWidth(visual);
 
   if (vw > w) {
-    // Truncate by walking codepoints until we hit the width limit
     let acc = 0;
     let cut = "";
     for (const cp of visual) {
@@ -2516,11 +2508,14 @@ function saveHistory(h: HistoryFile): void {
 // Ramp deliberately excludes █ (\u2588) and ░ (\u2591) so the renderer's
 // progress-bar rescaler (fitBar) never mistakes a sparkline for a bar.
 const SPARK = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587";
-function sparkline(values: number[]): string {
+function sparkline(values: number[], ansi = false): string {
   return values
     .map((v) => {
       const idx = Math.round((Math.max(0, Math.min(100, v)) / 100) * 6);
-      return SPARK[Math.max(0, Math.min(6, idx))];
+      const char = SPARK[Math.max(0, Math.min(6, idx))];
+      if (!ansi) return char;
+      const color = v >= 50 ? ANSI_GREEN : v >= 25 ? ANSI_YELLOW : ANSI_RED;
+      return `${color}${char}${ANSI_RESET}`;
     })
     .join("");
 }
@@ -2548,7 +2543,7 @@ function makeTrendFn(
     if (!label) return null;
     const hist = series.get(`${cellTitle}::${label}`) ?? [];
     const recent = [...hist.map((p) => p.value), remaining].slice(-10);
-    const spark = recent.length >= 2 ? sparkline(recent) : "";
+    const spark = recent.length >= 2 ? sparkline(recent, ansi) : "";
 
     const parts: string[] = [];
     if (hist.length > 0) {
@@ -2569,8 +2564,7 @@ function makeTrendFn(
         if (ratePerMs > 0) {
           const msToEmpty = remaining / ratePerMs;
           if (resetMs === undefined || msToEmpty < resetMs) {
-            const within = resetMs !== undefined ? " (before reset)" : "";
-            parts.push(`~${formatDuration(Math.floor(msToEmpty / 1000))} to empty${within}`);
+            parts.push(`~${formatDuration(Math.floor(msToEmpty / 1000))} to empty`);
           }
         }
       }
@@ -2579,8 +2573,8 @@ function makeTrendFn(
     }
 
     if (parts.length === 0) return null;
-    const text = `   trend ${parts.join(" \u00b7 ")}`;
-    return ansi ? `${ANSI_DIM}${text}${ANSI_RESET}` : text;
+    const text = `   ${parts.join(" ")}`;
+    return text;
   };
 }
 

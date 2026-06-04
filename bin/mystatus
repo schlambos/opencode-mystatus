@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if [ "${1:-}" = "--install" ]; then
+  TARGET="${2:-$HOME/.local/bin}"
+  mkdir -p "$TARGET"
+  ln -sf "$REPO_DIR/bin/mystatus" "$TARGET/mystatus"
+  ln -sf "$TARGET/mystatus" "$TARGET/usage"
+  echo "Installed mystatus -> $TARGET/mystatus"
+  echo "Installed usage   -> $TARGET/usage"
+  echo ""
+  echo "Run: mystatus"
+  exit 0
+fi
+
+exec bun run "$REPO_DIR/bin/mystatus-cli.ts" -- "$@"
