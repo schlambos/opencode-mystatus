@@ -11,6 +11,7 @@
  *   - Z.AI        (GLM Coding Plan)         auth.json → zai-coding-plan
  *   - xAI/Grok    (auth check only)         auth.json → xai-oauth (no usage API)
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
+ *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)
@@ -139,6 +140,26 @@ interface NanoGptAuthData {
   key?: string;
 }
 
+interface NanoGptCredential {
+  source: "native" | "multi-auth";
+  label?: string;
+  key: string;
+  cooldownUntil?: number;
+}
+
+interface NanoGptStoredKey {
+  id?: string;
+  label?: string;
+  key?: string;
+  enabled?: boolean;
+  cooldownUntil?: number;
+}
+
+interface NanoGptStoredKeysFile {
+  version?: number;
+  keys?: NanoGptStoredKey[];
+}
+
 interface AuthData {
   openai?: OpenAIAuthData;
   anthropic?: AnthropicAuthData;
@@ -252,7 +273,15 @@ async function fetchTimeout(
 // ============================================================
 
 function authJsonPath(): string {
-  return join(homedir(), ".local", "share", "opencode", "auth.json");
+  return opencodeDataFile("auth.json");
+}
+
+function opencodeDataFile(name: string): string {
+  return join(homedir(), ".local", "share", "opencode", name);
+}
+
+function nanoGptMultiAuthKeysPath(): string {
+  return opencodeDataFile("nanogpt-keys.json");
 }
 
 function opencodeConfigDir(): string {
@@ -1737,6 +1766,7 @@ async function queryMiniMax(
 //   per-window resetAt (epoch ms); pay-as-you-go accounts only show balance.
 
 const NANOGPT_BASE_URL = "https://nano-gpt.com";
+const NANOGPT_MULTI_AUTH_DUMMY_KEY = "opencode-nanogpt-multi-key";
 
 interface NanoGptBalance {
   usd_balance?: string;
@@ -1769,6 +1799,58 @@ function nanoGptResetAt(ms: number | undefined): string | undefined {
   if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return undefined;
   const d = new Date(ms);
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
+function isRealNanoGptKey(key: string | undefined): key is string {
+  return typeof key === "string" && key.trim() !== "" && key.trim() !== NANOGPT_MULTI_AUTH_DUMMY_KEY;
+}
+
+function loadNanoGptMultiAuthCredentials(): NanoGptCredential[] {
+  try {
+    const raw = readFileSync(nanoGptMultiAuthKeysPath(), "utf-8");
+    const data = JSON.parse(raw) as NanoGptStoredKeysFile;
+    const credentials: NanoGptCredential[] = [];
+
+    for (const stored of data.keys ?? []) {
+      if (stored.enabled === false || !isRealNanoGptKey(stored.key)) continue;
+      credentials.push({
+        source: "multi-auth",
+        label: stored.label ?? stored.id,
+        key: stored.key.trim(),
+        cooldownUntil: stored.cooldownUntil,
+      });
+    }
+
+    return credentials;
+  } catch {
+    return [];
+  }
+}
+
+function resolveNanoGptCredentials(auth: NanoGptAuthData | undefined): NanoGptCredential[] {
+  const credentials: NanoGptCredential[] = [];
+  const seen = new Set<string>();
+  const add = (credential: NanoGptCredential): void => {
+    const key = credential.key.trim();
+    if (!isRealNanoGptKey(key) || seen.has(key)) return;
+    seen.add(key);
+    credentials.push({ ...credential, key });
+  };
+
+  // Prefer multi-auth metadata for duplicate keys; it has user labels and pool state.
+  for (const credential of loadNanoGptMultiAuthCredentials()) add(credential);
+  if (isRealNanoGptKey(auth?.key)) add({ source: "native", label: "Native auth", key: auth.key });
+
+  return credentials;
+}
+
+function nanoGptSubtitle(credential: NanoGptCredential, multi: boolean): string | undefined {
+  if (!multi) return undefined;
+  return credential.label?.trim() || (credential.source === "native" ? "Native auth" : "Multi-auth key");
+}
+
+function nanoGptAuthSource(credential: NanoGptCredential): string {
+  return credential.source === "multi-auth" ? "NanoGPT multi-auth" : "OpenCode native auth";
 }
 
 function humanCount(n: number): string {
@@ -1806,70 +1888,106 @@ function nanoGptWindow(
   };
 }
 
+async function queryNanoGptCredential(
+  credential: NanoGptCredential,
+  subtitle: string | undefined,
+): Promise<ProviderCard> {
+  const headers: Record<string, string> = {
+    "x-api-key": credential.key,
+    "Content-Type": "application/json",
+    "User-Agent": "OpenCode-AllStatus/1.0",
+  };
+
+  const [balRes, subRes] = await Promise.all([
+    fetchTimeout(`${NANOGPT_BASE_URL}/api/check-balance`, { method: "POST", headers }),
+    fetchTimeout(`${NANOGPT_BASE_URL}/api/subscription/v1/usage`, { method: "GET", headers }),
+  ]);
+
+  if (!balRes.ok) {
+    const body = await balRes.text().catch(() => "");
+    throw new Error(`NanoGPT balance API error (${balRes.status}): ${body.slice(0, 200)}`);
+  }
+  const bal = (await balRes.json()) as NanoGptBalance;
+
+  const header: string[] = [`Auth source:     ${nanoGptAuthSource(credential)}`];
+  const usd = Number(bal.usd_balance ?? "0");
+  header.push(`Balance:        $${(Number.isFinite(usd) ? usd : 0).toFixed(2)}`);
+  const nano = Number(bal.nano_balance ?? "0");
+  if (Number.isFinite(nano) && nano > 0) header.push(`Nano (XNO):     ${nano.toFixed(4)}`);
+
+  let sub: NanoGptSubscription | null = null;
+  if (subRes.ok) {
+    try {
+      sub = (await subRes.json()) as NanoGptSubscription;
+    } catch {
+      /* no subscription body */
+    }
+  }
+
+  const windows: QuotaWindow[] = [];
+  const footer: string[] = [];
+
+  if (credential.cooldownUntil && credential.cooldownUntil > Date.now()) {
+    footer.push(`Pool cooldown:  ${formatDuration(Math.ceil((credential.cooldownUntil - Date.now()) / 1000))}`);
+  }
+
+  if (sub?.active) {
+    header.push(`Plan:           Subscription${sub.provider ? ` (${sub.provider})` : ""}`);
+    const built = [
+      nanoGptWindow("Weekly input tokens", sub.weeklyInputTokens, sub.limits?.weeklyInputTokens, "tokens"),
+      nanoGptWindow("Daily input tokens", sub.dailyInputTokens, sub.limits?.dailyInputTokens, "tokens"),
+      nanoGptWindow("Daily images", sub.dailyImages, sub.limits?.dailyImages, "images"),
+    ];
+    for (const w of built) if (w) windows.push(w);
+
+    const end = sub.period?.currentPeriodEnd;
+    if (end) footer.push(`${sub.cancelAtPeriodEnd ? "Ends" : "Renews"}:         ${formatResetAt(end)}`);
+  } else {
+    header.push("Plan:           Pay-as-you-go");
+  }
+
+  return { subtitle, header, windows, footer: footer.length ? footer : undefined };
+}
+
+type NanoGptQueryOutcome = { card: ProviderCard } | { error: string };
+
 async function queryNanoGpt(
   auth: NanoGptAuthData | undefined,
   ansi = false,
 ): Promise<QueryResult | null> {
-  if (!auth?.key) return null;
+  const credentials = resolveNanoGptCredentials(auth);
+  if (credentials.length === 0) return null;
 
-  try {
-    const headers: Record<string, string> = {
-      "x-api-key": auth.key,
-      "Content-Type": "application/json",
-      "User-Agent": "OpenCode-AllStatus/1.0",
-    };
-
-    const [balRes, subRes] = await Promise.all([
-      fetchTimeout(`${NANOGPT_BASE_URL}/api/check-balance`, { method: "POST", headers }),
-      fetchTimeout(`${NANOGPT_BASE_URL}/api/subscription/v1/usage`, { method: "GET", headers }),
-    ]);
-
-    if (!balRes.ok) {
-      const body = await balRes.text().catch(() => "");
-      throw new Error(`NanoGPT balance API error (${balRes.status}): ${body.slice(0, 200)}`);
-    }
-    const bal = (await balRes.json()) as NanoGptBalance;
-
-    const header: string[] = [];
-    const usd = Number(bal.usd_balance ?? "0");
-    header.push(`Balance:        $${(Number.isFinite(usd) ? usd : 0).toFixed(2)}`);
-    const nano = Number(bal.nano_balance ?? "0");
-    if (Number.isFinite(nano) && nano > 0) header.push(`Nano (XNO):     ${nano.toFixed(4)}`);
-
-    let sub: NanoGptSubscription | null = null;
-    if (subRes.ok) {
+  const multi = credentials.length > 1;
+  const results: NanoGptQueryOutcome[] = await Promise.all(
+    credentials.map(async (credential) => {
+      const subtitle = nanoGptSubtitle(credential, multi);
       try {
-        sub = (await subRes.json()) as NanoGptSubscription;
-      } catch {
-        /* no subscription body */
+        return { card: await queryNanoGptCredential(credential, subtitle) };
+      } catch (err) {
+        const label = subtitle ?? "NanoGPT";
+        const message = err instanceof Error ? err.message : String(err);
+        return { error: `${label}: ${message}` };
       }
-    }
+    }),
+  );
 
-    const windows: QuotaWindow[] = [];
-    const footer: string[] = [];
-
-    if (sub?.active) {
-      header.push(`Plan:           Subscription${sub.provider ? ` (${sub.provider})` : ""}`);
-      const built = [
-        nanoGptWindow("Weekly input tokens", sub.weeklyInputTokens, sub.limits?.weeklyInputTokens, "tokens"),
-        nanoGptWindow("Daily input tokens", sub.dailyInputTokens, sub.limits?.dailyInputTokens, "tokens"),
-        nanoGptWindow("Daily images", sub.dailyImages, sub.limits?.dailyImages, "images"),
-      ];
-      for (const w of built) if (w) windows.push(w);
-
-      const end = sub.period?.currentPeriodEnd;
-      if (end) footer.push(`${sub.cancelAtPeriodEnd ? "Ends" : "Renews"}:         ${formatResetAt(end)}`);
+  const cards: ProviderCard[] = [];
+  const errors: string[] = [];
+  for (const result of results) {
+    if ("card" in result) {
+      cards.push(result.card);
     } else {
-      header.push("Plan:           Pay-as-you-go");
+      errors.push(result.error);
     }
-
-    return {
-      success: true,
-      cards: [{ header, windows, footer: footer.length ? footer : undefined }],
-    };
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
+
+  if (cards.length > 0) {
+    if (errors.length > 0) cards.push({ subtitle: multi ? "Errors" : undefined, header: errors });
+    return { success: true, cards };
+  }
+
+  return { success: false, error: errors.join("\n\n") };
 }
 
 // ============================================================

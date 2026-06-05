@@ -258,7 +258,7 @@ These read their credentials straight from OpenCode's `auth.json` once you've si
 - **Anthropic** — refreshes the Claude Code OAuth token and queries `api.anthropic.com/api/oauth/usage`.
 - **Z.AI (GLM Coding Plan)** — reads `zai-coding-plan`; shows plan details plus rolling/weekly/monthly windows.
 - **MiniMax (Token Plan)** — reads `minimax-coding-plan` (key must start with `sk-cp-`); shows 5h and 7-day text windows.
-- **NanoGPT** — reads `nano-gpt`; shows USD/Nano balance and, for subscribers, weekly-token and daily-image allowances with renewal date.
+- **NanoGPT** — reads native `auth.json` `nano-gpt` keys and `opencode-nanogpt-multi-auth`'s `~/.local/share/opencode/nanogpt-keys.json` pool; shows USD/Nano balance and, for subscribers, weekly-token and daily-image allowances with renewal date.
 - **xAI / Grok** — reads `xai-oauth`; confirms the token is valid and shows its expiry (no public usage API exists).
 </details>
 
