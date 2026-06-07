@@ -9,7 +9,7 @@
  *   - OpenCode Go+Zen (merged cell)         shared dashboard config (workspaceId + authCookie)
  *   - Poe         (points balance)          auth.json, env var, or poe-api-key.json
  *   - Z.AI        (GLM Coding Plan)         auth.json → zai-coding-plan
- *   - xAI/Grok    (auth check only)         auth.json → xai-oauth (no usage API)
+ *   - xAI/Grok    (SuperGrok free credits + dev API)  auth.json → xai/xai-oauth (dev) + ~/.grok/auth.json (consumer, auto-refreshed) via cli-chat-proxy /v1/billing[?format=credits]
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *
@@ -168,6 +168,7 @@ interface AuthData {
   poe?: PoeAuthData;
   "zai-coding-plan"?: ZaiAuthData;
   "xai-oauth"?: XaiAuthData;
+  xai?: XaiAuthData;
   "minimax-coding-plan"?: MiniMaxAuthData;
   "nano-gpt"?: NanoGptAuthData;
 }
@@ -550,22 +551,82 @@ const GOOGLE_CLIENT_ID =
   "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const GOOGLE_CLIENT_SECRET = "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";
 
-const GOOGLE_LIVE_MODELS: Array<{ key: string; altKey?: string; display: string }> = [
-  { key: "gemini-3.1-pro-high", altKey: "gemini-3.1-pro-low", display: "G3 Pro" },
-  { key: "gemini-3-pro-image", display: "G3 Image" },
-  { key: "gemini-3-flash", display: "G3 Flash" },
-  {
-    key: "claude-opus-4-6-thinking",
-    altKey: "claude-sonnet-4-6",
-    display: "Claude",
-  },
-];
+// Antigravity quota is pooled per model *family*, not per individual model, and
+// Google rotates the exact model identifiers frequently (e.g. gemini-3-pro ->
+// gemini-3.1-pro-high/low; flash variants and image models come and go). Matching
+// hard-coded keys therefore silently drops or misreports quota. Instead we
+// classify every model the live API returns into the same three families the
+// auth plugin caches (gemini-pro / gemini-flash / claude) and aggregate
+// conservatively. This keeps the live and cached paths consistent and resilient
+// to renames. The grouping mirrors opencode-antigravity-auth's classifyQuotaGroup.
+type AntigravityGroupKey = "gemini-pro" | "gemini-flash" | "claude";
 
-const GOOGLE_CACHED_GROUPS: Array<{ key: string; display: string }> = [
+const GOOGLE_QUOTA_GROUPS: Array<{ key: AntigravityGroupKey; display: string }> = [
   { key: "gemini-pro", display: "Gemini Pro" },
   { key: "gemini-flash", display: "Gemini Flash" },
   { key: "claude", display: "Claude" },
 ];
+
+interface AntigravityGroupAgg {
+  remainingFraction?: number;
+  resetTime?: string;
+  modelCount: number;
+}
+
+// Only Gemini 3 + Claude models carry user-facing Antigravity quota; gemini-2.5,
+// gpt-oss, and internal "chat_*"/"tab_*" helper models are excluded. Flash vs Pro
+// is decided by the model id (Claude is matched first).
+function classifyAntigravityGroup(modelName: string, displayName?: string): AntigravityGroupKey | null {
+  const combined = `${modelName} ${displayName ?? ""}`.toLowerCase();
+  if (combined.includes("claude")) return "claude";
+  const isGemini3 = combined.includes("gemini-3") || combined.includes("gemini 3");
+  if (!isGemini3) return null;
+  return modelName.toLowerCase().includes("flash") ? "gemini-flash" : "gemini-pro";
+}
+
+// Fold per-model quota into family buckets using the conservative (minimum)
+// remaining fraction and the earliest reset time, matching the auth plugin's
+// aggregateQuota so the live path agrees with the cached snapshot.
+function aggregateAntigravityQuota(
+  models: GoogleQuotaResponse["models"] | undefined,
+): Partial<Record<AntigravityGroupKey, AntigravityGroupAgg>> {
+  const groups: Partial<Record<AntigravityGroupKey, AntigravityGroupAgg>> = {};
+  for (const [modelName, entry] of Object.entries(models ?? {})) {
+    const group = classifyAntigravityGroup(modelName, entry.displayName);
+    if (!group) continue;
+
+    const rawFraction = entry.quotaInfo?.remainingFraction;
+    const fraction =
+      typeof rawFraction === "number" && Number.isFinite(rawFraction)
+        ? Math.max(0, Math.min(1, rawFraction))
+        : undefined;
+    const resetTime = entry.quotaInfo?.resetTime;
+    const existing = groups[group];
+
+    const nextRemaining =
+      fraction === undefined
+        ? existing?.remainingFraction
+        : existing?.remainingFraction === undefined
+          ? fraction
+          : Math.min(existing.remainingFraction, fraction);
+
+    let nextResetTime = existing?.resetTime;
+    const ts = resetTime ? Date.parse(resetTime) : Number.NaN;
+    if (Number.isFinite(ts)) {
+      const existingTs = existing?.resetTime ? Date.parse(existing.resetTime) : Number.NaN;
+      if (!existing?.resetTime || !Number.isFinite(existingTs) || ts < existingTs) {
+        nextResetTime = resetTime;
+      }
+    }
+
+    groups[group] = {
+      remainingFraction: nextRemaining,
+      resetTime: nextResetTime,
+      modelCount: (existing?.modelCount ?? 0) + 1,
+    };
+  }
+  return groups;
+}
 
 async function refreshGoogleAccessToken(refreshToken: string): Promise<string> {
   const params = new URLSearchParams({
@@ -587,7 +648,7 @@ async function refreshGoogleAccessToken(refreshToken: string): Promise<string> {
 interface GoogleQuotaResponse {
   models: Record<
     string,
-    { quotaInfo?: { remainingFraction?: number; resetTime?: string } }
+    { displayName?: string; quotaInfo?: { remainingFraction?: number; resetTime?: string } }
   >;
 }
 
@@ -659,26 +720,27 @@ async function queryGoogle(ansi = false): Promise<QueryResult> {
         const liveData = await fetchGoogleLiveQuota(accessToken, projectId, ua);
 
         if (liveData?.models) {
-          for (const model of GOOGLE_LIVE_MODELS) {
-            const info =
-              liveData.models[model.key] ??
-              (model.altKey ? liveData.models[model.altKey] : undefined);
-            if (info) {
+          const grouped = aggregateAntigravityQuota(liveData.models);
+          for (const group of GOOGLE_QUOTA_GROUPS) {
+            const info = grouped[group.key];
+            if (info && info.remainingFraction !== undefined) {
               windows.push({
-                label: model.display,
-                remaining: Math.round((info.quotaInfo?.remainingFraction ?? 0) * 100),
-                resetAt: info.quotaInfo?.resetTime,
+                label: group.display,
+                remaining: Math.round(info.remainingFraction * 100),
+                resetAt: info.resetTime,
               });
             }
           }
-          usedLive = true;
+          // Only treat live data as authoritative if it actually produced quota
+          // groups; otherwise fall through to the cached snapshot below.
+          usedLive = windows.length > 0;
         }
       } catch {
       }
 
       if (!usedLive && account.cachedQuota) {
         note = `cached${formatCachedAgeMinutes(account.cachedQuotaUpdatedAt)}`;
-        for (const group of GOOGLE_CACHED_GROUPS) {
+        for (const group of GOOGLE_QUOTA_GROUPS) {
           const info = account.cachedQuota[group.key];
           if (info) {
             windows.push({
@@ -1546,14 +1608,228 @@ async function queryZai(auth: ZaiAuthData | undefined, ansi = false): Promise<Qu
 }
 
 // ============================================================
-// xAI/Grok (auth validity check — no public usage API)
+// xAI/Grok
+//
+// Two separate auth stores feed this card; both are xAI OAuth tokens for the
+// same account but are minted with different `referrer` claims and live in
+// different files (by design — separate login UIs):
+//
+//   • Dev token  (~/.local/share/opencode/auth.json → "xai"/"xai-oauth",
+//                  referrer "opencode"): used for the dev API models check.
+//   • Consumer   (~/.grok/auth.json → "<issuer>::<client>".key,
+//                  referrer "grok-build"): the token the Grok Build TUI and
+//                  grok.com use. Carries refresh_token + expires_at.
+//
+// Both tokens can read the cli-chat-proxy billing endpoint, which has two views:
+//   GET /v1/billing                  → {monthlyLimit, used} (15k included tokens)
+//   GET /v1/billing?format=credits   → {creditUsagePercent, billingPeriodEnd}
+//                                       — the "Credits used: X% · Resets …" the
+//                                       TUI/website show.
+//
+// We prefer the consumer token (refreshing it if expired) and fall back to the
+// dev token so the card still renders for dev-only users.
 // ============================================================
+
+const GROK_BILLING_BASE = "https://cli-chat-proxy.grok.com/v1/billing";
+const XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
+const XAI_OAUTH_TOKEN_ENDPOINT = "https://auth.x.ai/oauth2/token";
+
+interface GrokConsumerAuth {
+  storeKey: string; // the "<issuer>::<client>" key in the file
+  key: string; // access token (JWT)
+  refreshToken?: string;
+  expiresAt?: number; // epoch ms
+}
+
+function grokConsumerAuthPath(): string {
+  return join(homedir(), ".grok", "auth.json");
+}
+
+// Parse ~/.grok/auth.json. Returns null when the file is missing/malformed so
+// callers can degrade gracefully (the file is written by `grok login`).
+function loadGrokConsumerAuth(): GrokConsumerAuth | null {
+  try {
+    const p = grokConsumerAuthPath();
+    if (!existsSync(p)) return null;
+    const data = JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>;
+    for (const [storeKey, v] of Object.entries(data)) {
+      if (v && typeof v === "object" && typeof (v as any).key === "string") {
+        const entry = v as any;
+        const expMs = entry.expires_at ? Date.parse(entry.expires_at) : NaN;
+        return {
+          storeKey,
+          key: entry.key,
+          refreshToken: typeof entry.refresh_token === "string" ? entry.refresh_token : undefined,
+          expiresAt: Number.isFinite(expMs) ? expMs : undefined,
+        };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Refresh an expired consumer token using its refresh_token and persist the new
+// access/refresh/expiry back into ~/.grok/auth.json. Returns the fresh access
+// token, or null on failure (caller falls back to the dev token).
+async function refreshGrokConsumerToken(auth: GrokConsumerAuth): Promise<string | null> {
+  if (!auth.refreshToken) return null;
+  try {
+    const res = await fetchTimeout(
+      XAI_OAUTH_TOKEN_ENDPOINT,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: XAI_OAUTH_CLIENT_ID,
+          refresh_token: auth.refreshToken,
+        }),
+      },
+      10_000,
+      1,
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+    if (!data.access_token) return null;
+
+    // Best-effort write-back so the next run starts fresh. Never throw.
+    try {
+      const p = grokConsumerAuthPath();
+      const file = JSON.parse(readFileSync(p, "utf8")) as Record<string, any>;
+      const entry = file[auth.storeKey];
+      if (entry && typeof entry === "object") {
+        entry.key = data.access_token;
+        if (data.refresh_token) entry.refresh_token = data.refresh_token;
+        if (typeof data.expires_in === "number") {
+          entry.expires_at = new Date(Date.now() + data.expires_in * 1000).toISOString();
+        }
+        writeFileSync(p, JSON.stringify(file, null, 2));
+      }
+    } catch {}
+
+    return data.access_token;
+  } catch {
+    return null;
+  }
+}
+
+// Resolve a usable consumer access token: use the stored one if still valid,
+// otherwise try to refresh. Returns null if there's no consumer auth at all.
+async function resolveGrokConsumerToken(): Promise<string | null> {
+  const auth = loadGrokConsumerAuth();
+  if (!auth) return null;
+  const expired = typeof auth.expiresAt === "number" && auth.expiresAt <= Date.now() + 60_000;
+  if (expired) {
+    const refreshed = await refreshGrokConsumerToken(auth);
+    return refreshed ?? auth.key; // try the stale token as a last resort
+  }
+  return auth.key;
+}
+
+// Format an ISO billing-period end as a compact "Mon D" reset hint (e.g.
+// "Jul 1"), matching the Grok Build TUI / grok.com "Resets: …" line.
+function formatGrokResetDate(iso: string | undefined): string | undefined {
+  if (!iso) return undefined;
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return undefined;
+  return new Date(t).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+interface GrokCreditsConfig {
+  creditUsagePercent?: number;
+  billingPeriodEnd?: string;
+  onDemandUsed?: { val?: number };
+  onDemandCap?: { val?: number };
+}
+
+interface GrokIncludedConfig {
+  monthlyLimit?: { val?: number };
+  used?: { val?: number };
+  billingPeriodEnd?: string;
+}
 
 async function queryXai(auth: XaiAuthData | undefined): Promise<QueryResult | null> {
   if (!auth || auth.type !== "oauth" || !auth.access) return null;
   if (auth.expires && auth.expires < Date.now())
-    return { success: false, error: "\u26a0\ufe0f xAI token expired." };
+    return { success: false, error: "\u26a0\ufe0f xAI token expired. Use a Grok model in OpenCode to refresh." };
 
+  const header: string[] = ["Auth:           valid"];
+  if (typeof auth.expires === "number" && auth.expires > Date.now()) {
+    header.push(`Token expires:  ${formatDuration(Math.floor((auth.expires - Date.now()) / 1000))}`);
+  }
+
+  // Prefer the consumer (grok-build) token for the credits view — it's what the
+  // Grok Build TUI and grok.com show. Fall back to the dev token, which reads
+  // the same account's billing.
+  const consumerToken = await resolveGrokConsumerToken();
+  const hasConsumer = !!consumerToken;
+  const creditsToken = consumerToken ?? auth.access;
+
+  const windows: QuotaWindow[] = [];
+
+  // SuperGrok free credits — GET /v1/billing?format=credits
+  try {
+    const r = await fetchTimeout(`${GROK_BILLING_BASE}?format=credits`, {
+      headers: { Authorization: `Bearer ${creditsToken}`, Accept: "application/json" },
+    });
+    if (r.ok) {
+      const cfg = ((await r.json()) as { config?: GrokCreditsConfig }).config ?? {};
+      const usedPct = Number(cfg.creditUsagePercent ?? 0);
+      const remain = Math.max(0, Math.min(100, 100 - usedPct));
+      const resetDate = formatGrokResetDate(cfg.billingPeriodEnd);
+      const detail = [
+        `Credits used: ${usedPct.toFixed(2)}%${resetDate ? ` \u00b7 Resets ${resetDate}` : ""}`,
+      ];
+      const onDemand = cfg.onDemandUsed?.val ?? 0;
+      const onDemandCap = cfg.onDemandCap?.val ?? 0;
+      if (onDemandCap > 0) detail.push(`On-demand: ${onDemand}/${onDemandCap}`);
+      windows.push({
+        label: hasConsumer ? "SuperGrok free credits" : "Grok free credits",
+        remaining: remain,
+        resetAt: cfg.billingPeriodEnd,
+        detail,
+      });
+    }
+  } catch {
+    // non-fatal — keep rendering the rest of the card
+  }
+
+  // Dev / included API credits — GET /v1/billing (15k included tokens view)
+  try {
+    const billRes = await fetchTimeout(GROK_BILLING_BASE, {
+      headers: { Authorization: `Bearer ${auth.access}`, Accept: "application/json" },
+    });
+    if (billRes.ok) {
+      const cfg = ((await billRes.json()) as { config?: GrokIncludedConfig }).config ?? {};
+      const limit = cfg.monthlyLimit?.val;
+      const used = cfg.used?.val;
+      if (typeof limit === "number" && limit > 0 && typeof used === "number") {
+        const remain = Math.max(0, Math.min(100, (1 - used / limit) * 100));
+        windows.push({
+          label: "Dev API (included tokens)",
+          remaining: remain,
+          resetAt: cfg.billingPeriodEnd,
+          detail: [`Used: ${used.toLocaleString()} / ${limit.toLocaleString()} tokens`],
+        });
+      }
+    }
+  } catch {}
+
+  if (!hasConsumer) {
+    header.push("SuperGrok:      run `grok login` to show free credits");
+  }
+
+  // Validate the dev token still works against the API.
   try {
     const res = await fetchTimeout("https://api.x.ai/v1/models", {
       headers: {
@@ -1562,19 +1838,12 @@ async function queryXai(auth: XaiAuthData | undefined): Promise<QueryResult | nu
         "x-grok-source": "opencode-allstatus",
       },
     });
-
     if (!res.ok) throw new Error(`xAI API error (${res.status})`);
-
-    const header = ["Auth:           valid"];
-    if (typeof auth.expires === "number" && auth.expires > Date.now()) {
-      header.push(`Token expires:  ${formatDuration(Math.floor((auth.expires - Date.now()) / 1000))}`);
-    }
-    header.push("Usage API:      xAI does not expose a public usage endpoint");
-
-    return { success: true, cards: [{ header }] };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
+
+  return { success: true, cards: [{ header, windows: windows.length ? windows : undefined }] };
 }
 
 // ============================================================
@@ -2481,7 +2750,7 @@ const PROVIDERS: Provider[] = [
   { id: "opencode-go", title: "OpenCode Go+Zen Account Quota", query: (a, ansi) => queryOpenCodeGoZen(a["opencode-go"], ansi) },
   { id: "poe", title: "Poe Account Quota", query: (a, ansi) => queryPoe(a.poe, ansi) },
   { id: "zai", title: "Z.AI Coding Plan", query: (a, ansi) => queryZai(a["zai-coding-plan"], ansi) },
-  { id: "xai", title: "xAI/Grok", query: (a) => queryXai(a["xai-oauth"]) },
+  { id: "xai", title: "xAI/Grok", query: (a) => queryXai(a["xai-oauth"] ?? a.xai) },
   { id: "minimax", title: "MiniMax Token Plan", query: (a, ansi) => queryMiniMax(a["minimax-coding-plan"], ansi) },
   { id: "nanogpt", title: "NanoGPT Account Quota", query: (a, ansi) => queryNanoGpt(a["nano-gpt"], ansi) },
 ];

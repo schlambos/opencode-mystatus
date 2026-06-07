@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **xAI/Grok SuperGrok free credits** — the xAI card now surfaces the consumer "Credits used: X% · Resets …" view shown in the Grok Build TUI and grok.com, alongside the dev API included-tokens view. It reads the consumer (`grok-build` referrer) token from `~/.grok/auth.json` via `cli-chat-proxy.grok.com/v1/billing?format=credits`, auto-refreshing it through `auth.x.ai/oauth2/token` (and persisting the refreshed token back) when expired, and falls back to the dev token so the card still renders for dev-only users. Also fixes the dev token lookup to read both `xai` and `xai-oauth` keys from OpenCode's `auth.json` (the stored key is `xai`), and renders two windows: "SuperGrok free credits" (remaining % + `Credits used: N% · Resets Mon D`) and "Dev API (included tokens)" (`Used: N / 15,000 tokens`). Missing/malformed `~/.grok/auth.json` degrades gracefully to a `run grok login` hint.
+
 ### Fixed
 
+- **Google/Antigravity quota misreporting** — the live-quota path (`cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels`) matched a hard-coded list of model keys (`gemini-3.1-pro-high`, `gemini-3-pro-image`, `claude-opus-4-6-thinking`, …). Google recycles those key slots and remaps the served model via `displayName` (e.g. the key `gemini-2.5-flash` currently serves "Gemini 3.1 Flash Lite", and `gemini-pro-agent` serves "Gemini 3.1 Pro (High)"), and `gemini-3-pro-image` no longer exists — so windows were silently dropped or attributed to the wrong family. The live path now classifies every returned model by `key + displayName` into the same `gemini-pro` / `gemini-flash` / `claude` families the auth plugin caches, aggregating the conservative (minimum) remaining fraction and earliest reset per family. This makes the live and cached paths consistent and resilient to Google's frequent model renames. (Confirmed against the live API: pro=3 / flash=9 / claude=2 models, matching the cached snapshot.)
 - **NanoGPT multi-auth status** — `mystatus` now reads both native OpenCode `auth.json` `nano-gpt` credentials and `opencode-nanogpt-multi-auth`'s `~/.local/share/opencode/nanogpt-keys.json` pool. Plugin-managed keys render as separate labeled NanoGPT cards, dummy loader keys are ignored, and duplicate native/plugin keys are de-duplicated.
 
 ## [3.1.0] - 2026-06-04
