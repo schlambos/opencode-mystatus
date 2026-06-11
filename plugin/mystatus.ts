@@ -559,12 +559,13 @@ const GOOGLE_CLIENT_SECRET = "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";
 // auth plugin caches (gemini-pro / gemini-flash / claude) and aggregate
 // conservatively. This keeps the live and cached paths consistent and resilient
 // to renames. The grouping mirrors opencode-antigravity-auth's classifyQuotaGroup.
-type AntigravityGroupKey = "gemini-pro" | "gemini-flash" | "claude";
+type AntigravityGroupKey = "gemini-pro" | "gemini-flash" | "claude" | "gpt-oss";
 
 const GOOGLE_QUOTA_GROUPS: Array<{ key: AntigravityGroupKey; display: string }> = [
   { key: "gemini-pro", display: "Gemini Pro" },
   { key: "gemini-flash", display: "Gemini Flash" },
   { key: "claude", display: "Claude" },
+  { key: "gpt-oss", display: "GPT-OSS" },
 ];
 
 interface AntigravityGroupAgg {
@@ -573,34 +574,37 @@ interface AntigravityGroupAgg {
   modelCount: number;
 }
 
-// Only Gemini 3 + Claude models carry user-facing Antigravity quota; gemini-2.5,
-// gpt-oss, and internal "chat_*"/"tab_*" helper models are excluded. Flash vs Pro
-// is decided by the model id (Claude is matched first).
-function classifyAntigravityGroup(modelName: string, displayName?: string): AntigravityGroupKey | null {
-  const combined = `${modelName} ${displayName ?? ""}`.toLowerCase();
-  if (combined.includes("claude")) return "claude";
-  const isGemini3 = combined.includes("gemini-3") || combined.includes("gemini 3");
-  if (!isGemini3) return null;
-  return modelName.toLowerCase().includes("flash") ? "gemini-flash" : "gemini-pro";
+// Classify a retrieveUserQuota bucket modelId into a user-facing family.
+// Internal "chat_*"/"tab_*" helper models carry no user quota and are dropped.
+// Order matters: Claude and GPT-OSS are matched before the Gemini families.
+function classifyAntigravityGroup(modelId: string): AntigravityGroupKey | null {
+  const m = modelId.toLowerCase();
+  if (m.startsWith("chat_") || m.startsWith("tab_")) return null;
+  if (m.includes("claude")) return "claude";
+  if (m.includes("gpt-oss") || m.includes("gpt")) return "gpt-oss";
+  if (!m.includes("gemini")) return null;
+  return m.includes("flash") ? "gemini-flash" : "gemini-pro";
 }
 
-// Fold per-model quota into family buckets using the conservative (minimum)
-// remaining fraction and the earliest reset time, matching the auth plugin's
-// aggregateQuota so the live path agrees with the cached snapshot.
+// Fold per-model quota buckets into family buckets using the conservative
+// (minimum) remaining fraction and the earliest reset time, matching the auth
+// plugin's aggregateQuota so the live path agrees with the cached snapshot.
 function aggregateAntigravityQuota(
-  models: GoogleQuotaResponse["models"] | undefined,
+  buckets: RetrieveUserQuotaResponse["buckets"] | undefined,
 ): Partial<Record<AntigravityGroupKey, AntigravityGroupAgg>> {
   const groups: Partial<Record<AntigravityGroupKey, AntigravityGroupAgg>> = {};
-  for (const [modelName, entry] of Object.entries(models ?? {})) {
-    const group = classifyAntigravityGroup(modelName, entry.displayName);
+  for (const bucket of buckets ?? []) {
+    const modelId = bucket.modelId;
+    if (!modelId) continue;
+    const group = classifyAntigravityGroup(modelId);
     if (!group) continue;
 
-    const rawFraction = entry.quotaInfo?.remainingFraction;
+    const rawFraction = bucket.remainingFraction;
     const fraction =
       typeof rawFraction === "number" && Number.isFinite(rawFraction)
         ? Math.max(0, Math.min(1, rawFraction))
         : undefined;
-    const resetTime = entry.quotaInfo?.resetTime;
+    const resetTime = bucket.resetTime;
     const existing = groups[group];
 
     const nextRemaining =
@@ -645,21 +649,70 @@ async function refreshGoogleAccessToken(refreshToken: string): Promise<string> {
   return data.access_token;
 }
 
-interface GoogleQuotaResponse {
-  models: Record<
-    string,
-    { displayName?: string; quotaInfo?: { remainingFraction?: number; resetTime?: string } }
-  >;
+interface RetrieveUserQuotaResponse {
+  buckets?: Array<{
+    modelId?: string;
+    remainingFraction?: number;
+    remainingAmount?: string;
+    resetTime?: string;
+    tokenType?: string;
+  }>;
+}
+
+// The Cloud Code ClientMetadata.platform field is a typed enum; the string
+// "MACOS"/"WINDOWS" used elsewhere is rejected with HTTP 400 here, which is why
+// project resolution silently failed and quota fell back to the generic catalog.
+function googlePlatformEnum(): string {
+  if (process.platform === "win32") return "WINDOWS_AMD64";
+  if (process.platform === "darwin") {
+    return process.arch === "arm64" ? "DARWIN_ARM64" : "DARWIN_AMD64";
+  }
+  return process.arch === "arm64" ? "LINUX_ARM64" : "LINUX_AMD64";
+}
+
+// Resolve the account's managed cloudaicompanion project via loadCodeAssist.
+// retrieveUserQuota returns the generic (always-100%) catalog without it.
+async function resolveGoogleProject(accessToken: string, fallback: string): Promise<string> {
+  const platform = googlePlatformEnum();
+  try {
+    const res = await fetchTimeout(
+      "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+          "User-Agent": "google-api-nodejs-client/9.15.1",
+          "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
+          "Client-Metadata": `{"ideType":"ANTIGRAVITY","platform":"${platform}","pluginType":"GEMINI"}`,
+        },
+        body: JSON.stringify({
+          metadata: { ideType: "ANTIGRAVITY", platform, pluginType: "GEMINI" },
+        }),
+      },
+    );
+    if (!res.ok) return fallback;
+    const data = (await res.json()) as {
+      cloudaicompanionProject?: string | { id?: string };
+    };
+    const proj =
+      typeof data.cloudaicompanionProject === "string"
+        ? data.cloudaicompanionProject
+        : data.cloudaicompanionProject?.id;
+    return proj || fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 async function fetchGoogleLiveQuota(
   accessToken: string,
   projectId: string,
   userAgent: string,
-): Promise<GoogleQuotaResponse | null> {
+): Promise<RetrieveUserQuotaResponse | null> {
   try {
     const res = await fetchTimeout(
-      "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+      "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
       {
         method: "POST",
         headers: {
@@ -667,11 +720,11 @@ async function fetchGoogleLiveQuota(
           Authorization: `Bearer ${accessToken}`,
           "User-Agent": userAgent,
         },
-        body: JSON.stringify({ project: projectId }),
+        body: JSON.stringify(projectId ? { project: projectId } : {}),
       },
     );
     if (!res.ok) return null;
-    return (await res.json()) as GoogleQuotaResponse;
+    return (await res.json()) as RetrieveUserQuotaResponse;
   } catch {
     return null;
   }
@@ -716,11 +769,12 @@ async function queryGoogle(ansi = false): Promise<QueryResult> {
       let usedLive = false;
       try {
         const accessToken = await refreshGoogleAccessToken(account.refreshToken);
-        const projectId = account.projectId || account.managedProjectId || "";
+        const knownProject = account.managedProjectId || account.projectId || "";
+        const projectId = knownProject || (await resolveGoogleProject(accessToken, ""));
         const liveData = await fetchGoogleLiveQuota(accessToken, projectId, ua);
 
-        if (liveData?.models) {
-          const grouped = aggregateAntigravityQuota(liveData.models);
+        if (liveData?.buckets) {
+          const grouped = aggregateAntigravityQuota(liveData.buckets);
           for (const group of GOOGLE_QUOTA_GROUPS) {
             const info = grouped[group.key];
             if (info && info.remainingFraction !== undefined) {
