@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>All your AI usage, in one glance.</strong><br>
-  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — eleven providers, one command.
+  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — twelve providers, one command.
 </p>
 
 <p align="center">
@@ -23,7 +23,7 @@ Subscriptions pile up — ChatGPT, Claude, Gemini, Copilot, Grok, and a handful 
 ## Why you'll want it
 
 - **Never get surprised by a limit again.** See what's running low *before* it blocks you, with projected "time to empty" estimates.
-- **One place for everything.** Eleven providers, multiple accounts each, in a single scrollable view.
+- **One place for everything.** Twelve providers, multiple accounts each, in a single scrollable view.
 - **Zero busywork.** If you've signed into a provider in OpenCode, it just works — no extra keys to wire up.
 - **Built for the terminal.** Responsive cards that size to your window, color-coded bars, and a summary up top.
 
@@ -46,7 +46,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 ```text
 ╭─ Summary ────────────────────────────────────────────────────────╮
 │                                                                  │
-│  Accounts:       11   🟩 5  🟨 2  🟧 2  🟥 2                            │
+│  Accounts:       12   🟩 6  🟨 2  🟧 2  🟥 2                            │
 │  Lowest:         OpenCode Go+Zen — OpenCode Go Personal · Mont…  │
 │  Soonest reset:  OpenAI Account Quota · 5-hour limit  7m         │
 │                                                                  │
@@ -127,6 +127,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 | **MiniMax** | Token Plan | 5-hour &amp; 7-day text windows |
 | **NanoGPT** | Balance + subscription | USD balance, weekly tokens &amp; daily image allowances |
 | **StepFun** | Step Plan (Plus/Pro/etc.) | Plan details + 5-hour &amp; weekly rolling windows |
+| **QwenCloud** | Token Plan (Team Edition) | Credits remaining + cycle dates |
 
 Providers you aren't signed into are skipped silently — you only ever see what's relevant to you.
 
@@ -218,7 +219,7 @@ All options are optional and can be set per-call or as [defaults in your config]
 | `fresh` | boolean | `false` | Bypass the cache and force a live fetch |
 | `format` | `ansi` · `json` | `ansi` | `json` returns machine-readable output |
 
-Provider ids: `openai`, `anthropic`, `google`, `copilot`, `opencode-go`, `poe`, `zai`, `xai`, `minimax`, `nanogpt`, `stepfun`.
+Provider ids: `openai`, `anthropic`, `google`, `copilot`, `opencode-go`, `poe`, `zai`, `xai`, `minimax`, `nanogpt`, `stepfun`, `qwencloud`.
 
 ## Configuration
 
@@ -342,6 +343,29 @@ StepFun does not expose a usage REST API — instead the plugin reads the dashbo
 The session token expires periodically — re-copy the cookies when it does. Without this file the StepFun card is silently skipped.
 </details>
 
+<details>
+<summary><strong>QwenCloud</strong> — requires browser cookies from the dashboard</summary>
+
+<br>
+
+QwenCloud does not expose a usage REST API — instead the plugin reads the Aliyun BSS console API using your authenticated browser session. To set it up:
+
+1. Log into <https://home.qwencloud.com>.
+2. Open DevTools → Application → Cookies → `home.qwencloud.com`.
+3. Copy the values of these cookies and save to `~/.config/opencode/qwencloud-cookies.json`:
+
+```json
+{
+  "ticket": "<login_qwencloud_ticket>",
+  "aliyunPk": "<login_aliyunid_pk>",
+  "isg": "<isg>",
+  "esmTicket": "<login_ESM_account_ticket>"
+}
+```
+
+The `esmTicket` is optional. Session cookies expire periodically — re-copy them when the card stops working. Without this file the QwenCloud card is silently skipped.
+</details>
+
 ## Security &amp; privacy
 
 `mystatus` is **read-only** for your accounts and contacts each provider's own API only.
@@ -355,7 +379,7 @@ The session token expires periodically — re-copy the cookies when it does. Wit
 
 <br>
 
-**Read (never modified):** `~/.local/share/opencode/auth.json`, and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json` under `~/.config/opencode/`.
+**Read (never modified):** `~/.local/share/opencode/auth.json`, and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `qwencloud-cookies.json` under `~/.config/opencode/`.
 
 | Provider | Endpoint(s) |
 |---|---|
@@ -370,6 +394,7 @@ The session token expires periodically — re-copy the cookies when it does. Wit
 | MiniMax | `api.minimax.io/v1/token_plan/remains` |
 | NanoGPT | `nano-gpt.com/api/check-balance`, `nano-gpt.com/api/subscription/v1/usage` |
 | StepFun | `platform.stepfun.ai/api/.../Dashboard/QueryStepPlanRateLimit`, `.../GetStepPlanStatus` |
+| QwenCloud | `home.qwencloud.com/data/api.json?...GetSeatSubscriptionSummary` |
 
 Some usage endpoints are internal/undocumented and may change without notice; the plugin degrades gracefully when one is unavailable.
 </details>
@@ -392,7 +417,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Credits
 
-Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, GitHub Copilot, OpenCode Go+Zen, Poe, multi-account Google, Z.AI, xAI/Grok, MiniMax, NanoGPT, and StepFun.
+Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, GitHub Copilot, OpenCode Go+Zen, Poe, multi-account Google, Z.AI, xAI/Grok, MiniMax, NanoGPT, StepFun, and QwenCloud.
 
 ## License
 

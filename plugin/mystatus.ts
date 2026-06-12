@@ -12,6 +12,8 @@
  *   - xAI/Grok    (SuperGrok free credits + dev API)  auth.json → xai/xai-oauth (dev) + ~/.grok/auth.json (consumer, auto-refreshed) via cli-chat-proxy /v1/billing[?format=credits]
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
+ *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
+ *   - QwenCloud   (Token Plan)              qwencloud-cookies.json → dashboard API
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)
@@ -2285,6 +2287,250 @@ async function queryStepFun(ansi = false): Promise<QueryResult | null> {
 }
 
 // ============================================================
+// QwenCloud Token Plan (home.qwencloud.com — Aliyun BSS API)
+// ============================================================
+//
+//   Quota source:    POST https://home.qwencloud.com/data/api.json?...GetSeatSubscriptionSummary
+//   Renewal source:  POST https://home.qwencloud.com/data/api.json?...CheckTokenPlanAutoRenewal
+//   Auth:            Browser session cookies (login_qwencloud_ticket,
+//                    login_aliyunid_pk, isg, login_ESM_account_ticket)
+//                    stored in ~/.config/opencode/qwencloud-cookies.json
+//   CSRF:            Requires sec_token extracted from homepage HTML
+//   Response shape:  TotalValue + SurplusValue (credits), EndTime, RemainingDays
+//
+//   To set up: log into home.qwencloud.com, open DevTools → Application →
+//   Cookies, copy the cookie values, and save as:
+//     {
+//       "ticket": "<login_qwencloud_ticket>",
+//       "aliyunPk": "<login_aliyunid_pk>",
+//       "isg": "<isg>",
+//       "esmTicket": "<login_ESM_account_ticket>"
+//     }
+
+const QWENCLOUD_BASE = "https://home.qwencloud.com";
+const QWENCLOUD_BX_V = "2.5.36";
+
+interface QwenCloudCookieConfig {
+  ticket: string;
+  aliyunPk: string;
+  isg: string;
+  esmTicket?: string;
+}
+
+interface QwenCloudSubSummaryResponse {
+  code: string;
+  data: {
+    Data: {
+      EndTime: number;
+      StartTime: number;
+      RemainingDays: string;
+      SubscriptionGroupList: Array<{
+        SpecType: string;
+        SubscriptionTotalNumber: number;
+        EquityList: Array<{
+          EquityCode: string;
+          TotalValue: string;
+          SurplusValue: string;
+          EquityType: string;
+        }>;
+        NextCycleFlushTime: number;
+      }>;
+    };
+    Code: string;
+    Success: boolean;
+  };
+}
+
+interface QwenCloudRenewalResponse {
+  Code: string;
+  Success: boolean;
+  Data: {
+    AutoRenewal: number;
+  };
+}
+
+function qwencloudCookiesPath(): string {
+  return join(opencodeConfigDir(), "qwencloud-cookies.json");
+}
+
+function loadQwenCloudCookies(): QwenCloudCookieConfig | null {
+  try {
+    const p = qwencloudCookiesPath();
+    if (!existsSync(p)) return null;
+    const raw = readFileSync(p, "utf-8");
+    const cfg = JSON.parse(raw) as QwenCloudCookieConfig;
+    if (cfg.ticket && cfg.aliyunPk && cfg.isg) return cfg;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function qwencloudCookieString(cookies: QwenCloudCookieConfig): string {
+  let c = `login_qwencloud_ticket=${cookies.ticket}; login_aliyunid_pk=${cookies.aliyunPk}; isg=${cookies.isg}`;
+  if (cookies.esmTicket) c += `; login_ESM_account_ticket=${cookies.esmTicket}`;
+  return c;
+}
+
+function qwencloudHeaders(cookies: QwenCloudCookieConfig): Record<string, string> {
+  return {
+    Cookie: qwencloudCookieString(cookies),
+    "bx-v": QWENCLOUD_BX_V,
+    Referer: `${QWENCLOUD_BASE}/`,
+    Origin: QWENCLOUD_BASE,
+    "User-Agent": "OpenCode-AllStatus/1.0",
+    Accept: "application/json, text/plain, */*",
+  };
+}
+
+// Fetch the homepage, extract SEC_TOKEN from inline JS.
+async function qwencloudFetchSecToken(
+  cookies: QwenCloudCookieConfig,
+): Promise<string | null> {
+  try {
+    const headers = qwencloudHeaders(cookies);
+    delete (headers as Record<string, string | undefined>)["Content-Type"];
+    const res = await fetchTimeout(`${QWENCLOUD_BASE}/`, {
+      headers,
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const m = html.match(/SEC_TOKEN:\s*"([^"]+)"/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+async function queryQwenCloud(ansi = false): Promise<QueryResult | null> {
+  const cookies = loadQwenCloudCookies();
+  if (!cookies) return null;
+
+  // Step 1: get CSRF token from homepage
+  const secToken = await qwencloudFetchSecToken(cookies);
+  if (!secToken) {
+    return {
+      success: false,
+      error:
+        "Could not extract SEC_TOKEN from QwenCloud homepage.\n" +
+        "Your session cookies may have expired — re-copy them from the browser.",
+    };
+  }
+
+  const baseHeaders = qwencloudHeaders(cookies);
+
+  try {
+    // Step 2: call subscription + renewal in parallel
+    const params = new URLSearchParams({
+      product: "BssOpenAPI-V3",
+      action: "GetSeatSubscriptionSummary",
+      sec_token: secToken,
+      region: "ap-southeast-1",
+      params: JSON.stringify({ productCode: "sfm_tokenplanteams_dp_intl" }),
+    });
+
+    const [subRes, renewalRes] = await Promise.all([
+      fetchTimeout(
+        `${QWENCLOUD_BASE}/data/api.json?product=BssOpenAPI-V3&action=GetSeatSubscriptionSummary`,
+        {
+          method: "POST",
+          headers: { ...baseHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+          body: params,
+        },
+      ),
+      fetchTimeout(
+        `${QWENCLOUD_BASE}/data/api.json?product=BssOpenApi&action=CheckTokenPlanAutoRenewal`,
+        {
+          method: "POST",
+          headers: { ...baseHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            CommodityCode: "sfm_tokenplanteams_dp_intl",
+          }),
+        },
+      ),
+    ]);
+
+    // Parse subscription summary
+    let subData: QwenCloudSubSummaryResponse | null = null;
+    if (subRes.ok) {
+      try {
+        subData = (await subRes.json()) as QwenCloudSubSummaryResponse;
+      } catch { /* keep null */ }
+    }
+
+    // Parse auto-renewal
+    let autoRenewal: boolean | null = null;
+    if (renewalRes.ok) {
+      try {
+        const data = (await renewalRes.json()) as QwenCloudRenewalResponse;
+        if (data.Success) autoRenewal = data.Data.AutoRenewal === 1;
+      } catch { /* keep null */ }
+    }
+
+    if (!subData || subData.code !== "200" || !subData.data?.Data) {
+      if (!subRes.ok) {
+        const body = await subRes.text().catch(() => "");
+        throw new Error(`QwenCloud API error (${subRes.status}): ${body.slice(0, 200)}`);
+      }
+      return {
+        success: true,
+        cards: [{ header: ["Plan:           QwenCloud (no subscription data)"] }],
+      };
+    }
+
+    const detail = subData.data.Data;
+    const group = detail.SubscriptionGroupList?.[0];
+    const equity = group?.EquityList?.find((e) => e.EquityType === "CREDITS");
+
+    // Plan info
+    const seats = group?.SubscriptionTotalNumber ?? 1;
+    const spec = group?.SpecType ?? "standard";
+    const header: string[] = [
+      `Plan:           Token Plan Team Edition (${spec}, ${seats} seat${seats > 1 ? "s" : ""})`,
+    ];
+
+    // Auto-renewal
+    if (autoRenewal !== null) {
+      header.push(`Auto-renewal:   ${autoRenewal ? "enabled" : "disabled"}`);
+    }
+
+    const windows: QuotaWindow[] = [];
+    if (equity) {
+      const total = Number(equity.TotalValue);
+      const surplus = Number(equity.SurplusValue);
+      const used = total - surplus;
+      const remainPct = total > 0 ? Math.round((surplus / total) * 100) : 100;
+
+      windows.push({
+        label: `Credits (${detail.RemainingDays ?? "?"}d remaining)`,
+        remaining: remainPct,
+        detail: [`Used: ${used.toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${total.toLocaleString(undefined, { maximumFractionDigits: 0 })}`],
+        resetAt: group?.NextCycleFlushTime
+          ? new Date(group.NextCycleFlushTime).toISOString()
+          : undefined,
+      });
+    }
+
+    const footer: string[] = [];
+    if (detail.EndTime) {
+      footer.push(
+        `Cycle:          ${new Date(detail.StartTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })} — ${new Date(detail.EndTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
+      );
+    }
+
+    return {
+      success: true,
+      cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+// ============================================================
 // NanoGPT (nano-gpt.com)
 // ============================================================
 //
@@ -3014,6 +3260,7 @@ const PROVIDERS: Provider[] = [
   { id: "minimax", title: "MiniMax Token Plan", query: (a, ansi) => queryMiniMax(a["minimax-coding-plan"], ansi) },
   { id: "nanogpt", title: "NanoGPT Account Quota", query: (a, ansi) => queryNanoGpt(a["nano-gpt"], ansi) },
   { id: "stepfun", title: "StepFun Token Plan", query: (_a, ansi) => queryStepFun(ansi) },
+  { id: "qwencloud", title: "QwenCloud Token Plan", query: (_a, ansi) => queryQwenCloud(ansi) },
 ];
 
 function splitIds(s: string | undefined): string[] {
@@ -3416,7 +3663,7 @@ export const MyStatusPlugin: Plugin = async () => ({
   tool: {
     mystatus: tool({
       description:
-        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, and StepFun Token Plan. Output is a single-column stack of provider cards, sorted by urgency, with a summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: openai,anthropic,google,copilot,opencode-go,poe,zai,xai,minimax,nanogpt,stepfun), fresh (bool), threshold (number), format (ansi|json).",
+        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, and QwenCloud Token Plan. Output is a single-column stack of provider cards, sorted by urgency, with a summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: openai,anthropic,google,copilot,opencode-go,poe,zai,xai,minimax,nanogpt,stepfun,qwencloud), fresh (bool), threshold (number), format (ansi|json).",
       args: {
         format: tool.schema.string().optional(),
         threshold: tool.schema.number().optional(),
