@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>All your AI usage, in one glance.</strong><br>
-  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — ten providers, one command.
+  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — eleven providers, one command.
 </p>
 
 <p align="center">
@@ -23,7 +23,7 @@ Subscriptions pile up — ChatGPT, Claude, Gemini, Copilot, Grok, and a handful 
 ## Why you'll want it
 
 - **Never get surprised by a limit again.** See what's running low *before* it blocks you, with projected "time to empty" estimates.
-- **One place for everything.** Ten providers, multiple accounts each, in a single scrollable view.
+- **One place for everything.** Eleven providers, multiple accounts each, in a single scrollable view.
 - **Zero busywork.** If you've signed into a provider in OpenCode, it just works — no extra keys to wire up.
 - **Built for the terminal.** Responsive cards that size to your window, color-coded bars, and a summary up top.
 
@@ -46,7 +46,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 ```text
 ╭─ Summary ────────────────────────────────────────────────────────╮
 │                                                                  │
-│  Accounts:       10   🟩 4  🟨 2  🟧 4                            │
+│  Accounts:       11   🟩 5  🟨 2  🟧 2  🟥 2                            │
 │  Lowest:         OpenCode Go+Zen — OpenCode Go Personal · Mont…  │
 │  Soonest reset:  OpenAI Account Quota · 5-hour limit  7m         │
 │                                                                  │
@@ -126,6 +126,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 | **xAI / Grok** | SuperGrok | Auth validity &amp; token-expiry countdown* |
 | **MiniMax** | Token Plan | 5-hour &amp; 7-day text windows |
 | **NanoGPT** | Balance + subscription | USD balance, weekly tokens &amp; daily image allowances |
+| **StepFun** | Step Plan (Plus/Pro/etc.) | Plan details + 5-hour &amp; weekly rolling windows |
 
 Providers you aren't signed into are skipped silently — you only ever see what's relevant to you.
 
@@ -217,7 +218,7 @@ All options are optional and can be set per-call or as [defaults in your config]
 | `fresh` | boolean | `false` | Bypass the cache and force a live fetch |
 | `format` | `ansi` · `json` | `ansi` | `json` returns machine-readable output |
 
-Provider ids: `openai`, `anthropic`, `google`, `copilot`, `opencode-go`, `poe`, `zai`, `xai`, `minimax`, `nanogpt`.
+Provider ids: `openai`, `anthropic`, `google`, `copilot`, `opencode-go`, `poe`, `zai`, `xai`, `minimax`, `nanogpt`, `stepfun`.
 
 ## Configuration
 
@@ -319,6 +320,28 @@ Single-account shorthand `{ "workspaceId": "...", "authCookie": "..." }` or the 
 Resolved in priority order: `auth.json` → `poe` (populated when you use a Poe model in OpenCode), then `POE_API_KEY`, then `~/.config/opencode/poe-api-key.json` (`{ "apiKey": "..." }`). Get a key at <https://poe.com/api_key>.
 </details>
 
+<details>
+<summary><strong>StepFun</strong> — requires browser cookies from the dashboard</summary>
+
+<br>
+
+StepFun does not expose a usage REST API — instead the plugin reads the dashboard's internal tRPC API using your authenticated browser session. To set it up:
+
+1. Log into <https://platform.stepfun.ai>.
+2. Open DevTools → Application → Cookies → `platform.stepfun.ai`.
+3. Copy the values of these three cookies and save to `~/.config/opencode/stepfun-cookies.json`:
+
+```json
+{
+  "oasisToken": "<Oasis-Token value>",
+  "oasisWebid": "<Oasis-Webid value>",
+  "sessionToken": "<__Secure-next-auth.session-token value>"
+}
+```
+
+The session token expires periodically — re-copy the cookies when it does. Without this file the StepFun card is silently skipped.
+</details>
+
 ## Security &amp; privacy
 
 `mystatus` is **read-only** for your accounts and contacts each provider's own API only.
@@ -332,7 +355,7 @@ Resolved in priority order: `auth.json` → `poe` (populated when you use a Poe 
 
 <br>
 
-**Read (never modified):** `~/.local/share/opencode/auth.json`, and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json` under `~/.config/opencode/`.
+**Read (never modified):** `~/.local/share/opencode/auth.json`, and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json` under `~/.config/opencode/`.
 
 | Provider | Endpoint(s) |
 |---|---|
@@ -346,6 +369,7 @@ Resolved in priority order: `auth.json` → `poe` (populated when you use a Poe 
 | xAI / Grok | `api.x.ai/v1/models` |
 | MiniMax | `api.minimax.io/v1/token_plan/remains` |
 | NanoGPT | `nano-gpt.com/api/check-balance`, `nano-gpt.com/api/subscription/v1/usage` |
+| StepFun | `platform.stepfun.ai/api/.../Dashboard/QueryStepPlanRateLimit`, `.../GetStepPlanStatus` |
 
 Some usage endpoints are internal/undocumented and may change without notice; the plugin degrades gracefully when one is unavailable.
 </details>
@@ -368,7 +392,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Credits
 
-Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, GitHub Copilot, OpenCode Go+Zen, Poe, multi-account Google, Z.AI, xAI/Grok, MiniMax, and NanoGPT.
+Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, GitHub Copilot, OpenCode Go+Zen, Poe, multi-account Google, Z.AI, xAI/Grok, MiniMax, NanoGPT, and StepFun.
 
 ## License
 
