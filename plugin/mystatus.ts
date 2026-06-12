@@ -2079,6 +2079,212 @@ async function queryMiniMax(
 }
 
 // ============================================================
+// StepFun Token Plan (stepfun.ai — Oasis dashboard API)
+// ============================================================
+//
+//   Quota source:    POST https://platform.stepfun.ai/api/.../QueryStepPlanRateLimit
+//   Plan source:     POST https://platform.stepfun.ai/api/.../GetStepPlanStatus
+//   Auth:            Oasis browser session cookies (Oasis-Token, Oasis-Webid,
+//                    __Secure-next-auth.session-token) stored in
+//                    ~/.config/opencode/stepfun-cookies.json
+//   Response shape:  five_hour_usage_left_rate (0-1) + weekly_usage_left_rate (0-1)
+//                    with epoch-second reset times.
+//
+//   To set up: log into platform.stepfun.ai, open DevTools → Application →
+//   Cookies, copy the three cookie values, and save as:
+//     {
+//       "oasisToken": "<Oasis-Token value>",
+//       "oasisWebid": "<Oasis-Webid value>",
+//       "sessionToken": "<__Secure-next-auth.session-token value>"
+//     }
+
+const STEPFUN_DASHBOARD_BASE = "https://platform.stepfun.ai";
+const STEPFUN_OASIS_APPID = "20700";
+
+interface StepFunCookieConfig {
+  oasisToken: string;
+  oasisWebid: string;
+  sessionToken: string;
+}
+
+interface StepFunPlanStatusResponse {
+  status: number;
+  desc: string;
+  subscription: {
+    plan_type: number;
+    name: string;
+    status: number;
+    pay_channel: number;
+    activated_at: string;
+    expired_at: string;
+    auto_renew: boolean;
+    plan_id: string;
+    source_channel_code: string;
+  };
+  plan_definition: {
+    type: number;
+    price: string;
+    duration_days: number;
+    support_models: string[];
+    available: boolean;
+    original_price: string;
+    plan_id: string;
+    billing_cycle: number;
+  };
+  can_resign: boolean;
+}
+
+interface StepFunRateLimitResponse {
+  status: number;
+  desc: string;
+  five_hour_usage_left_rate: number;
+  five_hour_usage_reset_time: string;
+  weekly_usage_left_rate: number;
+  weekly_usage_reset_time: string;
+}
+
+function stepfunCookiesPath(): string {
+  return join(opencodeConfigDir(), "stepfun-cookies.json");
+}
+
+function loadStepFunCookies(): StepFunCookieConfig | null {
+  try {
+    const p = stepfunCookiesPath();
+    if (!existsSync(p)) return null;
+    const raw = readFileSync(p, "utf-8");
+    const cfg = JSON.parse(raw) as StepFunCookieConfig;
+    if (cfg.oasisToken && cfg.oasisWebid && cfg.sessionToken) return cfg;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function stepfunDashboardHeaders(cookies: StepFunCookieConfig): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "oasis-appid": STEPFUN_OASIS_APPID,
+    "oasis-platform": "web",
+    "oasis-webid": cookies.oasisWebid,
+    Cookie: `Oasis-Token=${cookies.oasisToken}; Oasis-Webid=${cookies.oasisWebid}; __Secure-next-auth.session-token=${cookies.sessionToken}`,
+    Origin: STEPFUN_DASHBOARD_BASE,
+    Referer: `${STEPFUN_DASHBOARD_BASE}/plan-usage`,
+    "User-Agent": "OpenCode-AllStatus/1.0",
+    Accept: "application/json",
+  };
+}
+
+function stepfunResetAt(epochSec: string | undefined): string | undefined {
+  if (!epochSec) return undefined;
+  const s = Number(epochSec);
+  if (!Number.isFinite(s) || s <= 0) return undefined;
+  const d = new Date(s * 1000);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
+async function queryStepFun(ansi = false): Promise<QueryResult | null> {
+  const cookies = loadStepFunCookies();
+  if (!cookies) return null;
+
+  const headers = stepfunDashboardHeaders(cookies);
+
+  try {
+    const [rateRes, planRes] = await Promise.all([
+      fetchTimeout(
+        `${STEPFUN_DASHBOARD_BASE}/api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit`,
+        { method: "POST", headers, body: "{}" },
+      ),
+      fetchTimeout(
+        `${STEPFUN_DASHBOARD_BASE}/api/step.openapi.devcenter.Dashboard/GetStepPlanStatus`,
+        { method: "POST", headers, body: "{}" },
+      ),
+    ]);
+
+    // Parse rate limit data
+    let rateLimit: StepFunRateLimitResponse | null = null;
+    if (rateRes.ok) {
+      try {
+        const data = (await rateRes.json()) as StepFunRateLimitResponse;
+        if (data.status === 1) rateLimit = data;
+      } catch { /* keep null */ }
+    }
+
+    // Parse plan status data
+    let planStatus: StepFunPlanStatusResponse | null = null;
+    if (planRes.ok) {
+      try {
+        const data = (await planRes.json()) as StepFunPlanStatusResponse;
+        if (data.status === 1) planStatus = data;
+      } catch { /* keep null */ }
+    }
+
+    if (!rateLimit && !planStatus) {
+      if (!rateRes.ok && !planRes.ok) {
+        const body = await rateRes.text().catch(() => "");
+        throw new Error(`StepFun dashboard API error (${rateRes.status}): ${body.slice(0, 200)}`);
+      }
+      return {
+        success: true,
+        cards: [{ header: ["Plan:           StepFun (no data returned)"] }],
+      };
+    }
+
+    const header: string[] = [];
+    const plan = planStatus?.subscription;
+    const def = planStatus?.plan_definition;
+
+    if (plan) {
+      header.push(`Plan:           ${plan.name}`);
+      if (plan.auto_renew) {
+        const exp = plan.expired_at ? stepfunResetAt(plan.expired_at) : undefined;
+        if (exp) header.push(`Renews:          ${formatResetAt(exp)}`);
+      } else {
+        const exp = plan.expired_at ? stepfunResetAt(plan.expired_at) : undefined;
+        if (exp) header.push(`Expires:         ${formatResetAt(exp)}`);
+      }
+      if (def?.price) {
+        const priceNum = Number(def.price) / 100;
+        if (Number.isFinite(priceNum)) {
+          header.push(`Price:           $${priceNum.toFixed(2)}/mo`);
+        }
+      }
+    }
+
+    const windows: QuotaWindow[] = [];
+    if (rateLimit) {
+      const fiveHourRemain = Math.round(rateLimit.five_hour_usage_left_rate * 100);
+      windows.push({
+        label: "5-hour rolling",
+        remaining: fiveHourRemain,
+        resetAt: stepfunResetAt(rateLimit.five_hour_usage_reset_time),
+      });
+
+      const weeklyRemain = Math.round(rateLimit.weekly_usage_left_rate * 100);
+      windows.push({
+        label: "Weekly",
+        remaining: weeklyRemain,
+        resetAt: stepfunResetAt(rateLimit.weekly_usage_reset_time),
+      });
+    }
+
+    const footer: string[] = [];
+    if (def?.support_models?.length) {
+      footer.push(`Models:         ${def.support_models.join(", ")}`);
+    }
+
+    return {
+      success: true,
+      cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+// ============================================================
 // NanoGPT (nano-gpt.com)
 // ============================================================
 //
@@ -2807,6 +3013,7 @@ const PROVIDERS: Provider[] = [
   { id: "xai", title: "xAI/Grok", query: (a) => queryXai(a["xai-oauth"] ?? a.xai) },
   { id: "minimax", title: "MiniMax Token Plan", query: (a, ansi) => queryMiniMax(a["minimax-coding-plan"], ansi) },
   { id: "nanogpt", title: "NanoGPT Account Quota", query: (a, ansi) => queryNanoGpt(a["nano-gpt"], ansi) },
+  { id: "stepfun", title: "StepFun Token Plan", query: (_a, ansi) => queryStepFun(ansi) },
 ];
 
 function splitIds(s: string | undefined): string[] {
@@ -3209,7 +3416,7 @@ export const MyStatusPlugin: Plugin = async () => ({
   tool: {
     mystatus: tool({
       description:
-        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, and NanoGPT. Output is a single-column stack of provider cards, sorted by urgency, with a summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: openai,anthropic,google,copilot,opencode-go,poe,zai,xai,minimax,nanogpt), fresh (bool), threshold (number), format (ansi|json).",
+        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, and StepFun Token Plan. Output is a single-column stack of provider cards, sorted by urgency, with a summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: openai,anthropic,google,copilot,opencode-go,poe,zai,xai,minimax,nanogpt,stepfun), fresh (bool), threshold (number), format (ansi|json).",
       args: {
         format: tool.schema.string().optional(),
         threshold: tool.schema.number().optional(),
