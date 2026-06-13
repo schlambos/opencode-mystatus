@@ -47,7 +47,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 ╭─ Summary ────────────────────────────────────────────────────────╮
 │                                                                  │
 │  Accounts:       13   🟩 10  🟨 1  🟧 2                           │
-│  Lowest:         Google — mattg4542@gmail.com · Claude  17%      │
+│  Lowest:         Google — johndoe@gmail.com · Claude  17%        │
 │  Soonest reset:  StepFun Token Plan · 5-hour rolling  7m         │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
