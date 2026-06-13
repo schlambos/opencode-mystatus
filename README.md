@@ -96,7 +96,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 
 ╭─ OpenAI Account Quota ───────────────────────────────────────────╮
 │                                                                  │
-│  Account:        mattg4542@gmail.com                             │
+│  Account:        johndoe@gmail.com                               │
 │  Plan:           ChatGPT plus                                    │
 │                                                                  │
 │  5-hour limit                                                    │
