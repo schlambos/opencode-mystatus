@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>All your AI usage, in one glance.</strong><br>
-  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — twelve providers, one command.
+  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — fourteen providers, one command.
 </p>
 
 <p align="center">
@@ -23,7 +23,7 @@ Subscriptions pile up — ChatGPT, Claude, Gemini, Copilot, Grok, and a handful 
 ## Why you'll want it
 
 - **Never get surprised by a limit again.** See what's running low *before* it blocks you, with projected "time to empty" estimates.
-- **One place for everything.** Twelve providers, multiple accounts each, in a single scrollable view.
+- **One place for everything.** Fourteen providers, multiple accounts each, in a single scrollable view.
 - **Zero busywork.** If you've signed into a provider in OpenCode, it just works — no extra keys to wire up.
 - **Built for the terminal.** Responsive cards that size to your window, color-coded bars, and a summary up top.
 
@@ -46,7 +46,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 ```text
 ╭─ Summary ────────────────────────────────────────────────────────╮
 │                                                                  │
-│  Accounts:       12   🟩 6  🟨 2  🟧 2  🟥 2                            │
+│  Accounts:       14   🟩 6  🟨 2  🟧 2  🟥 2                            │
 │  Lowest:         OpenCode Go+Zen — OpenCode Go Personal · Mont…  │
 │  Soonest reset:  OpenAI Account Quota · 5-hour limit  7m         │
 │                                                                  │
@@ -116,20 +116,20 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 
 | Provider | Account type | What you see |
 |---|---|---|
-| **OpenAI** | ChatGPT Plus / Team / Pro | 5-hour & 7-day rolling windows, credits |
 | **Anthropic** | Claude Pro / Max | 5-hour, 7-day, and per-model windows (auto token refresh) |
-| **Google** | Antigravity free quota | Gemini Pro / Flash / Claude, per account |
+| **BytePlus** | Ark Coding Plan | Plan details + rolling / weekly / monthly windows |
 | **GitHub Copilot** | Individual / Business | Premium, Chat & Completions usage |
+| **Google** | Antigravity free quota | Gemini Pro / Flash / Claude, per account |
+| **MiniMax** | Token Plan | 5-hour & 7-day text windows |
+| **Mistral** | Vibe Usage | Plan details + usage tracking |
+| **NanoGPT** | Balance + subscription | USD balance, weekly tokens & daily image allowances |
+| **OpenAI** | ChatGPT Plus / Team / Pro | 5-hour & 7-day rolling windows, credits |
 | **OpenCode Go+Zen** | Any Go subscription | Rolling/weekly/monthly quota **+** Zen balance & per-model spend |
 | **Poe** | Subscription or pay-go | Monthly points, daily grant, USD value |
-| **Z.AI** | GLM Coding Plan | Plan details + rolling / weekly / monthly windows |
-| **xAI / Grok** | SuperGrok | Auth validity & token-expiry countdown* |
-| **MiniMax** | Token Plan | 5-hour & 7-day text windows |
-| **NanoGPT** | Balance + subscription | USD balance, weekly tokens & daily image allowances |
-| **StepFun** | Step Plan (Plus/Pro/etc.) | Plan details + 5-hour & weekly rolling windows |
 | **QwenCloud** | Token Plan (Team Edition) | Credits remaining + cycle dates |
-| **Mistral** | Vibe Usage | Plan details + usage tracking |
-| **BytePlus** | Ark Coding Plan | Plan details + rolling / weekly / monthly windows |
+| **StepFun** | Step Plan (Plus/Pro/etc.) | Plan details + 5-hour & weekly rolling windows |
+| **xAI / Grok** | SuperGrok | Auth validity & token-expiry countdown* |
+| **Z.AI** | GLM Coding Plan | Plan details + rolling / weekly / monthly windows |
 
 Providers you aren't signed into are skipped silently — you only ever see what's relevant to you.
 
@@ -221,7 +221,7 @@ All options are optional and can be set per-call or as [defaults in your config]
 | `fresh` | boolean | `false` | Bypass the cache and force a live fetch |
 | `format` | `ansi` · `json` | `ansi` | `json` returns machine-readable output |
 
-Provider ids: `openai`, `anthropic`, `google`, `copilot`, `opencode-go`, `poe`, `zai`, `xai`, `minimax`, `nanogpt`, `stepfun`, `qwencloud`, `mistral`, `byteplus`.
+Provider ids: `anthropic`, `byteplus`, `copilot`, `google`, `minimax`, `mistral`, `nanogpt`, `openai`, `opencode-go`, `poe`, `qwencloud`, `stepfun`, `xai`, `zai`.
 
 ## Configuration
 
@@ -252,27 +252,31 @@ Most setups need **no configuration at all**. To set persistent defaults, create
 Anything authenticated inside OpenCode is detected automatically. The collapsible sections below cover the handful of providers with optional extra setup.
 
 <details>
-<summary><strong>Zero-config providers</strong> — OpenAI, Anthropic, Z.AI, MiniMax, NanoGPT, xAI, Mistral</summary>
+<summary><strong>Anthropic</strong> — zero-config</summary>
 
 <br>
 
-These read their credentials straight from OpenCode's `auth.json` once you've signed into the provider:
-
-- **OpenAI** — calls `chatgpt.com/backend-api/wham/usage`; reports plan, credits, and 5h/7d windows.
-- **Anthropic** — refreshes the Claude Code OAuth token and queries `api.anthropic.com/api/oauth/usage`.
-- **Z.AI (GLM Coding Plan)** — reads `zai-coding-plan`; shows plan details plus rolling/weekly/monthly windows.
-- **MiniMax (Token Plan)** — reads `minimax-coding-plan` (key must start with `sk-cp-`); shows 5h and 7-day text windows.
-- **NanoGPT** — reads native `auth.json` `nano-gpt` keys and `opencode-nanogpt-multi-auth`'s `~/.local/share/opencode/nanogpt-keys.json` pool; shows USD/Nano balance and, for subscribers, weekly-token and daily-image allowances with renewal date.
-- **xAI / Grok** — reads `xai-oauth`; confirms the token is valid and shows its expiry (no public usage API exists).
-- **Mistral** — reads `mistral-vibe`; shows Vibe Usage plan details and usage tracking.
+Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Refreshes the Claude Code OAuth token and queries `api.anthropic.com/api/oauth/usage`.
 </details>
 
 <details>
-<summary><strong>Google (Antigravity)</strong> — requires the auth plugin</summary>
+<summary><strong>BytePlus (Ark Coding Plan)</strong> — requires browser cookies from the dashboard</summary>
 
 <br>
 
-Install [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) and sign into at least one account. Accounts are read from `~/.config/opencode/antigravity-accounts.json`. Each account attempts a live fetch and falls back to the cached quota (labelled with its age) if the live call fails. Multiple accounts render as separate cards.
+BytePlus does not expose a usage REST API — instead the plugin reads the dashboard's internal API using your authenticated browser session. To set it up:
+
+1. Log into <https://console.byteplus.com>.
+2. Open DevTools → Application → Cookies → `console.byteplus.com`.
+3. Copy the value of the auth cookie and save to `~/.config/opencode/byteplus-cookies.json`:
+
+```json
+{
+  "cookie": "<full cookie string>"
+}
+```
+
+The session cookie expires periodically — re-copy the cookie when it does. Without this file the BytePlus card is silently skipped.
 </details>
 
 <details>
@@ -288,6 +292,46 @@ Two auth paths are tried in order:
    ```
    Tiers &amp; monthly premium limits: `free` (50), `pro` (300), `pro+` (1500), `business` (300), `enterprise` (1000).
 2. **OAuth fallback** from `auth.json` → `github-copilot` (with automatic token exchange).
+</details>
+
+<details>
+<summary><strong>Google (Antigravity)</strong> — requires the auth plugin</summary>
+
+<br>
+
+Install [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) and sign into at least one account. Accounts are read from `~/.config/opencode/antigravity-accounts.json`. Each account attempts a live fetch and falls back to the cached quota (labelled with its age) if the live call fails. Multiple accounts render as separate cards.
+</details>
+
+<details>
+<summary><strong>MiniMax (Token Plan)</strong> — zero-config</summary>
+
+<br>
+
+Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Reads `minimax-coding-plan` (key must start with `sk-cp-`); shows 5h and 7-day text windows.
+</details>
+
+<details>
+<summary><strong>Mistral</strong> — zero-config</summary>
+
+<br>
+
+Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Reads `mistral-vibe`; shows Vibe Usage plan details and usage tracking.
+</details>
+
+<details>
+<summary><strong>NanoGPT</strong> — zero-config</summary>
+
+<br>
+
+Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Reads native `auth.json` `nano-gpt` keys and `opencode-nanogpt-multi-auth`'s `~/.local/share/opencode/nanogpt-keys.json` pool; shows USD/Nano balance and, for subscribers, weekly-token and daily-image allowances with renewal date.
+</details>
+
+<details>
+<summary><strong>OpenAI</strong> — zero-config</summary>
+
+<br>
+
+Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Calls `chatgpt.com/backend-api/wham/usage`; reports plan, credits, and 5h/7d windows.
 </details>
 
 <details>
@@ -325,28 +369,6 @@ Resolved in priority order: `auth.json` → `poe` (populated when you use a Poe 
 </details>
 
 <details>
-<summary><strong>StepFun</strong> — requires browser cookies from the dashboard</summary>
-
-<br>
-
-StepFun does not expose a usage REST API — instead the plugin reads the dashboard's internal tRPC API using your authenticated browser session. To set it up:
-
-1. Log into <https://platform.stepfun.ai>.
-2. Open DevTools → Application → Cookies → `platform.stepfun.ai`.
-3. Copy the values of these three cookies and save to `~/.config/opencode/stepfun-cookies.json`:
-
-```json
-{
-  "oasisToken": "<Oasis-Token value>",
-  "oasisWebid": "<Oasis-Webid value>",
-  "sessionToken": "<__Secure-next-auth.session-token value>"
-}
-```
-
-The session token expires periodically — re-copy the cookies when it does. Without this file the StepFun card is silently skipped.
-</details>
-
-<details>
 <summary><strong>QwenCloud</strong> — requires browser cookies from the dashboard</summary>
 
 <br>
@@ -370,23 +392,41 @@ The `esmTicket` is optional. Session cookies expire periodically — re-copy the
 </details>
 
 <details>
-<summary><strong>BytePlus (Ark Coding Plan)</strong> — requires browser cookies from the dashboard</summary>
+<summary><strong>StepFun</strong> — requires browser cookies from the dashboard</summary>
 
 <br>
 
-BytePlus does not expose a usage REST API — instead the plugin reads the dashboard's internal API using your authenticated browser session. To set it up:
+StepFun does not expose a usage REST API — instead the plugin reads the dashboard's internal tRPC API using your authenticated browser session. To set it up:
 
-1. Log into <https://console.byteplus.com>.
-2. Open DevTools → Application → Cookies → `console.byteplus.com`.
-3. Copy the value of the auth cookie and save to `~/.config/opencode/byteplus-cookies.json`:
+1. Log into <https://platform.stepfun.ai>.
+2. Open DevTools → Application → Cookies → `platform.stepfun.ai`.
+3. Copy the values of these three cookies and save to `~/.config/opencode/stepfun-cookies.json`:
 
 ```json
 {
-  "cookie": "<full cookie string>"
+  "oasisToken": "<Oasis-Token value>",
+  "oasisWebid": "<Oasis-Webid value>",
+  "sessionToken": "<__Secure-next-auth.session-token value>"
 }
 ```
 
-The session cookie expires periodically — re-copy the cookie when it does. Without this file the BytePlus card is silently skipped.
+The session token expires periodically — re-copy the cookies when it does. Without this file the StepFun card is silently skipped.
+</details>
+
+<details>
+<summary><strong>xAI / Grok</strong> — zero-config</summary>
+
+<br>
+
+Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Reads `xai-oauth`; confirms the token is valid and shows its expiry (no public usage API exists).
+</details>
+
+<details>
+<summary><strong>Z.AI (GLM Coding Plan)</strong> — zero-config</summary>
+
+<br>
+
+Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Reads `zai-coding-plan`; shows plan details plus rolling/weekly/monthly windows.
 </details>
 
 ## Security &amp; privacy
@@ -406,20 +446,20 @@ The session cookie expires periodically — re-copy the cookie when it does. Wit
 
 | Provider | Endpoint(s) |
 |---|---|
-| OpenAI | `chatgpt.com/backend-api/wham/usage` |
 | Anthropic | `api.anthropic.com/api/oauth/usage`, `console.anthropic.com/v1/oauth/token` |
-| Google | `cloudcode-pa.googleapis.com/...:fetchAvailableModels`, `oauth2.googleapis.com/token` |
+| BytePlus | `console.byteplus.com/api/...` |
 | GitHub Copilot | `api.github.com/copilot_internal/*`, `api.github.com/users/*/settings/billing/...` |
+| Google | `cloudcode-pa.googleapis.com/...:fetchAvailableModels`, `oauth2.googleapis.com/token` |
+| MiniMax | `api.minimax.io/v1/token_plan/remains` |
+| Mistral | `vibe.mistral.ai/api/...` |
+| NanoGPT | `nano-gpt.com/api/check-balance`, `nano-gpt.com/api/subscription/v1/usage` |
+| OpenAI | `chatgpt.com/backend-api/wham/usage` |
 | OpenCode Go+Zen | `opencode.ai/zen/go/v1/models`, `opencode.ai/workspace/*/{go,billing,usage}` |
 | Poe | `api.poe.com/usage/current_balance` |
-| Z.AI | `api.z.ai/api/biz/subscription/list`, `api.z.ai/api/monitor/usage/quota/limit` |
-| xAI / Grok | `api.x.ai/v1/models` |
-| MiniMax | `api.minimax.io/v1/token_plan/remains` |
-| NanoGPT | `nano-gpt.com/api/check-balance`, `nano-gpt.com/api/subscription/v1/usage` |
-| StepFun | `platform.stepfun.ai/api/.../Dashboard/QueryStepPlanRateLimit`, `.../GetStepPlanStatus` |
 | QwenCloud | `home.qwencloud.com/data/api.json?...GetSeatSubscriptionSummary` |
-| BytePlus | `console.byteplus.com/api/...` |
-| Mistral | `vibe.mistral.ai/api/...` |
+| StepFun | `platform.stepfun.ai/api/.../Dashboard/QueryStepPlanRateLimit`, `.../GetStepPlanStatus` |
+| xAI / Grok | `api.x.ai/v1/models` |
+| Z.AI | `api.z.ai/api/biz/subscription/list`, `api.z.ai/api/monitor/usage/quota/limit` |
 
 Some usage endpoints are internal/undocumented and may change without notice; the plugin degrades gracefully when one is unavailable.
 </details>
@@ -442,7 +482,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Credits
 
-Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, GitHub Copilot, OpenCode Go+Zen, Poe, multi-account Google, Z.AI, xAI/Grok, MiniMax, NanoGPT, StepFun, QwenCloud, Mistral (Vibe Usage), and BytePlus (Ark Coding Plan).
+Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, BytePlus (Ark Coding Plan), GitHub Copilot, MiniMax, Mistral (Vibe Usage), NanoGPT, OpenCode Go+Zen, Poe, multi-account Google, QwenCloud, StepFun, xAI/Grok, and Z.AI.
 
 ## License
 
