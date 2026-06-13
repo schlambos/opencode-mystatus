@@ -60,14 +60,11 @@
   },
   "homepage": "https://github.com/schlambos/opencode-mystatus#readme",
   "dependencies": {
-    "@opencode-ai/plugin": "1.1.27"
+    "@opencode-ai/plugin": "^1.17.4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.8.0"
-  },
-  "peerDependencies": {
-    "@opencode-ai/plugin": "^1.1.0"
   },
   "engines": {
     "node": ">=18.0.0"

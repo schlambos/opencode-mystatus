@@ -14,6 +14,7 @@
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
  *   - QwenCloud   (Token Plan)              qwencloud-cookies.json → dashboard API
+ *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)
@@ -2093,7 +2094,13 @@ async function queryMiniMax(
 //                    with epoch-second reset times.
 //
 //   To set up: log into platform.stepfun.ai, open DevTools → Application →
-//   Cookies, copy the three cookie values, and save as:
+//   Cookies, copy the cookie values, and save as:
+//     {
+//       "oasisToken": "<Oasis-Token value>",
+//       "oasisWebid": "<Oasis-Webid value>"
+//     }
+//   Note: sessionToken is optional; only oasisToken and oasisWebid are required.
+//   To include it:
 //     {
 //       "oasisToken": "<Oasis-Token value>",
 //       "oasisWebid": "<Oasis-Webid value>",
@@ -2106,7 +2113,7 @@ const STEPFUN_OASIS_APPID = "20700";
 interface StepFunCookieConfig {
   oasisToken: string;
   oasisWebid: string;
-  sessionToken: string;
+  sessionToken?: string;
 }
 
 interface StepFunPlanStatusResponse {
@@ -2155,7 +2162,7 @@ function loadStepFunCookies(): StepFunCookieConfig | null {
     if (!existsSync(p)) return null;
     const raw = readFileSync(p, "utf-8");
     const cfg = JSON.parse(raw) as StepFunCookieConfig;
-    if (cfg.oasisToken && cfg.oasisWebid && cfg.sessionToken) return cfg;
+    if (cfg.oasisToken && cfg.oasisWebid) return cfg;
     return null;
   } catch {
     return null;
@@ -2163,12 +2170,19 @@ function loadStepFunCookies(): StepFunCookieConfig | null {
 }
 
 function stepfunDashboardHeaders(cookies: StepFunCookieConfig): Record<string, string> {
+  const cookieParts = [
+    `Oasis-Token=${cookies.oasisToken}`,
+    `Oasis-Webid=${cookies.oasisWebid}`,
+  ];
+  if (cookies.sessionToken) {
+    cookieParts.push(`__Secure-next-auth.session-token=${cookies.sessionToken}`);
+  }
   return {
     "Content-Type": "application/json",
     "oasis-appid": STEPFUN_OASIS_APPID,
     "oasis-platform": "web",
     "oasis-webid": cookies.oasisWebid,
-    Cookie: `Oasis-Token=${cookies.oasisToken}; Oasis-Webid=${cookies.oasisWebid}; __Secure-next-auth.session-token=${cookies.sessionToken}`,
+    Cookie: cookieParts.join("; "),
     Origin: STEPFUN_DASHBOARD_BASE,
     Referer: `${STEPFUN_DASHBOARD_BASE}/plan-usage`,
     "User-Agent": "OpenCode-AllStatus/1.0",
@@ -2526,6 +2540,280 @@ async function queryQwenCloud(ansi = false): Promise<QueryResult | null> {
     return {
       success: false,
       error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+// ============================================================
+// Mistral Vibe Usage (console.mistral.ai — tRPC endpoint)
+// ============================================================
+//
+//   Quota source:    POST https://console.mistral.ai/api-ui/trpc/... (batch tRPC)
+//   Auth:            Browser session cookies stored in
+//                    ~/.config/opencode/mistral-cookies.json
+//   CSRF:            Extracted from cookie string via regex /csrftoken=([^;]+)/
+//   Response:        newline-delimited JSON lines with usage_percentage,
+//                    reset_at, and email fields.
+//
+//   To set up: log into console.mistral.ai, open DevTools → Application →
+//   Cookies, copy the cookie string (or the full cookie header value), and
+//   save as:
+//     { "cookie": "<full cookie string>" }
+
+const MISTRAL_TRPC_URL =
+  "https://console.mistral.ai/api-ui/trpc/user.me,vibe.getApiKey,billing.vibeUsage?batch=1&input=%7B%220%22%3A%7B%22json%22%3Anull%2C%22meta%22%3A%7B%22values%22%3A%5B%22undefined%22%5D%2C%22v%22%3A1%7D%7D%2C%221%22%3A%7B%22json%22%3Anull%2C%22meta%22%3A%7B%22values%22%3A%5B%22undefined%22%5D%2C%22v%22%3A1%7D%7D%2C%222%22%3A%7B%22json%22%3Anull%2C%22meta%22%3A%7B%22values%22%3A%5B%22undefined%22%5D%2C%22v%22%3A1%7D%7D%7D";
+
+function mistralCookiesPath(): string {
+  return join(opencodeConfigDir(), "mistral-cookies.json");
+}
+
+function loadMistralCookies(): { cookie: string } | null {
+  try {
+    const p = mistralCookiesPath();
+    if (!existsSync(p)) return null;
+    const raw = readFileSync(p, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const cookie = typeof parsed.cookie === "string" ? parsed.cookie : null;
+    if (!cookie) return null;
+    return { cookie };
+  } catch {
+    return null;
+  }
+}
+
+function extractCsrfToken(cookieHeader: string): string | null {
+  const match = cookieHeader.match(/csrftoken=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+async function queryMistral(_a: AuthData | undefined, ansi = false): Promise<QueryResult | null> {
+  const cookies = loadMistralCookies();
+  if (!cookies) return null;
+
+  const csrfToken = extractCsrfToken(cookies.cookie);
+  if (!csrfToken) {
+    return {
+      success: false,
+      error:
+        "Could not extract csrftoken from mistral-cookies.json cookie string.\n" +
+        "Ensure the cookie value contains a csrftoken field.",
+    };
+  }
+
+  const headers: Record<string, string> = {
+    Cookie: cookies.cookie,
+    "x-csrftoken": csrfToken,
+    "trpc-accept": "application/jsonl",
+    "User-Agent": "OpenCode-AllStatus/1.0",
+  };
+
+  try {
+    const res = await fetchTimeout(MISTRAL_TRPC_URL, {
+      method: "GET",
+      headers,
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Mistral API error (${res.status}): ${body.slice(0, 200)}`);
+    }
+
+    const text = await res.text();
+
+    // Parse using regex against the entire response body (tRPC uses array-based JSONL format)
+    let usagePercentage: number | null = null;
+    let resetAt: string | null = null;
+    let email: string | null = null;
+
+    // Extract values directly from raw response text using regex
+    const pctMatch = text.match(/"usage_percentage"\s*:\s*(\d+(?:\.\d+)?)/);
+    if (pctMatch) usagePercentage = parseFloat(pctMatch[1]);
+
+    const resetMatch = text.match(/"reset_at"\s*:\s*"([^"]+)"/);
+    if (resetMatch) resetAt = resetMatch[1];
+
+    const emailMatch = text.match(/"email"\s*:\s*"([^"]+)"/);
+    if (emailMatch) email = emailMatch[1];
+
+    if (usagePercentage === null) {
+      return {
+        success: false,
+        error: "Mistral Vibe: Failed to parse usage_percentage from response.",
+      };
+    }
+
+    const remainPct = usagePercentage !== null ? Math.round(100 - usagePercentage) : null;
+
+    const header: string[] = [`Account:        ${email ?? "unknown"}`];
+    const windows: QuotaWindow[] = [];
+    if (remainPct !== null) {
+      windows.push({
+        label: "Vibe Usage",
+        remaining: remainPct,
+        resetAt: resetAt ?? undefined,
+      });
+    }
+
+    return {
+      success: true,
+      cards: [{ header, windows: windows.length ? windows : undefined }],
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: `Mistral Vibe: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+// ============================================================
+// BytePlus Ark Coding Plan (console.byteplus.com)
+// ============================================================
+//
+//   Quota source:    POST https://console.byteplus.com/api/top/ark/ap-southeast-1/2024-01-01/GetCodingPlanUsage
+//   Auth:            Browser session cookies stored in
+//                    ~/.config/opencode/byteplus-cookies.json
+//   CSRF:            Extracted from cookie string via regex /csrfToken=([^;]+)/
+//   Response:        JSON with QuotaUsage array containing session/weekly/monthly levels
+//
+//   To set up: log into console.byteplus.com, open DevTools → Application →
+//   Cookies, copy the cookie string (or the full cookie header value), and
+//   save as:
+//     { "cookie": "<full cookie string>" }
+
+const BYTEPLUS_API_URL =
+  "https://console.byteplus.com/api/top/ark/ap-southeast-1/2024-01-01/GetCodingPlanUsage";
+
+function byteplusCookiesPath(): string {
+  return join(opencodeConfigDir(), "byteplus-cookies.json");
+}
+
+function loadBytePlusCookies(): { cookie: string } | null {
+  try {
+    const p = byteplusCookiesPath();
+    if (!existsSync(p)) return null;
+    const raw = readFileSync(p, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const cookie = typeof parsed.cookie === "string" ? parsed.cookie : null;
+    if (!cookie) return null;
+    return { cookie };
+  } catch {
+    return null;
+  }
+}
+
+function extractBytePlusCsrfToken(cookieHeader: string): string | null {
+  const match = cookieHeader.match(/csrfToken=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+interface BytePlusUsageResult {
+  ResponseMetadata: {
+    RequestId: string;
+    Action: string;
+  };
+  Result: {
+    Status: string;
+    UpdateTimestamp: number;
+    QuotaUsage: Array<{
+      Level: string;
+      Percent: number;
+      ResetTimestamp: number;
+    }>;
+  };
+}
+
+async function queryBytePlus(_a: AuthData | undefined, ansi = false): Promise<QueryResult | null> {
+  const cookies = loadBytePlusCookies();
+  if (!cookies) return null;
+
+  const csrfToken = extractBytePlusCsrfToken(cookies.cookie);
+  if (!csrfToken) {
+    return {
+      success: false,
+      error:
+        "Could not extract csrfToken from byteplus-cookies.json cookie string.\n" +
+        "Ensure the cookie value contains a csrfToken field.",
+    };
+  }
+
+  const headers: Record<string, string> = {
+    Cookie: cookies.cookie,
+    "X-Csrf-Token": csrfToken,
+    "Content-Type": "application/json",
+    "User-Agent": "OpenCode-AllStatus/1.0",
+  };
+
+  try {
+    const res = await fetchTimeout(BYTEPLUS_API_URL, {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`BytePlus API error (${res.status}): ${body.slice(0, 200)}`);
+    }
+
+    const data = (await res.json()) as BytePlusUsageResult;
+
+    // Check for application-level errors in the response envelope
+    const error = (data.ResponseMetadata as any)?.Error;
+    if (error) {
+      throw new Error(`BytePlus API error: ${error.Code ?? error.Message ?? JSON.stringify(error)}`);
+    }
+
+    const result = data.Result;
+    if (!result?.QuotaUsage || !Array.isArray(result.QuotaUsage) || result.QuotaUsage.length === 0) {
+      return {
+        success: true,
+        cards: [{ header: ["Plan:           BytePlus Ark Coding Plan (no data returned)"] }],
+      };
+    }
+
+    // Check Result.Status for non-success states
+    if (result.Status && !/running|success|active/i.test(result.Status)) {
+      throw new Error(`BytePlus API non-success status: ${result.Status}`);
+    }
+
+    const header: string[] = [`Plan:           BytePlus Ark Coding Plan`];
+    if (result.Status) {
+      header.push(`Status:          ${result.Status}`);
+    }
+
+    // Sort order: session first, then weekly, then monthly
+    const sortOrder: Record<string, number> = { session: 0, weekly: 1, monthly: 2 };
+    const sortedUsage = [...result.QuotaUsage].sort(
+      (a, b) => (sortOrder[a.Level.toLowerCase()] ?? 999) - (sortOrder[b.Level.toLowerCase()] ?? 999),
+    );
+
+    const windows: QuotaWindow[] = [];
+    for (const usage of sortedUsage) {
+      const level = usage.Level;
+      const percent = usage.Percent;
+      const resetTs = usage.ResetTimestamp;
+
+      if (typeof level !== "string" || typeof percent !== "number" || typeof resetTs !== "number") {
+        continue; // skip malformed entries
+      }
+
+      const label = level.charAt(0).toUpperCase() + level.slice(1);
+      const remaining = Math.round(100 - percent);
+      const resetDate = new Date(resetTs * 1000);
+      const resetAt = Number.isFinite(resetDate.getTime()) ? resetDate.toISOString() : undefined;
+
+      windows.push({ label, remaining, resetAt });
+    }
+
+    return {
+      success: true,
+      cards: [{ header, windows: windows.length ? windows : undefined }],
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: `BytePlus: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }
@@ -3261,6 +3549,8 @@ const PROVIDERS: Provider[] = [
   { id: "nanogpt", title: "NanoGPT Account Quota", query: (a, ansi) => queryNanoGpt(a["nano-gpt"], ansi) },
   { id: "stepfun", title: "StepFun Token Plan", query: (_a, ansi) => queryStepFun(ansi) },
   { id: "qwencloud", title: "QwenCloud Token Plan", query: (_a, ansi) => queryQwenCloud(ansi) },
+  { id: "mistral", title: "Mistral Vibe Usage", query: (_a, ansi) => queryMistral(_a, ansi) },
+  { id: "byteplus", title: "BytePlus Coding Plan", query: (_a, ansi) => queryBytePlus(_a, ansi) },
 ];
 
 function splitIds(s: string | undefined): string[] {
@@ -3663,7 +3953,7 @@ export const MyStatusPlugin: Plugin = async () => ({
   tool: {
     mystatus: tool({
       description:
-        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, and QwenCloud Token Plan. Output is a single-column stack of provider cards, sorted by urgency, with a summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: openai,anthropic,google,copilot,opencode-go,poe,zai,xai,minimax,nanogpt,stepfun,qwencloud), fresh (bool), threshold (number), format (ansi|json).",
+        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, and BytePlus Coding Plan. Output is a single-column stack of provider cards, sorted by urgency, with a summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: openai,anthropic,google,copilot,opencode-go,poe,zai,xai,minimax,nanogpt,stepfun,qwencloud,mistral,byteplus), fresh (bool), threshold (number), format (ansi|json).",
       args: {
         format: tool.schema.string().optional(),
         threshold: tool.schema.number().optional(),
