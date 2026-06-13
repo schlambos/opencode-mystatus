@@ -46,70 +46,72 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 ```text
 ╭─ Summary ────────────────────────────────────────────────────────╮
 │                                                                  │
-│  Accounts:       14   🟩 6  🟨 2  🟧 2  🟥 2                            │
-│  Lowest:         OpenCode Go+Zen — OpenCode Go Personal · Mont…  │
-│  Soonest reset:  OpenAI Account Quota · 5-hour limit  7m         │
+│  Accounts:       13   🟩 10  🟨 1  🟧 2                           │
+│  Lowest:         Google — mattg4542@gmail.com · Claude  17%      │
+│  Soonest reset:  StepFun Token Plan · 5-hour rolling  7m         │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
-╭─ OpenCode Go+Zen — OpenCode Go Personal ─────────────────────────╮
+╭─ Google — johndoe@gmail.com ─────────────────────────────────────╮
 │                                                                  │
-│  5h (rolling)                                                    │
+│  Gemini Pro                                                      │
 │  🟩 ████████████████████████████████████████████ 100% remaining  │
 │     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
-│  Resets in: 5h                                                   │
+│  Resets in: 4h 59m                                               │
 │                                                                  │
-│  Weekly                                                          │
+│  Gemini Flash                                                    │
+│  🟩 ████████████████████████████████████████████ 100% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Resets in: 4h 59m                                               │
+│                                                                  │
+│  Claude                                                          │
+│  🟧 ███████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 17% remaining  │
+│     → 0% ▂▂▂▂▂▂▂▂▂▂                                              │
+│  Resets in: 4h 29m                                               │
+│                                                                  │
+│  GPT-OSS                                                         │
+│  🟧 ███████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 17% remaining  │
+│     → 0% ▂▂▂▂▂▂▂▂▂▂                                              │
+│  Resets in: 4h 29m                                               │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+╭─ xAI/Grok ───────────────────────────────────────────────────────╮
+│                                                                  │
+│  Auth:           valid                                           │
+│  Token expires:  4h 57m                                          │
+│                                                                  │
+│  SuperGrok free credits                                          │
 │  🟨 █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 37% remaining  │
 │     → 0% ▃▃▃▃▃▃▃▃▃▃                                              │
-│  Resets in: 3d 8h 24m                                            │
+│  Credits used: 63.32% · Resets Jul 1                             │
+│  Resets in: 17d 10h 47m                                          │
 │                                                                  │
-│  Monthly                                                         │
-│  🟥 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0% remaining  │
-│     → 0% ▁▁▁▁▁▁▁▁▁▁                                              │
-│  Resets in: 15d 20h 23m                                          │
-│                                                                  │
-╰──────────────────────────────────────────────────────────────────╯
-
-╭─ NanoGPT Account Quota ──────────────────────────────────────────╮
-│                                                                  │
-│  Balance:        $0.00                                           │
-│  Plan:           Subscription (stripe)                           │
-│                                                                  │
-│  Weekly input tokens                                             │
-│  🟥 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0% remaining  │
-│     → 0% ▂▂▂▂▁▁▁▁▁▁                                              │
-│  Used: 60M / 60M                                                 │
-│  Resets in: 3d 8h 24m                                            │
-│                                                                  │
-│  Daily images                                                    │
-│  🟩 ████████████████████████████████████████████ 100% remaining  │
-│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
-│  Used: 0 / 100                                                   │
-│  Resets in: 8h 24m                                               │
-│                                                                  │
-│  Renews:         28d 11h 14m                                     │
+│  Dev API (included tokens)                                       │
+│  🟨 █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 37% remaining  │
+│     → 0% ▃▃▃▃▃▃▃▃▃▃                                              │
+│  Used: 9,498 / 15,000 tokens                                     │
+│  Resets in: 17d 10h 47m                                          │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
-╭─ Poe Account Quota ──────────────────────────────────────────────╮
+╭─ OpenAI Account Quota ───────────────────────────────────────────╮
 │                                                                  │
-│  Balance:        14109 pts ($0.43 USD)                           │
-│  Daily grant:    +300 (Resets in: 8h 24m)                        │
+│  Account:        mattg4542@gmail.com                             │
+│  Plan:           ChatGPT plus                                    │
 │                                                                  │
-│  Monthly                                                         │
-│  🟧 ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 2% remaining  │
-│     → 0% ▂▁▁▁▁▁▁▁▁▁                                              │
-│  Points: 14109 / 660000                                          │
-│  Resets in: 23d 23h 5m                                           │
+│  5-hour limit                                                    │
+│  🟩 ███████████████████████████████████████████░░ 95% remaining  │
+│     ▼4%/1h 11m ▆▆▆▆▇▆▆▆▇▇                                        │
+│  Resets in: 4h 6m                                                │
 │                                                                  │
-│  Add-on points:  14109                                           │
+│  7-day limit                                                     │
+│  🟩 ████████████████████████████████████░░░░░░░░░ 79% remaining  │
+│     ▼1%/1h 11m ▆▆▆▆▆▆▆▆▆▆ ~3d 22h 19m to empty                   │
+│  Resets in: 5d 2h 23m                                            │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
-
 ⚠️ Low quota alerts:
-  • OpenCode Go+Zen — OpenCode Go Alt 1: 15%
-  • Poe Account Quota: 2%
+  • Google — johndoe@gmail.com: 17%
 ```
 
 ## Supported providers
