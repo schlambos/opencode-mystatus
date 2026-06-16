@@ -26,7 +26,7 @@
 
 import { type Plugin, tool } from "@opencode-ai/plugin";
 import { readFile } from "fs/promises";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -277,19 +277,153 @@ async function fetchTimeout(
 // ============================================================
 
 function authJsonPath(): string {
-  return opencodeDataFile("auth.json");
+  return findReadable("auth.json", "data") ?? opencodeDataFile("auth.json");
 }
 
 function opencodeDataFile(name: string): string {
+  if (process.env.XDG_DATA_HOME) {
+    return join(process.env.XDG_DATA_HOME, "opencode", name);
+  }
   return join(homedir(), ".local", "share", "opencode", name);
 }
 
 function nanoGptMultiAuthKeysPath(): string {
-  return opencodeDataFile("nanogpt-keys.json");
+  return findReadable("nanogpt-keys.json", "data") ?? opencodeDataFile("nanogpt-keys.json");
 }
 
 function opencodeConfigDir(): string {
+  if (process.env.OPENCODE_CONFIG_DIR) return process.env.OPENCODE_CONFIG_DIR;
   return join(homedir(), ".config", "opencode");
+}
+
+// ─────────────────────────────────────────────────────────────
+// opencode-multi profile discovery + multi-profile path resolution
+//
+// opencode-multi lays out profiles at ~/Library/Application Support/
+// opencode-multi/profiles/<name>/ and exports OPENCODE_CONFIG_DIR /
+// XDG_DATA_HOME at session start. The plugin used to hardcode legacy
+// ~/.config/opencode and ~/.local/share/opencode paths, missing per-profile
+// auth and double-counting accounts replicated across profiles. The helpers
+// below resolve to the active profile first, fall back to sibling profiles,
+// and dedup credentials across them so a single account isn't shown twice
+// when the same auth.json is mirrored into multiple profile dirs.
+// ─────────────────────────────────────────────────────────────
+
+const OPENCODE_MULTI_PROFILES_ROOT = join(
+  homedir(),
+  "Library",
+  "Application Support",
+  "opencode-multi",
+  "profiles",
+);
+
+function listProfileDirs(): string[] {
+  try {
+    return readdirSync(OPENCODE_MULTI_PROFILES_ROOT, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && d.name !== "opencode")
+      .map((d) => {
+        const p = join(OPENCODE_MULTI_PROFILES_ROOT, d.name);
+        try {
+          return realpathSync(p);
+        } catch {
+          return p;
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+function candidateDirs(kind: "config" | "data"): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (p: string | undefined) => {
+    if (!p) return;
+    let real: string;
+    try {
+      real = realpathSync(p);
+    } catch {
+      real = p;
+    }
+    if (seen.has(real)) return;
+    seen.add(real);
+    out.push(real);
+  };
+  if (kind === "config" && process.env.OPENCODE_CONFIG_DIR) add(process.env.OPENCODE_CONFIG_DIR);
+  if (kind === "data" && process.env.XDG_DATA_HOME)
+    add(join(process.env.XDG_DATA_HOME, "opencode"));
+  for (const p of listProfileDirs()) add(p);
+  if (kind === "config") add(join(homedir(), ".config", "opencode"));
+  if (kind === "data") add(join(homedir(), ".local", "share", "opencode"));
+  return out;
+}
+
+function searchPaths(filename: string, kind: "config" | "data"): string[] {
+  return candidateDirs(kind)
+    .map((d) => join(d, filename))
+    .filter((p) => existsSync(p));
+}
+
+function findReadable(filename: string, kind: "config" | "data"): string | null {
+  const found = searchPaths(filename, kind);
+  return found[0] ?? null;
+}
+
+function stableCredHash(cred: unknown): string {
+  const c = (cred ?? {}) as Record<string, unknown>;
+  if (c.type === "oauth") {
+    const tok = String(c.access ?? c.accessToken ?? c.refresh ?? "");
+    return `oauth:${tok.slice(0, 32)}`;
+  }
+  if (c.type === "api") {
+    const key = String(c.key ?? c.apiKey ?? "");
+    return `api:${key.slice(-16)}`;
+  }
+  return `raw:${JSON.stringify(c).slice(0, 96)}`;
+}
+
+async function loadAuthMerged(): Promise<AuthData> {
+  const paths = searchPaths("auth.json", "data");
+  const merged: AuthData = {} as AuthData;
+  const seen = new Set<string>();
+  for (const p of paths) {
+    try {
+      const raw = await readFile(p, "utf-8");
+      const data = JSON.parse(raw) as Record<string, unknown>;
+      for (const [provider, cred] of Object.entries(data)) {
+        const key = `${provider}:${stableCredHash(cred)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (!(provider in (merged as Record<string, unknown>))) {
+          (merged as Record<string, unknown>)[provider] = cred;
+        }
+      }
+    } catch {
+      // unreadable / malformed — skip
+    }
+  }
+  return merged;
+}
+
+async function loadAntigravityAccountsMerged(): Promise<AntigravityAccount[]> {
+  const paths = searchPaths("antigravity-accounts.json", "config");
+  const merged: AntigravityAccount[] = [];
+  const seen = new Set<string>();
+  for (const p of paths) {
+    try {
+      const raw = await readFile(p, "utf-8");
+      const file = JSON.parse(raw) as { accounts?: AntigravityAccount[] };
+      for (const a of file.accounts ?? []) {
+        const key = `${a.email ?? ""}:${String(a.refreshToken ?? "").slice(-16)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(a);
+      }
+    } catch {
+      // skip
+    }
+  }
+  return merged;
 }
 
 // ============================================================
@@ -743,21 +877,19 @@ function formatCachedAgeMinutes(updatedAt: number | undefined): string {
 }
 
 async function queryGoogle(ansi = false): Promise<QueryResult> {
-  const filePath = join(opencodeConfigDir(), "antigravity-accounts.json");
+  const allAccounts = await loadAntigravityAccountsMerged();
 
-  if (!existsSync(filePath)) {
+  if (allAccounts.length === 0) {
     return {
       success: false,
       error:
-        "antigravity-accounts.json not found.\n" +
+        "antigravity-accounts.json not found in any opencode profile.\n" +
         "Install the opencode-antigravity-auth plugin and sign in to enable Google quota.",
     };
   }
 
   try {
-    const content = await readFile(filePath, "utf-8");
-    const file = JSON.parse(content) as { accounts: AntigravityAccount[] };
-    const accounts = (file.accounts ?? []).filter((a) => a.email && a.enabled !== false);
+    const accounts = allAccounts.filter((a) => a.email && a.enabled !== false);
 
     if (!accounts.length)
       return { success: true, output: "No enabled Google accounts found." };
@@ -866,7 +998,8 @@ const COPILOT_PLAN_LIMITS: Record<string, number> = {
 };
 
 function getCopilotPATPath(): string {
-  return join(opencodeConfigDir(), "copilot-quota-token.json");
+  return findReadable("copilot-quota-token.json", "config")
+    ?? join(opencodeConfigDir(), "copilot-quota-token.json");
 }
 
 function readCopilotPAT(): CopilotPATConfig | null {
@@ -1185,7 +1318,8 @@ function zenPaymentLabel(type: string | null, last4: string | null): string {
 }
 
 function resolveOpenCodeGoConfigs(): OpenCodeGoConfig[] {
-  const jsonPath = join(opencodeConfigDir(), "opencode-go.json");
+  const jsonPath = findReadable("opencode-go.json", "config")
+    ?? join(opencodeConfigDir(), "opencode-go.json");
   if (existsSync(jsonPath)) {
     try {
       const raw = readFileSync(jsonPath, "utf-8");
@@ -1428,7 +1562,8 @@ function resolvePoeApiKey(auth: PoeAuthData | undefined): string | null {
   if ((auth as unknown as { key?: string })?.key) return (auth as unknown as { key: string }).key;
   if (process.env.POE_API_KEY) return process.env.POE_API_KEY;
 
-  const jsonPath = join(opencodeConfigDir(), "poe-api-key.json");
+  const jsonPath = findReadable("poe-api-key.json", "config")
+    ?? join(opencodeConfigDir(), "poe-api-key.json");
   if (!existsSync(jsonPath)) return null;
   try {
     const raw = readFileSync(jsonPath, "utf-8");
@@ -2153,7 +2288,8 @@ interface StepFunRateLimitResponse {
 }
 
 function stepfunCookiesPath(): string {
-  return join(opencodeConfigDir(), "stepfun-cookies.json");
+  return findReadable("stepfun-cookies.json", "config")
+    ?? join(opencodeConfigDir(), "stepfun-cookies.json");
 }
 
 function loadStepFunCookies(): StepFunCookieConfig | null {
@@ -2364,7 +2500,8 @@ interface QwenCloudRenewalResponse {
 }
 
 function qwencloudCookiesPath(): string {
-  return join(opencodeConfigDir(), "qwencloud-cookies.json");
+  return findReadable("qwencloud-cookies.json", "config")
+    ?? join(opencodeConfigDir(), "qwencloud-cookies.json");
 }
 
 function loadQwenCloudCookies(): QwenCloudCookieConfig | null {
@@ -2557,25 +2694,77 @@ async function queryQwenCloud(ansi = false): Promise<QueryResult | null> {
 //
 //   To set up: log into console.mistral.ai, open DevTools → Application →
 //   Cookies, copy the cookie string (or the full cookie header value), and
-//   save as:
+//   save as one of:
+//
+//     // Legacy single account:
 //     { "cookie": "<full cookie string>" }
+//
+//     // Single account with an alias:
+//     { "alias": "primary", "cookie": "<full cookie string>" }
+//
+//     // Multiple accounts (each gets its own card):
+//     { "accounts": [
+//         { "alias": "primary",   "cookie": "<cookie for account 1>" },
+//         { "alias": "secondary", "cookie": "<cookie for account 2>" }
+//       ]
+//     }
+//
+//   For multi-account, sign in to each console.mistral.ai account in a
+//   separate browser profile (or incognito session) and copy each cookie
+//   blob into its own entry.
 
 const MISTRAL_TRPC_URL =
   "https://console.mistral.ai/api-ui/trpc/user.me,vibe.getApiKey,billing.vibeUsage?batch=1&input=%7B%220%22%3A%7B%22json%22%3Anull%2C%22meta%22%3A%7B%22values%22%3A%5B%22undefined%22%5D%2C%22v%22%3A1%7D%7D%2C%221%22%3A%7B%22json%22%3Anull%2C%22meta%22%3A%7B%22values%22%3A%5B%22undefined%22%5D%2C%22v%22%3A1%7D%7D%2C%222%22%3A%7B%22json%22%3Anull%2C%22meta%22%3A%7B%22values%22%3A%5B%22undefined%22%5D%2C%22v%22%3A1%7D%7D%7D";
 
 function mistralCookiesPath(): string {
-  return join(opencodeConfigDir(), "mistral-cookies.json");
+  return findReadable("mistral-cookies.json", "config")
+    ?? join(opencodeConfigDir(), "mistral-cookies.json");
 }
 
-function loadMistralCookies(): { cookie: string } | null {
+interface MistralAccount {
+  /** Optional human-readable label. Falls back to email from API, then "Account N". */
+  alias?: string;
+  cookie: string;
+}
+
+/**
+ * Supported shapes for `mistral-cookies.json`:
+ *
+ *   { "cookie": "..." }                                // legacy single
+ *   { "alias": "primary", "cookie": "..." }            // single + alias
+ *   { "accounts": [{ "alias": "...", "cookie": "..." }, ...] }   // multi
+ *   [ { "alias": "...", "cookie": "..." }, ... ]       // bare array
+ */
+function loadMistralCookies(): MistralAccount[] | null {
   try {
     const p = mistralCookiesPath();
     if (!existsSync(p)) return null;
     const raw = readFileSync(p, "utf-8");
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const cookie = typeof parsed.cookie === "string" ? parsed.cookie : null;
-    if (!cookie) return null;
-    return { cookie };
+    const parsed = JSON.parse(raw) as unknown;
+
+    const accounts: MistralAccount[] = [];
+
+    const pushIfValid = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      const obj = value as Record<string, unknown>;
+      const cookie = typeof obj.cookie === "string" ? obj.cookie : null;
+      if (!cookie) return;
+      const alias = typeof obj.alias === "string" && obj.alias.length > 0 ? obj.alias : undefined;
+      accounts.push(alias ? { alias, cookie } : { cookie });
+    };
+
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) pushIfValid(item);
+    } else if (parsed && typeof parsed === "object") {
+      const obj = parsed as Record<string, unknown>;
+      if (Array.isArray(obj.accounts)) {
+        for (const item of obj.accounts) pushIfValid(item);
+      } else {
+        pushIfValid(parsed);
+      }
+    }
+
+    return accounts.length > 0 ? accounts : null;
   } catch {
     return null;
   }
@@ -2586,84 +2775,110 @@ function extractCsrfToken(cookieHeader: string): string | null {
   return match ? match[1] : null;
 }
 
-async function queryMistral(_a: AuthData | undefined, ansi = false): Promise<QueryResult | null> {
-  const cookies = loadMistralCookies();
-  if (!cookies) return null;
+interface MistralAccountResult {
+  card?: ProviderCard;
+  error?: string;
+}
 
-  const csrfToken = extractCsrfToken(cookies.cookie);
+async function queryMistralAccount(
+  account: MistralAccount,
+  fallbackLabel: string,
+): Promise<MistralAccountResult> {
+  const csrfToken = extractCsrfToken(account.cookie);
   if (!csrfToken) {
     return {
-      success: false,
       error:
-        "Could not extract csrftoken from mistral-cookies.json cookie string.\n" +
+        `Could not extract csrftoken from cookie for ${fallbackLabel}.\n` +
         "Ensure the cookie value contains a csrftoken field.",
     };
   }
 
   const headers: Record<string, string> = {
-    Cookie: cookies.cookie,
+    Cookie: account.cookie,
     "x-csrftoken": csrfToken,
     "trpc-accept": "application/jsonl",
     "User-Agent": "OpenCode-AllStatus/1.0",
   };
 
   try {
-    const res = await fetchTimeout(MISTRAL_TRPC_URL, {
-      method: "GET",
-      headers,
-    });
-
+    const res = await fetchTimeout(MISTRAL_TRPC_URL, { method: "GET", headers });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(`Mistral API error (${res.status}): ${body.slice(0, 200)}`);
     }
 
     const text = await res.text();
-
-    // Parse using regex against the entire response body (tRPC uses array-based JSONL format)
     let usagePercentage: number | null = null;
     let resetAt: string | null = null;
     let email: string | null = null;
 
-    // Extract values directly from raw response text using regex
     const pctMatch = text.match(/"usage_percentage"\s*:\s*(\d+(?:\.\d+)?)/);
     if (pctMatch) usagePercentage = parseFloat(pctMatch[1]);
-
     const resetMatch = text.match(/"reset_at"\s*:\s*"([^"]+)"/);
     if (resetMatch) resetAt = resetMatch[1];
-
     const emailMatch = text.match(/"email"\s*:\s*"([^"]+)"/);
     if (emailMatch) email = emailMatch[1];
 
     if (usagePercentage === null) {
-      return {
-        success: false,
-        error: "Mistral Vibe: Failed to parse usage_percentage from response.",
-      };
+      return { error: `${fallbackLabel}: failed to parse usage_percentage from response.` };
     }
 
-    const remainPct = usagePercentage !== null ? Math.round(100 - usagePercentage) : null;
+    const remainPct = Math.round(100 - usagePercentage);
+    const subtitle = account.alias ?? email ?? fallbackLabel;
+    const header: string[] = [`Account:        ${email ?? account.alias ?? "unknown"}`];
+    if (account.alias && email && account.alias !== email) {
+      header.unshift(`Alias:          ${account.alias}`);
+    }
 
-    const header: string[] = [`Account:        ${email ?? "unknown"}`];
-    const windows: QuotaWindow[] = [];
-    if (remainPct !== null) {
-      windows.push({
+    const windows: QuotaWindow[] = [
+      {
         label: "Vibe Usage",
         remaining: remainPct,
         resetAt: resetAt ?? undefined,
-      });
-    }
+      },
+    ];
 
     return {
-      success: true,
-      cards: [{ header, windows: windows.length ? windows : undefined }],
+      card: {
+        subtitle,
+        header,
+        windows,
+      },
     };
   } catch (err) {
+    return { error: `${fallbackLabel}: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function queryMistral(_a: AuthData | undefined, _ansi = false): Promise<QueryResult | null> {
+  const accounts = loadMistralCookies();
+  if (!accounts) return null;
+
+  const results = await Promise.all(
+    accounts.map((acct, idx) =>
+      queryMistralAccount(acct, acct.alias ?? `Account ${idx + 1}`),
+    ),
+  );
+
+  const cards: ProviderCard[] = [];
+  const errors: string[] = [];
+  for (const r of results) {
+    if (r.card) cards.push(r.card);
+    if (r.error) errors.push(r.error);
+  }
+
+  if (cards.length === 0) {
     return {
       success: false,
-      error: `Mistral Vibe: ${err instanceof Error ? err.message : String(err)}`,
+      error: errors.length > 0 ? errors.join("\n") : "Mistral Vibe: no account data returned.",
     };
   }
+
+  return {
+    success: true,
+    cards,
+    ...(errors.length > 0 ? { error: errors.join("\n") } : {}),
+  };
 }
 
 // ============================================================
@@ -2685,7 +2900,8 @@ const BYTEPLUS_API_URL =
   "https://console.byteplus.com/api/top/ark/ap-southeast-1/2024-01-01/GetCodingPlanUsage";
 
 function byteplusCookiesPath(): string {
-  return join(opencodeConfigDir(), "byteplus-cookies.json");
+  return findReadable("byteplus-cookies.json", "config")
+    ?? join(opencodeConfigDir(), "byteplus-cookies.json");
 }
 
 function loadBytePlusCookies(): { cookie: string } | null {
@@ -3447,6 +3663,9 @@ interface MyStatusConfig {
 }
 
 function configFile(name: string): string {
+  // mystatus state (config / cache / history) lives at the legacy global
+  // ~/.config/opencode/ dir, not per-profile, so trend history doesn't
+  // fragment when the user switches between opencode-multi profiles.
   return join(homedir(), ".config", "opencode", name);
 }
 
@@ -3882,13 +4101,13 @@ async function runMyStatus(args: MyStatusArgs): Promise<string> {
   const cacheTtlMs = Math.max(0, cfg.cacheTtlSec ?? 0) * 1000;
   const fresh = args.fresh === true;
 
-  const authPath = authJsonPath();
-  let auth: AuthData = {};
-  try {
-    const raw = await readFile(authPath, "utf-8");
-    auth = JSON.parse(raw) as AuthData;
-  } catch (err) {
-    return `\u274c Failed to read auth file: ${authPath}\n${err instanceof Error ? err.message : String(err)}`;
+  // Merge auth.json across the active opencode-multi profile, sibling profiles,
+  // and the legacy ~/.local/share/opencode location. Same credential present
+  // in multiple files is deduped so one logical account isn't double-counted.
+  const auth = await loadAuthMerged();
+  if (Object.keys(auth as Record<string, unknown>).length === 0) {
+    const tried = candidateDirs("data").map((d) => join(d, "auth.json"));
+    return `\u274c No auth.json found in any opencode profile.\nLooked at: ${tried.join(", ")}`;
   }
 
   const providers = selectProviders(cfg, args.only, args.exclude);
