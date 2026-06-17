@@ -41,52 +41,159 @@ Subscriptions pile up — ChatGPT, Claude, Gemini, Copilot, Grok, and a handful 
 
 ## What it looks like
 
-A single-column stack of cards, sorted by urgency, with a summary on top and low-quota alerts at the bottom *(abridged)*:
+A single-column stack of cards, sorted by urgency, with a summary on top and low-quota alerts at the bottom. Every supported provider rendered with representative data (sort by name shown for full coverage):
 
 ```text
 ╭─ Summary ────────────────────────────────────────────────────────╮
 │                                                                  │
-│  Accounts:       13   🟩 10  🟨 1  🟧 2                           │
-│  Lowest:         Google — johndoe@gmail.com · Claude  17%        │
-│  Soonest reset:  StepFun Token Plan · 5-hour rolling  7m         │
+│  Accounts:       14   🟩 8  🟨 3  🟧 2  🟥 1                     │
+│  Lowest:         MiniMax Token Plan · 5-hour  3%                 │
+│  Soonest reset:  BytePlus Coding Plan · Session  0m              │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
-╭─ Google — johndoe@gmail.com ─────────────────────────────────────╮
+╭─ Anthropic Account Quota ────────────────────────────────────────╮
 │                                                                  │
-│  Gemini Pro                                                      │
-│  🟩 ████████████████████████████████████████████ 100% remaining  │
+│  Account:        Claude Pro/Max                                  │
+│                                                                  │
+│  5-hour limit                                                    │
+│  🟨 ███████████████████████░░░░░░░░░░░░░░░░░░░░░░ 49% remaining  │
+│     → 0% ▆▆▆▄▄▄▄▄▄▄                                              │
+│  Resets in: 1h 10m                                               │
+│                                                                  │
+│  7-day limit                                                     │
+│  🟩 █████████████████████████████████░░░░░░░░░░░░ 72% remaining  │
+│     → 0% ▆▆▆▅▅▅▅▅▅▅                                              │
+│  Resets in: 4d 7h 50m                                            │
+│                                                                  │
+│  7-day (Sonnet)                                                  │
+│  🟩 ███████████████████████████████████████████░░ 98% remaining  │
 │     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
-│  Resets in: 4h 59m                                               │
-│                                                                  │
-│  Gemini Flash                                                    │
-│  🟩 ████████████████████████████████████████████ 100% remaining  │
-│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
-│  Resets in: 4h 59m                                               │
-│                                                                  │
-│  Claude                                                          │
-│  🟧 ███████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 17% remaining  │
-│     → 0% ▂▂▂▂▂▂▂▂▂▂                                              │
-│  Resets in: 4h 29m                                               │
-│                                                                  │
-│  GPT-OSS                                                         │
-│  🟧 ███████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 17% remaining  │
-│     → 0% ▂▂▂▂▂▂▂▂▂▂                                              │
-│  Resets in: 4h 29m                                               │
+│  Resets in: 4d 7h 50m                                            │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
-╭─ xAI/Grok ───────────────────────────────────────────────────────╮
+
+╭─ BytePlus Coding Plan ───────────────────────────────────────────╮
 │                                                                  │
-│  Auth:           valid                                           │
-│  Token expires:  4h 57m                                          │
+│  Plan:           BytePlus Ark Coding Plan                        │
+│  Status:          Running                                        │
 │                                                                  │
-│  SuperGrok credits                                               │
-│  🟨 █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 37% remaining  │
-│     → 0% ▃▃▃▃▃▃▃▃▃▃                                              │
-│  Credits used: 63.32% · Resets Jul 1                             │
-│  Build: 41.07% · SuperGrok: 22.25%                               │
-│  Used: 9,498 / 15,000 credits                                    │
-│  Resets in: 17d 10h 47m                                          │
+│  Session                                                         │
+│  🟩 ████████████████████████████████████████████ 100% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Resets in: resetting                                            │
+│                                                                  │
+│  Weekly                                                          │
+│  🟩 ████████████████████████████████░░░░░░░░░░░░░ 70% remaining  │
+│     ▼3%/2h ▆▆▆▆▆▆▆▅▅▅                                            │
+│  Resets in: 3d 18h 50m                                           │
+│                                                                  │
+│  Monthly                                                         │
+│  🟩 ██████████████████████████████████████░░░░░░░ 83% remaining  │
+│     → 0% ▆▆▆▆▆▆▆▆▆▆                                              │
+│  Resets in: 25d 18h 50m                                          │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ GitHub Copilot Account Quota ───────────────────────────────────╮
+│                                                                  │
+│  Account:        GitHub Copilot (business)                       │
+│                                                                  │
+│  Premium                                                         │
+│  🟨 ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░ 44% remaining  │
+│     ▼1%/4h ▆▆▆▆▆▅▅▅▅▄                                            │
+│  Used: 168 / 300                                                 │
+│                                                                  │
+│  Chat                                                            │
+│  🟩 ███████████████████████████████████░░░░░░░░░░ 77% remaining  │
+│     → 0% ▇▇▇▇▇▇▆▆▆▆                                              │
+│  Used: 230 / 1,000                                               │
+│                                                                  │
+│  Resets in: 12d 8h 0m                                            │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ Google Account Quota ───────────────────────────────────────────╮
+│                                                                  │
+│  ── johndoe@gmail.com ──                                         │
+│  Gemini Pro                                                      │
+│  🟩 ███████████████████████████████████████████░░ 97% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Resets in: 47m                                                  │
+│                                                                  │
+│  Gemini Flash                                                    │
+│  🟩 ███████████████████████████████████████████░░ 97% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Resets in: 47m                                                  │
+│                                                                  │
+│  Claude                                                          │
+│  🟩 ████████████████████████████████████████░░░░░ 88% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▆▆                                              │
+│  Resets in: 4h 44m                                               │
+│                                                                  │
+│  GPT-OSS                                                         │
+│  🟩 ████████████████████████████████████████░░░░░ 88% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▆▆                                              │
+│  Resets in: 4h 44m                                               │
+│                                                                  │
+│  ── janedoe@gmail.com ──                                         │
+│  Gemini Pro                                                      │
+│  🟥 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0% remaining  │
+│     → 0% ▁▁▁▁▁▁▁▁▁▁                                              │
+│  Resets in: 2d 2h 11m                                            │
+│                                                                  │
+│  Claude                                                          │
+│  🟥 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▁▁                                              │
+│  Resets in: 6d 23h 45m                                           │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ MiniMax Token Plan ─────────────────────────────────────────────╮
+│                                                                  │
+│  General (text/M3) — 5h                                          │
+│  🟧 █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 3% remaining │
+│     ▼12%/30m ▅▄▃▂▂▁▁▁▁▁                                          │
+│  Used: 4,850 / 5,000                                             │
+│  Resets in: 1h 0m                                                │
+│                                                                  │
+│  General (text/M3) — 7-day                                       │
+│  🟩 █████████████████████████████████████████████ 99% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Used: 350 / 50,000                                              │
+│  Resets in: 4d 5h                                                │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ Mistral Vibe Usage ─────────────────────────────────────────────╮
+│                                                                  │
+│  ── johndoe@example.com (johndoe) ──                             │
+│  Vibe Usage                                                      │
+│  🟩 ███████████████████████████████████████████░░ 96% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Resets in: 13d 2h 50m                                           │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ NanoGPT Account Quota ──────────────────────────────────────────╮
+│                                                                  │
+│  Auth source:     OpenCode native auth                           │
+│  Balance:        $3.27                                           │
+│  Plan:           Subscription (stripe)                           │
+│                                                                  │
+│  Weekly input tokens                                             │
+│  🟨 ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░ 44% remaining  │
+│     ▼5%/6h ▆▅▅▅▄▄▄▄▄▄                                            │
+│  Used: 33.6M / 60M                                               │
+│  Resets in: 4d 2h 50m                                            │
+│                                                                  │
+│  Daily images                                                    │
+│  🟩 █████████████████████████████████████████░░░░ 91% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Used: 9 / 100                                                   │
+│  Resets in: 2h 50m                                               │
+│                                                                  │
+│  Renews:         17d 19h 28m                                     │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
@@ -96,19 +203,148 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │  Plan:           ChatGPT plus                                    │
 │                                                                  │
 │  5-hour limit                                                    │
-│  🟩 ███████████████████████████████████████████░░ 95% remaining  │
-│     ▼4%/1h 11m ▆▆▆▆▇▆▆▆▇▇                                        │
-│  Resets in: 4h 6m                                                │
+│  🟩 ████████████████████████████░░░░░░░░░░░░░░░░░ 60% remaining  │
+│     → 0% ▇▇▇▇▇▇▆▄▅▅                                              │
+│  Resets in: 4h 26m                                               │
 │                                                                  │
 │  7-day limit                                                     │
-│  🟩 ████████████████████████████████████░░░░░░░░░ 79% remaining  │
-│     ▼1%/1h 11m ▆▆▆▆▆▆▆▆▆▆ ~3d 22h 19m to empty                   │
-│  Resets in: 5d 2h 23m                                            │
+│  🟨 █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░ 47% remaining  │
+│     ▼1%/1h ▄▄▄▄▄▄▄▄▄▄                                            │
+│  Resets in: 18h 27m                                              │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
+
+╭─ OpenCode Go+Zen Account Quota ──────────────────────────────────╮
+│                                                                  │
+│  ── personal ──                                                  │
+│  Rolling                                                         │
+│  🟩 ███████████████████████████████████████░░░░░░ 85% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Resets in: 4h 12m                                               │
+│                                                                  │
+│  Weekly                                                          │
+│  🟨 ███████████████████████░░░░░░░░░░░░░░░░░░░░░░ 50% remaining  │
+│     ▼2%/8h ▅▅▅▅▄▄▄▄▄▄                                            │
+│  Resets in: 3d 14h                                               │
+│                                                                  │
+│  Monthly                                                         │
+│  🟩 ████████████████████████████████░░░░░░░░░░░░░ 71% remaining  │
+│     → 0% ▆▆▆▆▆▆▆▆▆▆                                              │
+│  Resets in: 21d 6h                                               │
+│                                                                  │
+│  Zen balance:    $12.40                                          │
+│  Payment:        Visa •• 4242                                    │
+│  Monthly spend:  $7.60                                           │
+│                                                                  │
+│  Zen spend:      $7.60 across 6 models                           │
+│    claude-sonnet-4-6       $4.1230 (842)                         │
+│    gpt-5.1                 $1.8420 (314)                         │
+│    grok-4.20               $0.9650 (188)                         │
+│    deepseek-v3.2           $0.4870 (122)                         │
+│    glm-4.6                 $0.1830 ( 41)                         │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ Poe Account Quota ──────────────────────────────────────────────╮
+│                                                                  │
+│  Balance:        687,420 pts ($16.50 USD)                        │
+│  Daily grant:    +3,000 (Resets in: 4h 32m)                      │
+│                                                                  │
+│  Monthly                                                         │
+│  🟨 █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░ 46% remaining  │
+│     ▼1%/3h ▅▅▅▅▅▅▄▄▄▄                                            │
+│  Points: 687,420 / 1,500,000                                     │
+│  Resets in: 11d 18h                                              │
+│                                                                  │
+│  Add-on points:  120,000                                         │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ QwenCloud Token Plan ───────────────────────────────────────────╮
+│                                                                  │
+│  Plan:           Token Plan Team Edition (standard, 1 seat)      │
+│  Auto-renew:     enabled                                         │
+│                                                                  │
+│  Credits                                                         │
+│  🟩 ████████████████████████████████░░░░░░░░░░░░░ 72% remaining  │
+│     → 0% ▆▆▆▆▆▆▆▆▆▆                                              │
+│  Used: 7,050 / 25,000                                            │
+│  Resets in: 23d 16h 6m                                           │
+│                                                                  │
+│  Cycle:          Jun 11 — Jul 11                                 │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ StepFun Token Plan ─────────────────────────────────────────────╮
+│                                                                  │
+│  Plan:           Plus                                            │
+│  Renews:          29d 3h 55m                                     │
+│  Price:           $9.99/mo                                       │
+│                                                                  │
+│  5-hour rolling                                                  │
+│  🟩 ████████████████████████████████████████████ 100% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Resets in: resetting                                            │
+│                                                                  │
+│  Weekly                                                          │
+│  🟩 ███████████████████████████████████████████░░ 95% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Resets in: 1d 6h 50m                                            │
+│                                                                  │
+│  Models:         step-3.5-flash, step-3.5-flash-2603, stepaudi…  │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ xAI/Grok ───────────────────────────────────────────────────────╮
+│                                                                  │
+│  Auth:           valid                                           │
+│  Token expires:  2h 39m                                          │
+│                                                                  │
+│  SuperGrok credits                                               │
+│  🟧 ██████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 22% remaining  │
+│     → 0% ▂▂▂▂▂▂                                                  │
+│  Credits used: 77.59% · Resets Jul 1                             │
+│  Build: 51.19% · SuperGrok: 25.59%                               │
+│  Used: 11,639 / 15,000 credits                                   │
+│  Resets in: 13d 2h 50m                                           │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ Z.AI Coding Plan ───────────────────────────────────────────────╮
+│                                                                  │
+│  Plan:           GLM Coding Pro                                  │
+│  Price:           $30.00/month                                   │
+│  Valid:           Jun 01 to Jul 01                               │
+│  Auto-renews:     2026-07-01                                     │
+│                                                                  │
+│  5-hour rolling                                                  │
+│  🟨 ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░ 44% remaining  │
+│     ▼3%/30m ▅▅▅▄▄▄▄▄▄▄                                           │
+│  Used: 280 / 500                                                 │
+│  Resets in: 3h 12m                                               │
+│                                                                  │
+│  Weekly                                                          │
+│  🟩 ██████████████████████████████████░░░░░░░░░░░ 76% remaining  │
+│     → 0% ▆▆▆▆▆▆▆▆▆▆                                              │
+│  Used: 720 / 3,000                                               │
+│    glm-4.6: 540, glm-4.5: 180                                    │
+│  Resets in: 4d 19h                                               │
+│                                                                  │
+│  Monthly                                                         │
+│  🟩 █████████████████████████████████████░░░░░░░░ 82% remaining  │
+│     → 0% ▆▆▆▆▆▆▆▆▆▆                                              │
+│  Used: 5,400 / 30,000                                            │
+│  Resets in: 13d 6h                                               │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
 ⚠️ Low quota alerts:
-  • Google — johndoe@gmail.com: 17%
+  • MiniMax Token Plan · 5-hour: 3%
+  • xAI/Grok: 22%
+  • Google — janedoe@gmail.com: 0%
 ```
+
+Sort by `urgency` (default), `name`, or `reset`. Hide specific providers with `exclude=poe,qwencloud` (or persist in `mystatus.json`).
 
 ## Supported providers
 
