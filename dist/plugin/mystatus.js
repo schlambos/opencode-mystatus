@@ -235,17 +235,24 @@ function stableCredHash(cred) {
 async function loadAuthMerged() {
     const paths = searchPaths("auth.json", "data");
     const merged = {};
-    const seen = new Set();
+    // Per-provider freshness merge: for the same provider id across multiple
+    // auth.json sources (profiles + legacy), keep the entry with the latest
+    // `expires`. Prevents a stale legacy ~/.local/share copy from shadowing
+    // the fresh per-profile token written by the active opencode-multi
+    // profile. Falls back to first-match for non-oauth entries.
     for (const p of paths) {
         try {
             const raw = await readFile(p, "utf-8");
             const data = JSON.parse(raw);
             for (const [provider, cred] of Object.entries(data)) {
-                const key = `${provider}:${stableCredHash(cred)}`;
-                if (seen.has(key))
+                const existing = merged[provider];
+                if (!existing) {
+                    merged[provider] = cred;
                     continue;
-                seen.add(key);
-                if (!(provider in merged)) {
+                }
+                const existingExp = oauthExpires(existing);
+                const candidateExp = oauthExpires(cred);
+                if (candidateExp !== undefined && (existingExp === undefined || candidateExp > existingExp)) {
                     merged[provider] = cred;
                 }
             }
@@ -255,6 +262,15 @@ async function loadAuthMerged() {
         }
     }
     return merged;
+}
+function oauthExpires(cred) {
+    if (!cred || typeof cred !== "object")
+        return undefined;
+    const c = cred;
+    if (c.type !== "oauth")
+        return undefined;
+    const e = c.expires;
+    return typeof e === "number" && Number.isFinite(e) ? e : undefined;
 }
 async function loadAntigravityAccountsMerged() {
     const paths = searchPaths("antigravity-accounts.json", "config");
@@ -634,11 +650,11 @@ async function queryGoogle(ansi = false) {
         const accounts = allAccounts.filter((a) => a.email && a.enabled !== false);
         if (!accounts.length)
             return { success: true, output: "No enabled Google accounts found." };
-        const cards = [];
+        const allWindows = [];
         for (const account of accounts) {
             const ua = account.fingerprint?.userAgent ?? "antigravity/1.23.2 windows/amd64";
             const windows = [];
-            let note;
+            let cachedNote;
             let usedLive = false;
             try {
                 const accessToken = await refreshGoogleAccessToken(account.refreshToken);
@@ -652,34 +668,41 @@ async function queryGoogle(ansi = false) {
                         if (info && info.remainingFraction !== undefined) {
                             windows.push({
                                 label: group.display,
+                                trendKey: `${group.display} · ${account.email}`,
                                 remaining: Math.round(info.remainingFraction * 100),
                                 resetAt: info.resetTime,
                             });
                         }
                     }
-                    // Only treat live data as authoritative if it actually produced quota
-                    // groups; otherwise fall through to the cached snapshot below.
                     usedLive = windows.length > 0;
                 }
             }
             catch {
             }
             if (!usedLive && account.cachedQuota) {
-                note = `cached${formatCachedAgeMinutes(account.cachedQuotaUpdatedAt)}`;
+                cachedNote = `cached${formatCachedAgeMinutes(account.cachedQuotaUpdatedAt)}`;
                 for (const group of GOOGLE_QUOTA_GROUPS) {
                     const info = account.cachedQuota[group.key];
                     if (info) {
                         windows.push({
                             label: group.display,
+                            trendKey: `${group.display} · ${account.email}`,
                             remaining: Math.round(info.remainingFraction * 100),
                             resetAt: info.resetTime,
                         });
                     }
                 }
             }
-            cards.push({ subtitle: account.email, note, windows });
+            if (!windows.length)
+                continue;
+            const header = cachedNote ? `${account.email} (${cachedNote})` : account.email;
+            windows[0].sectionHeader = header;
+            allWindows.push(...windows);
         }
-        return { success: true, cards };
+        if (!allWindows.length) {
+            return { success: true, output: "No quota data available for Google accounts." };
+        }
+        return { success: true, cards: [{ windows: allWindows }] };
     }
     catch (err) {
         return {
@@ -2124,24 +2147,20 @@ async function queryMistralAccount(account, fallbackLabel) {
             return { error: `${fallbackLabel}: failed to parse usage_percentage from response.` };
         }
         const remainPct = Math.round(100 - usagePercentage);
-        const subtitle = account.alias ?? email ?? fallbackLabel;
-        const header = [`Account:        ${email ?? account.alias ?? "unknown"}`];
-        if (account.alias && email && account.alias !== email) {
-            header.unshift(`Alias:          ${account.alias}`);
-        }
-        const windows = [
-            {
-                label: "Vibe Usage",
-                remaining: remainPct,
-                resetAt: resetAt ?? undefined,
-            },
-        ];
+        const identity = email ?? account.alias ?? fallbackLabel;
+        const sectionHeader = account.alias && email && account.alias !== email
+            ? `${email} (${account.alias})`
+            : identity;
         return {
-            card: {
-                subtitle,
-                header,
-                windows,
-            },
+            windows: [
+                {
+                    label: "Vibe Usage",
+                    trendKey: `Vibe Usage · ${identity}`,
+                    sectionHeader,
+                    remaining: remainPct,
+                    resetAt: resetAt ?? undefined,
+                },
+            ],
         };
     }
     catch (err) {
@@ -2153,15 +2172,15 @@ async function queryMistral(_a, _ansi = false) {
     if (!accounts)
         return null;
     const results = await Promise.all(accounts.map((acct, idx) => queryMistralAccount(acct, acct.alias ?? `Account ${idx + 1}`)));
-    const cards = [];
+    const allWindows = [];
     const errors = [];
     for (const r of results) {
-        if (r.card)
-            cards.push(r.card);
+        if (r.windows)
+            allWindows.push(...r.windows);
         if (r.error)
             errors.push(r.error);
     }
-    if (cards.length === 0) {
+    if (allWindows.length === 0) {
         return {
             success: false,
             error: errors.length > 0 ? errors.join("\n") : "Mistral Vibe: no account data returned.",
@@ -2169,7 +2188,7 @@ async function queryMistral(_a, _ansi = false) {
     }
     return {
         success: true,
-        cards,
+        cards: [{ windows: allWindows }],
         ...(errors.length > 0 ? { error: errors.join("\n") } : {}),
     };
 }
@@ -2537,6 +2556,10 @@ function cardToCell(card, providerTitle, ansi, trend) {
         if (needBlank)
             lines.push("");
         needBlank = true;
+        if (w.sectionHeader) {
+            const divider = `── ${w.sectionHeader} ──`;
+            lines.push(ansi ? `${ANSI_DIM}${divider}${ANSI_RESET}` : divider);
+        }
         if (w.label)
             lines.push(w.label);
         if (w.warn)
@@ -2545,8 +2568,9 @@ function cardToCell(card, providerTitle, ansi, trend) {
         const suffix = w.suffix ?? `${remain}% remaining`;
         lines.push(`${createProgressBar(remain, 26, ansi)} ${suffix}`);
         const { text: resetText, ms: resetMs } = windowReset(w);
+        const metricLabel = w.trendKey ?? w.label;
         if (trend) {
-            const annotation = trend(title, w.label, remain, resetMs);
+            const annotation = trend(title, metricLabel, remain, resetMs);
             if (annotation)
                 lines.push(annotation);
         }
@@ -2557,7 +2581,7 @@ function cardToCell(card, providerTitle, ansi, trend) {
         if (w.extra?.length)
             lines.push(...w.extra);
         if (w.label)
-            metrics.push({ cellTitle: title, label: w.label, remaining: remain, resetMs });
+            metrics.push({ cellTitle: title, label: metricLabel, remaining: remain, resetMs });
     }
     if (card.footer?.length) {
         if (lines.length > 0)

@@ -70,6 +70,8 @@ interface QuotaWindow {
   detail?: string[]; // lines after the bar, before the reset line
   extra?: string[]; // lines after the reset line
   warn?: string; // a warning line shown under the label (throttled, etc.)
+  sectionHeader?: string; // dim divider rendered above this window (groups sub-accounts within one card)
+  trendKey?: string; // override key used for trend tracking + summary metric label (defaults to label)
 }
 
 // One rendered panel. Free-form header/footer lines plus structured windows.
@@ -384,25 +386,42 @@ function stableCredHash(cred: unknown): string {
 
 async function loadAuthMerged(): Promise<AuthData> {
   const paths = searchPaths("auth.json", "data");
-  const merged: AuthData = {} as AuthData;
-  const seen = new Set<string>();
+  const merged: Record<string, unknown> = {};
+
+  // Per-provider freshness merge: for the same provider id across multiple
+  // auth.json sources (profiles + legacy), keep the entry with the latest
+  // `expires`. Prevents a stale legacy ~/.local/share copy from shadowing
+  // the fresh per-profile token written by the active opencode-multi
+  // profile. Falls back to first-match for non-oauth entries.
   for (const p of paths) {
     try {
       const raw = await readFile(p, "utf-8");
       const data = JSON.parse(raw) as Record<string, unknown>;
       for (const [provider, cred] of Object.entries(data)) {
-        const key = `${provider}:${stableCredHash(cred)}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        if (!(provider in (merged as Record<string, unknown>))) {
-          (merged as Record<string, unknown>)[provider] = cred;
+        const existing = merged[provider];
+        if (!existing) {
+          merged[provider] = cred;
+          continue;
+        }
+        const existingExp = oauthExpires(existing);
+        const candidateExp = oauthExpires(cred);
+        if (candidateExp !== undefined && (existingExp === undefined || candidateExp > existingExp)) {
+          merged[provider] = cred;
         }
       }
     } catch {
       // unreadable / malformed — skip
     }
   }
-  return merged;
+  return merged as AuthData;
+}
+
+function oauthExpires(cred: unknown): number | undefined {
+  if (!cred || typeof cred !== "object") return undefined;
+  const c = cred as Record<string, unknown>;
+  if (c.type !== "oauth") return undefined;
+  const e = c.expires;
+  return typeof e === "number" && Number.isFinite(e) ? e : undefined;
 }
 
 async function loadAntigravityAccountsMerged(): Promise<AntigravityAccount[]> {
@@ -894,12 +913,12 @@ async function queryGoogle(ansi = false): Promise<QueryResult> {
     if (!accounts.length)
       return { success: true, output: "No enabled Google accounts found." };
 
-    const cards: ProviderCard[] = [];
+    const allWindows: QuotaWindow[] = [];
 
     for (const account of accounts) {
       const ua = account.fingerprint?.userAgent ?? "antigravity/1.23.2 windows/amd64";
       const windows: QuotaWindow[] = [];
-      let note: string | undefined;
+      let cachedNote: string | undefined;
 
       let usedLive = false;
       try {
@@ -915,25 +934,25 @@ async function queryGoogle(ansi = false): Promise<QueryResult> {
             if (info && info.remainingFraction !== undefined) {
               windows.push({
                 label: group.display,
+                trendKey: `${group.display} · ${account.email}`,
                 remaining: Math.round(info.remainingFraction * 100),
                 resetAt: info.resetTime,
               });
             }
           }
-          // Only treat live data as authoritative if it actually produced quota
-          // groups; otherwise fall through to the cached snapshot below.
           usedLive = windows.length > 0;
         }
       } catch {
       }
 
       if (!usedLive && account.cachedQuota) {
-        note = `cached${formatCachedAgeMinutes(account.cachedQuotaUpdatedAt)}`;
+        cachedNote = `cached${formatCachedAgeMinutes(account.cachedQuotaUpdatedAt)}`;
         for (const group of GOOGLE_QUOTA_GROUPS) {
           const info = account.cachedQuota[group.key];
           if (info) {
             windows.push({
               label: group.display,
+              trendKey: `${group.display} · ${account.email}`,
               remaining: Math.round(info.remainingFraction * 100),
               resetAt: info.resetTime,
             });
@@ -941,10 +960,17 @@ async function queryGoogle(ansi = false): Promise<QueryResult> {
         }
       }
 
-      cards.push({ subtitle: account.email, note, windows });
+      if (!windows.length) continue;
+      const header = cachedNote ? `${account.email} (${cachedNote})` : account.email;
+      windows[0].sectionHeader = header;
+      allWindows.push(...windows);
     }
 
-    return { success: true, cards };
+    if (!allWindows.length) {
+      return { success: true, output: "No quota data available for Google accounts." };
+    }
+
+    return { success: true, cards: [{ windows: allWindows }] };
   } catch (err) {
     return {
       success: false,
@@ -2776,7 +2802,7 @@ function extractCsrfToken(cookieHeader: string): string | null {
 }
 
 interface MistralAccountResult {
-  card?: ProviderCard;
+  windows?: QuotaWindow[];
   error?: string;
 }
 
@@ -2824,26 +2850,22 @@ async function queryMistralAccount(
     }
 
     const remainPct = Math.round(100 - usagePercentage);
-    const subtitle = account.alias ?? email ?? fallbackLabel;
-    const header: string[] = [`Account:        ${email ?? account.alias ?? "unknown"}`];
-    if (account.alias && email && account.alias !== email) {
-      header.unshift(`Alias:          ${account.alias}`);
-    }
-
-    const windows: QuotaWindow[] = [
-      {
-        label: "Vibe Usage",
-        remaining: remainPct,
-        resetAt: resetAt ?? undefined,
-      },
-    ];
+    const identity = email ?? account.alias ?? fallbackLabel;
+    const sectionHeader =
+      account.alias && email && account.alias !== email
+        ? `${email} (${account.alias})`
+        : identity;
 
     return {
-      card: {
-        subtitle,
-        header,
-        windows,
-      },
+      windows: [
+        {
+          label: "Vibe Usage",
+          trendKey: `Vibe Usage · ${identity}`,
+          sectionHeader,
+          remaining: remainPct,
+          resetAt: resetAt ?? undefined,
+        },
+      ],
     };
   } catch (err) {
     return { error: `${fallbackLabel}: ${err instanceof Error ? err.message : String(err)}` };
@@ -2860,14 +2882,14 @@ async function queryMistral(_a: AuthData | undefined, _ansi = false): Promise<Qu
     ),
   );
 
-  const cards: ProviderCard[] = [];
+  const allWindows: QuotaWindow[] = [];
   const errors: string[] = [];
   for (const r of results) {
-    if (r.card) cards.push(r.card);
+    if (r.windows) allWindows.push(...r.windows);
     if (r.error) errors.push(r.error);
   }
 
-  if (cards.length === 0) {
+  if (allWindows.length === 0) {
     return {
       success: false,
       error: errors.length > 0 ? errors.join("\n") : "Mistral Vibe: no account data returned.",
@@ -2876,7 +2898,7 @@ async function queryMistral(_a: AuthData | undefined, _ansi = false): Promise<Qu
 
   return {
     success: true,
-    cards,
+    cards: [{ windows: allWindows }],
     ...(errors.length > 0 ? { error: errors.join("\n") } : {}),
   };
 }
@@ -3358,6 +3380,11 @@ function cardToCell(
     if (needBlank) lines.push("");
     needBlank = true;
 
+    if (w.sectionHeader) {
+      const divider = `── ${w.sectionHeader} ──`;
+      lines.push(ansi ? `${ANSI_DIM}${divider}${ANSI_RESET}` : divider);
+    }
+
     if (w.label) lines.push(w.label);
     if (w.warn) lines.push(w.warn);
 
@@ -3367,8 +3394,10 @@ function cardToCell(
 
     const { text: resetText, ms: resetMs } = windowReset(w);
 
+    const metricLabel = w.trendKey ?? w.label;
+
     if (trend) {
-      const annotation = trend(title, w.label, remain, resetMs);
+      const annotation = trend(title, metricLabel, remain, resetMs);
       if (annotation) lines.push(annotation);
     }
 
@@ -3376,7 +3405,7 @@ function cardToCell(
     if (resetText) lines.push(`Resets in: ${resetText}`);
     if (w.extra?.length) lines.push(...w.extra);
 
-    if (w.label) metrics.push({ cellTitle: title, label: w.label, remaining: remain, resetMs });
+    if (w.label) metrics.push({ cellTitle: title, label: metricLabel, remaining: remain, resetMs });
   }
 
   if (card.footer?.length) {
