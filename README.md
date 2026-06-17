@@ -349,6 +349,19 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 
 Sort by `urgency` (default), `name`, or `reset`. Hide specific providers with `exclude=poe,qwencloud` (or persist in `mystatus.json`).
 
+### Providers that need a browser session token
+
+Some providers don't expose a public usage API. The card only renders if you capture your authenticated browser session and save it as JSON under `~/.config/opencode/`. Without the file the provider is skipped silently.
+
+| Provider | Config file | Required values | Why |
+|---|---|---|---|
+| **BytePlus** | `~/.config/opencode/byteplus-cookies.json` | `{ "cookie": "<full Cookie header string from console.byteplus.com>" }` | No public usage REST API — plugin scrapes the internal dashboard API. |
+| **QwenCloud** | `~/.config/opencode/qwencloud-cookies.json` | `{ "ticket": "<login_qwencloud_ticket>", "aliyunPk": "<login_aliyunid_pk>", "isg": "<isg>", "esmTicket": "<login_ESM_account_ticket>" }` (`esmTicket` optional) | No public usage REST API — plugin reads the Aliyun BSS console API. |
+| **StepFun** | `~/.config/opencode/stepfun-cookies.json` | `{ "oasisToken": "<Oasis-Token>", "oasisWebid": "<Oasis-Webid>", "sessionToken": "<__Secure-next-auth.session-token>" }` | No public usage REST API — plugin hits the dashboard's internal tRPC API. |
+| **OpenCode Go+Zen** | `~/.config/opencode/opencode-go.json` | `{ "workspaceId": "...", "authCookie": "<auth cookie from opencode.ai>" }` (multi-account form: `{ "accounts": [ { "id": "...", "workspaceId": "...", "authCookie": "..." } ] }`) | API key alone only confirms reachability. Quota windows + Zen balance/spend come from authenticated workspace dashboard SSR. |
+
+All session tokens expire periodically — re-capture and overwrite when the card stops rendering. Files are read-only to the plugin and never transmitted anywhere except the provider's own host.
+
 ## Supported providers
 
 | Provider | Account type | What you see |
@@ -507,23 +520,17 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 </details>
 
 <details>
-<summary><strong>BytePlus (Ark Coding Plan)</strong> — requires browser cookies from the dashboard</summary>
+<summary><strong>BytePlus (Ark Coding Plan)</strong> — requires browser session token</summary>
 
 <br>
 
-BytePlus does not expose a usage REST API — instead the plugin reads the dashboard's internal API using your authenticated browser session. To set it up:
-
-1. Log into <https://console.byteplus.com>.
-2. Open DevTools → Application → Cookies → `console.byteplus.com`.
-3. Copy the value of the auth cookie and save to `~/.config/opencode/byteplus-cookies.json`:
+No public usage REST API. The plugin reads the dashboard's internal API on your behalf using an authenticated session. Save your `console.byteplus.com` Cookie header value to `~/.config/opencode/byteplus-cookies.json`:
 
 ```json
-{
-  "cookie": "<full cookie string>"
-}
+{ "cookie": "<full Cookie header string>" }
 ```
 
-The session cookie expires periodically — re-copy the cookie when it does. Without this file the BytePlus card is silently skipped.
+Session expires periodically — overwrite the file when the card stops rendering. Missing file → BytePlus card is silently skipped.
 </details>
 
 <details>
@@ -586,7 +593,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 
 <br>
 
-With just an API key (`auth.json` → `opencode-go`) the plugin confirms reachability. To see quota windows **and** Zen balance/spend together, add a workspace ID + browser auth cookie to `~/.config/opencode/opencode-go.json`:
+With just an API key (`auth.json` → `opencode-go`) the plugin only confirms reachability. Quota windows + Zen balance/spend live behind authenticated workspace dashboard SSR, so the plugin needs a session. Save to `~/.config/opencode/opencode-go.json`:
 
 ```json
 {
@@ -594,8 +601,8 @@ With just an API key (`auth.json` → `opencode-go`) the plugin confirms reachab
     {
       "id": "personal",
       "name": "OpenCode Go Personal",
-      "workspaceId": "your_workspace_id",
-      "authCookie": "the_auth_cookie_value"
+      "workspaceId": "<workspace uuid>",
+      "authCookie": "<opencode.ai auth cookie value>"
     }
   ]
 }
@@ -603,8 +610,8 @@ With just an API key (`auth.json` → `opencode-go`) the plugin confirms reachab
 
 Single-account shorthand `{ "workspaceId": "...", "authCookie": "..." }` or the `OPENCODE_GO_WORKSPACE_ID` / `OPENCODE_GO_AUTH_COOKIE` env vars also work.
 
-- **Workspace ID** — from the URL at <https://opencode.ai/workspace> (`.../workspace/<uuid>/go`).
-- **Auth cookie** — DevTools → Application → Cookies → `opencode.ai` → `auth` (expires with your browser session).
+- **Workspace ID** — UUID segment in your dashboard URL (`opencode.ai/workspace/<uuid>/go`).
+- **Auth cookie** — the `auth` cookie on `opencode.ai`. Expires with your browser session — overwrite when the card stops rendering.
 </details>
 
 <details>
@@ -616,15 +623,11 @@ Resolved in priority order: `auth.json` → `poe` (populated when you use a Poe 
 </details>
 
 <details>
-<summary><strong>QwenCloud</strong> — requires browser cookies from the dashboard</summary>
+<summary><strong>QwenCloud</strong> — requires browser session token</summary>
 
 <br>
 
-QwenCloud does not expose a usage REST API — instead the plugin reads the Aliyun BSS console API using your authenticated browser session. To set it up:
-
-1. Log into <https://home.qwencloud.com>.
-2. Open DevTools → Application → Cookies → `home.qwencloud.com`.
-3. Copy the values of these cookies and save to `~/.config/opencode/qwencloud-cookies.json`:
+No public usage REST API. The plugin queries the Aliyun BSS console API on your behalf using an authenticated session. Save your `home.qwencloud.com` cookie values to `~/.config/opencode/qwencloud-cookies.json`:
 
 ```json
 {
@@ -635,29 +638,25 @@ QwenCloud does not expose a usage REST API — instead the plugin reads the Aliy
 }
 ```
 
-The `esmTicket` is optional. Session cookies expire periodically — re-copy them when the card stops working. Without this file the QwenCloud card is silently skipped.
+`esmTicket` is optional. Session expires periodically — overwrite the file when the card stops rendering. Missing file → QwenCloud card is silently skipped.
 </details>
 
 <details>
-<summary><strong>StepFun</strong> — requires browser cookies from the dashboard</summary>
+<summary><strong>StepFun</strong> — requires browser session token</summary>
 
 <br>
 
-StepFun does not expose a usage REST API — instead the plugin reads the dashboard's internal tRPC API using your authenticated browser session. To set it up:
-
-1. Log into <https://platform.stepfun.ai>.
-2. Open DevTools → Application → Cookies → `platform.stepfun.ai`.
-3. Copy the values of these three cookies and save to `~/.config/opencode/stepfun-cookies.json`:
+No public usage REST API. The plugin hits the dashboard's internal tRPC API on your behalf using an authenticated session. Save your `platform.stepfun.ai` cookie values to `~/.config/opencode/stepfun-cookies.json`:
 
 ```json
 {
-  "oasisToken": "<Oasis-Token value>",
-  "oasisWebid": "<Oasis-Webid value>",
-  "sessionToken": "<__Secure-next-auth.session-token value>"
+  "oasisToken": "<Oasis-Token>",
+  "oasisWebid": "<Oasis-Webid>",
+  "sessionToken": "<__Secure-next-auth.session-token>"
 }
 ```
 
-The session token expires periodically — re-copy the cookies when it does. Without this file the StepFun card is silently skipped.
+Session expires periodically — overwrite the file when the card stops rendering. Missing file → StepFun card is silently skipped.
 </details>
 
 <details>
