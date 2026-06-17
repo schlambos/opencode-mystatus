@@ -80,16 +80,12 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │  Auth:           valid                                           │
 │  Token expires:  4h 57m                                          │
 │                                                                  │
-│  SuperGrok free credits                                          │
+│  SuperGrok credits                                               │
 │  🟨 █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 37% remaining  │
 │     → 0% ▃▃▃▃▃▃▃▃▃▃                                              │
 │  Credits used: 63.32% · Resets Jul 1                             │
-│  Resets in: 17d 10h 47m                                          │
-│                                                                  │
-│  Dev API (included tokens)                                       │
-│  🟨 █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 37% remaining  │
-│     → 0% ▃▃▃▃▃▃▃▃▃▃                                              │
-│  Used: 9,498 / 15,000 tokens                                     │
+│  Build: 41.07% · SuperGrok: 22.25%                               │
+│  Used: 9,498 / 15,000 credits                                    │
 │  Resets in: 17d 10h 47m                                          │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
@@ -130,12 +126,11 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 | **Poe** | Subscription or pay-go | Monthly points, daily grant, USD value |
 | **QwenCloud** | Token Plan (Team Edition) | Credits remaining + cycle dates |
 | **StepFun** | Step Plan (Plus/Pro/etc.) | Plan details + 5-hour & weekly rolling windows |
-| **xAI / Grok** | SuperGrok | Auth validity & token-expiry countdown* |
+| **xAI / Grok** | SuperGrok | Subscription credits with per-product breakdown (Build, SuperGrok), absolute credit count, on-demand & prepaid balance |
 | **Z.AI** | GLM Coding Plan | Plan details + rolling / weekly / monthly windows |
 
 Providers you aren't signed into are skipped silently — you only ever see what's relevant to you.
 
-<sub>\* xAI does not expose a public usage API, so only auth validity and token expiry can be reported.</sub>
 
 ## Installation
 
@@ -416,11 +411,13 @@ The session token expires periodically — re-copy the cookies when it does. Wit
 </details>
 
 <details>
-<summary><strong>xAI / Grok</strong> — zero-config</summary>
+<summary><strong>xAI / Grok</strong> — zero-config (+ optional `grok login`)</summary>
 
 <br>
 
-Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Reads `xai-oauth`; confirms the token is valid and shows its expiry (no public usage API exists).
+Reads OpenCode's `auth.json` (`xai-oauth` / `xai` — opencode dev-referrer OAuth token) for the dev-API liveness check and as a billing fallback. If you've also run `grok login`, it picks up the consumer (grok-build) token at `~/.grok/auth.json` and prefers it for billing (auto-refreshes via `refresh_token`).
+
+Billing comes from `cli-chat-proxy.grok.com/v1/billing` — a single subscription credit ledger shown two ways: percent + per-product breakdown (Build, SuperGrok) via `?format=credits`, and absolute credit count via the default view. Both views report the same depletion; the card collapses them into one window.
 </details>
 
 <details>
@@ -444,7 +441,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 
 <br>
 
-**Read (never modified):** `~/.local/share/opencode/auth.json`, and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `qwencloud-cookies.json`, `byteplus-cookies.json` under `~/.config/opencode/`.
+**Read (never modified):** `~/.local/share/opencode/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `qwencloud-cookies.json`, `byteplus-cookies.json` under `~/.config/opencode/`.
 
 | Provider | Endpoint(s) |
 |---|---|
@@ -460,7 +457,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 | Poe | `api.poe.com/usage/current_balance` |
 | QwenCloud | `home.qwencloud.com/data/api.json?...GetSeatSubscriptionSummary` |
 | StepFun | `platform.stepfun.ai/api/.../Dashboard/QueryStepPlanRateLimit`, `.../GetStepPlanStatus` |
-| xAI / Grok | `api.x.ai/v1/models` |
+| xAI / Grok | `cli-chat-proxy.grok.com/v1/billing`, `api.x.ai/v1/models` |
 | Z.AI | `api.z.ai/api/biz/subscription/list`, `api.z.ai/api/monitor/usage/quota/limit` |
 
 Some usage endpoints are internal/undocumented and may change without notice; the plugin degrades gracefully when one is unavailable.
