@@ -1350,24 +1350,28 @@ async function queryZai(auth, ansi = false) {
 // ============================================================
 // xAI/Grok
 //
-// Two separate auth stores feed this card; both are xAI OAuth tokens for the
-// same account but are minted with different `referrer` claims and live in
-// different files (by design — separate login UIs):
+// Single billing ledger per xAI account. The SuperGrok subscription grants a
+// monthly credit allowance (e.g. $30 plan ≈ 15,000 credits/mo) consumed by
+// all xAI traffic — both Grok models on api.x.ai ("Api" product) and
+// Composer/Build models on cli-chat-proxy.grok.com ("GrokBuild" product).
+// No separate dev-API quota; the two product channels share one pool.
 //
-//   • Dev token  (~/.local/share/opencode/auth.json → "xai"/"xai-oauth",
-//                  referrer "opencode"): used for the dev API models check.
-//   • Consumer   (~/.grok/auth.json → "<issuer>::<client>".key,
-//                  referrer "grok-build"): the token the Grok Build TUI and
-//                  grok.com use. Carries refresh_token + expires_at.
+// Two endpoint views expose the same ledger:
+//   GET /v1/billing                → {monthlyLimit, used, billingPeriodEnd}
+//                                     absolute credit count
+//   GET /v1/billing?format=credits → {creditUsagePercent, productUsage[],
+//                                     onDemand{Used,Cap}, prepaidBalance}
+//                                     percent + per-product breakdown
 //
-// Both tokens can read the cli-chat-proxy billing endpoint, which has two views:
-//   GET /v1/billing                  → {monthlyLimit, used} (15k included tokens)
-//   GET /v1/billing?format=credits   → {creditUsagePercent, billingPeriodEnd}
-//                                       — the "Credits used: X% · Resets …" the
-//                                       TUI/website show.
+// Two OAuth tokens can read the endpoint, both for the same account:
+//   • opencode dev (~/.local/share/opencode/auth.json → "xai"/"xai-oauth",
+//       referrer "opencode") — minted by the opencode-grok-auth plugin
+//   • grok consumer (~/.grok/auth.json → "<issuer>::<client>".key,
+//       referrer "grok-build") — minted by `grok login`
 //
-// We prefer the consumer token (refreshing it if expired) and fall back to the
-// dev token so the card still renders for dev-only users.
+// We prefer the consumer token (auto-refreshes via refresh_token) and fall
+// back to the opencode dev token. The card surfaces ONE window summarising
+// the shared ledger plus a per-product breakdown line.
 // ============================================================
 const GROK_BILLING_BASE = "https://cli-chat-proxy.grok.com/v1/billing";
 const XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
@@ -1474,20 +1478,26 @@ function formatGrokResetDate(iso) {
 async function queryXai(auth) {
     if (!auth || auth.type !== "oauth" || !auth.access)
         return null;
-    if (auth.expires && auth.expires < Date.now())
-        return { success: false, error: "\u26a0\ufe0f xAI token expired. Use a Grok model in OpenCode to refresh." };
-    const header = ["Auth:           valid"];
-    if (typeof auth.expires === "number" && auth.expires > Date.now()) {
-        header.push(`Token expires:  ${formatDuration(Math.floor((auth.expires - Date.now()) / 1000))}`);
-    }
-    // Prefer the consumer (grok-build) token for the credits view — it's what the
-    // Grok Build TUI and grok.com show. Fall back to the dev token, which reads
-    // the same account's billing.
+    // Prefer the consumer (grok-build) token — it auto-refreshes via
+    // refresh_token, so it stays live across long sessions. Fall back to the
+    // opencode dev token, which reads the same account's billing.
     const consumerToken = await resolveGrokConsumerToken();
     const hasConsumer = !!consumerToken;
+    const devTokenExpired = !!(auth.expires && auth.expires < Date.now());
+    if (devTokenExpired && !hasConsumer) {
+        return { success: false, error: "xAI token expired. Use a Grok model in OpenCode to refresh." };
+    }
     const creditsToken = consumerToken ?? auth.access;
+    const header = [
+        devTokenExpired ? "Auth:           consumer-only (dev token expired)" : "Auth:           valid",
+    ];
+    if (!devTokenExpired && typeof auth.expires === "number" && auth.expires > Date.now()) {
+        header.push(`Token expires:  ${formatDuration(Math.floor((auth.expires - Date.now()) / 1000))}`);
+    }
     const windows = [];
-    // SuperGrok free credits — GET /v1/billing?format=credits
+    // Subscription credits — GET /v1/billing?format=credits (percent +
+    // per-product breakdown). Single ledger shared across both Grok-API and
+    // Composer/Build product channels — not a separate "free credits" pool.
     try {
         const r = await fetchTimeout(`${GROK_BILLING_BASE}?format=credits`, {
             headers: { Authorization: `Bearer ${creditsToken}`, Accept: "application/json" },
@@ -1500,12 +1510,22 @@ async function queryXai(auth) {
             const detail = [
                 `Credits used: ${usedPct.toFixed(2)}%${resetDate ? ` \u00b7 Resets ${resetDate}` : ""}`,
             ];
+            const products = cfg.productUsage?.filter((p) => p && typeof p.product === "string" && typeof p.usagePercent === "number");
+            if (products && products.length > 0) {
+                const renameProduct = (id) => id === "GrokBuild" ? "Build" : id === "Api" ? "SuperGrok" : id;
+                detail.push(products
+                    .map((p) => `${renameProduct(String(p.product))}: ${Number(p.usagePercent).toFixed(2)}%`)
+                    .join(" · "));
+            }
             const onDemand = cfg.onDemandUsed?.val ?? 0;
             const onDemandCap = cfg.onDemandCap?.val ?? 0;
             if (onDemandCap > 0)
                 detail.push(`On-demand: ${onDemand}/${onDemandCap}`);
+            const prepaid = cfg.prepaidBalance?.val ?? 0;
+            if (prepaid > 0)
+                detail.push(`Prepaid balance: ${prepaid}`);
             windows.push({
-                label: hasConsumer ? "SuperGrok free credits" : "Grok free credits",
+                label: hasConsumer ? "SuperGrok credits" : "Grok credits",
                 remaining: remain,
                 resetAt: cfg.billingPeriodEnd,
                 detail,
@@ -1515,35 +1535,34 @@ async function queryXai(auth) {
     catch {
         // non-fatal — keep rendering the rest of the card
     }
-    // Dev / included API credits — GET /v1/billing (15k included tokens view)
+    // Absolute credit count from default /v1/billing view, appended as a detail
+    // line on the SAME window above (same ledger as ?format=credits — just a
+    // different format of the same data, NOT a separate quota).
     try {
         const billRes = await fetchTimeout(GROK_BILLING_BASE, {
-            headers: { Authorization: `Bearer ${auth.access}`, Accept: "application/json" },
+            headers: { Authorization: `Bearer ${creditsToken}`, Accept: "application/json" },
         });
-        if (billRes.ok) {
+        if (billRes.ok && windows.length > 0) {
             const cfg = (await billRes.json()).config ?? {};
             const limit = cfg.monthlyLimit?.val;
             const used = cfg.used?.val;
             if (typeof limit === "number" && limit > 0 && typeof used === "number") {
-                const remain = Math.max(0, Math.min(100, (1 - used / limit) * 100));
-                windows.push({
-                    label: "Dev API (included tokens)",
-                    remaining: remain,
-                    resetAt: cfg.billingPeriodEnd,
-                    detail: [`Used: ${used.toLocaleString()} / ${limit.toLocaleString()} tokens`],
-                });
+                windows[0].detail?.push(`Used: ${used.toLocaleString()} / ${limit.toLocaleString()} credits`);
             }
         }
     }
     catch { }
     if (!hasConsumer) {
-        header.push("SuperGrok:      run `grok login` to show free credits");
+        header.push("SuperGrok:      run `grok login` to show credits");
     }
-    // Validate the dev token still works against the API.
+    // Liveness check: confirm at least one of the two tokens still works against
+    // the xAI API. Prefer the consumer token (auto-refreshes via refresh_token)
+    // and fall back to the opencode dev token. Either valid token is enough for
+    // the card to be meaningful.
     try {
         const res = await fetchTimeout("https://api.x.ai/v1/models", {
             headers: {
-                Authorization: `Bearer ${auth.access}`,
+                Authorization: `Bearer ${creditsToken}`,
                 Accept: "application/json",
                 "x-grok-source": "opencode-allstatus",
             },
