@@ -6,10 +6,13 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/opencode-mystatus"><img src="https://img.shields.io/npm/v/opencode-mystatus?color=cb3837&label=npm" alt="npm version"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://opencode.ai"><img src="https://img.shields.io/badge/OpenCode-plugin-black.svg" alt="OpenCode Plugin"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A518-3c873a.svg" alt="Node >= 18">
+</p>
+
+<p align="center">
+  <em>Fork of <a href="https://github.com/vbgate/opencode-mystatus">vbgate/opencode-mystatus</a>. Not published to npm — install from this repo.</em>
 </p>
 
 ---
@@ -370,13 +373,36 @@ Providers you aren't signed into are skipped silently — you only ever see what
 
 ## Installation
 
-### From npm (recommended)
+This fork is **not on npm** — install directly from this repo.
 
-Add the plugin to `~/.config/opencode/opencode.json`. The optional `command` block gives you a `/mystatus` (and `/usage`) shortcut:
+### From source (recommended)
+
+```bash
+git clone https://github.com/schlambos/opencode-mystatus.git ~/opencode-plugins/opencode-mystatus
+cd ~/opencode-plugins/opencode-mystatus
+npm install         # or: bun install
+npm run build       # produces dist/plugin/mystatus.js
+```
+
+Then either:
+
+**A. Drop the files in place** (simplest):
+
+```bash
+cp plugin/mystatus.ts ~/.config/opencode/plugin/
+cp command/mystatus.md command/usage.md ~/.config/opencode/command/
+cp bin/mystatus bin/mystatus-cli.ts ~/.local/bin/
+chmod +x ~/.local/bin/mystatus
+ln -sf ~/.local/bin/mystatus ~/.local/bin/usage
+```
+
+**B. Or reference the built dist via `file://` from `opencode.json`**:
 
 ```json
 {
-  "plugin": ["opencode-mystatus"],
+  "plugin": [
+    "file:///absolute/path/to/opencode-mystatus/dist/plugin/mystatus.js"
+  ],
   "command": {
     "mystatus": {
       "description": "Query quota usage for all AI accounts",
@@ -387,18 +413,6 @@ Add the plugin to `~/.config/opencode/opencode.json`. The optional `command` blo
 ```
 
 Restart OpenCode and run `/mystatus`.
-
-### From source
-
-```bash
-cp plugin/mystatus.ts ~/.config/opencode/plugin/
-cp command/mystatus.md command/usage.md ~/.config/opencode/command/
-cp bin/mystatus bin/mystatus-cli.ts ~/.local/bin/
-chmod +x ~/.local/bin/mystatus
-ln -sf ~/.local/bin/mystatus ~/.local/bin/usage
-```
-
-Then restart OpenCode.
 
 ## Standalone CLI
 
