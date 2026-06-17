@@ -15,6 +15,7 @@
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
  *   - QwenCloud   (Token Plan)              qwencloud-cookies.json → dashboard API
  *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
+ *   - AtlasCloud  (Coding Plan)             atlas-cookies.json → console API
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)

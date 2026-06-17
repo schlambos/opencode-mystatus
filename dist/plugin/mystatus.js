@@ -15,6 +15,7 @@
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
  *   - QwenCloud   (Token Plan)              qwencloud-cookies.json → dashboard API
  *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
+ *   - AtlasCloud  (Coding Plan)             atlas-cookies.json → console API
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)
@@ -2329,6 +2330,249 @@ async function queryBytePlus(_a, ansi = false) {
     }
 }
 // ============================================================
+// AtlasCloud Coding Plan (console.atlascloud.ai)
+// ============================================================
+//
+//   Quota source:    POST   https://console.atlascloud.ai/api/v1/codeplan/get
+//   History source:  GET    https://console.atlascloud.ai/api/v1/codeplan/costs
+//   Account lookup:  GET    https://console.atlascloud.ai/api/v1/current-user
+//   Auth:            Browser session cookies stored in
+//                    ~/.config/opencode/atlas-cookies.json
+//   Account header:  X-Account-ID = currentAccountUuid from /current-user
+//
+//   To set up: log into console.atlascloud.ai, open DevTools → Application →
+//   Cookies, copy at least the `access-token` cookie value (full cookie
+//   string also fine), and save as:
+//     { "cookie": "access-token=...; g_state=...; _atlas_user_hint=..." }
+//
+//   Coding-plan key (apikey-…) cannot read the console API; only the
+//   browser JWT cookie can.
+const ATLASCLOUD_BASE = "https://console.atlascloud.ai";
+const ATLASCLOUD_REFERER = "https://www.atlascloud.ai/";
+const ATLASCLOUD_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:151.0) Gecko/20100101 Firefox/151.0";
+function atlasCookiesPath() {
+    return (findReadable("atlas-cookies.json", "config") ??
+        join(opencodeConfigDir(), "atlas-cookies.json"));
+}
+function loadAtlasCookies() {
+    try {
+        const p = atlasCookiesPath();
+        if (!existsSync(p))
+            return null;
+        const raw = readFileSync(p, "utf-8");
+        const parsed = JSON.parse(raw);
+        const cookie = typeof parsed.cookie === "string" ? parsed.cookie.trim() : null;
+        if (!cookie)
+            return null;
+        const accountUuid = typeof parsed.accountUuid === "string" && parsed.accountUuid.trim()
+            ? parsed.accountUuid.trim()
+            : undefined;
+        return { cookie, accountUuid };
+    }
+    catch {
+        return null;
+    }
+}
+function atlasHeaders(cookie, accountUuid) {
+    const h = {
+        Cookie: cookie,
+        "User-Agent": ATLASCLOUD_USER_AGENT,
+        Accept: "*/*",
+        Origin: "https://www.atlascloud.ai",
+        Referer: ATLASCLOUD_REFERER,
+        "Content-Type": "application/json",
+    };
+    if (accountUuid)
+        h["X-Account-ID"] = accountUuid;
+    return h;
+}
+function extractAtlasAccessTokenExp(cookieHeader) {
+    const m = cookieHeader.match(/access-token=([^;]+)/);
+    if (!m)
+        return undefined;
+    const payload = parseJwtPayload(m[1]);
+    if (!payload)
+        return undefined;
+    const exp = payload.exp;
+    if (typeof exp === "number" && Number.isFinite(exp))
+        return exp;
+    return undefined;
+}
+async function fetchAtlasCurrentUser(cookie) {
+    try {
+        const res = await fetchTimeout(`${ATLASCLOUD_BASE}/api/v1/current-user`, {
+            headers: atlasHeaders(cookie),
+        });
+        if (!res.ok)
+            return null;
+        const json = (await res.json());
+        return json.data ?? null;
+    }
+    catch {
+        return null;
+    }
+}
+async function fetchAtlasCodePlan(cookie, accountUuid) {
+    const res = await fetchTimeout(`${ATLASCLOUD_BASE}/api/v1/codeplan/get`, {
+        method: "POST",
+        headers: atlasHeaders(cookie, accountUuid),
+        body: "",
+    });
+    if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`AtlasCloud codeplan/get error (${res.status}): ${body.slice(0, 200)}`);
+    }
+    const json = (await res.json());
+    return json.data ?? [];
+}
+async function fetchAtlasRecentCosts(cookie, accountUuid, windowMs = 86_400_000, pageSize = 5) {
+    const now = Date.now();
+    const url = new URL(`${ATLASCLOUD_BASE}/api/v1/codeplan/costs`);
+    url.searchParams.set("pageNo", "1");
+    url.searchParams.set("pageSize", String(pageSize));
+    url.searchParams.set("startTime", String(now - windowMs));
+    url.searchParams.set("endTime", String(now));
+    try {
+        const res = await fetchTimeout(url.toString(), { headers: atlasHeaders(cookie, accountUuid) });
+        if (!res.ok)
+            return null;
+        const json = (await res.json());
+        return json.data ?? null;
+    }
+    catch {
+        return null;
+    }
+}
+function formatAtlasExpiry(expiredAt) {
+    if (!expiredAt || !Number.isFinite(expiredAt))
+        return { text: "-" };
+    const ms = expiredAt > 1e12 ? expiredAt : expiredAt * 1000;
+    const date = new Date(ms);
+    if (Number.isNaN(date.getTime()))
+        return { text: "-" };
+    return { iso: date.toISOString(), text: formatResetAt(date.toISOString()) };
+}
+async function queryAtlasCloud(_a, ansi = false) {
+    const cookies = loadAtlasCookies();
+    if (!cookies)
+        return null;
+    if (!/access-token=/.test(cookies.cookie)) {
+        return {
+            success: false,
+            error: "atlas-cookies.json found but `cookie` value is missing the `access-token=` JWT.\n" +
+                "Copy the full cookie string from console.atlascloud.ai including access-token.",
+        };
+    }
+    const jwtExp = extractAtlasAccessTokenExp(cookies.cookie);
+    if (jwtExp && jwtExp * 1000 < Date.now()) {
+        return {
+            success: false,
+            error: "⚠️ AtlasCloud session cookie expired.\n" +
+                "Re-login at https://console.atlascloud.ai and refresh atlas-cookies.json.",
+        };
+    }
+    let accountUuid = cookies.accountUuid;
+    let accountEmail;
+    let accountName;
+    try {
+        const user = await fetchAtlasCurrentUser(cookies.cookie);
+        if (user) {
+            accountUuid = accountUuid ?? user.currentAccountUuid;
+            accountEmail = user.email;
+            accountName = user.name;
+        }
+    }
+    catch {
+        // tolerate failure — fall back to configured accountUuid
+    }
+    if (!accountUuid) {
+        return {
+            success: false,
+            error: "AtlasCloud: could not resolve accountUuid.\n" +
+                "Either /current-user failed (cookie invalid) or add accountUuid to atlas-cookies.json.",
+        };
+    }
+    try {
+        const subs = await fetchAtlasCodePlan(cookies.cookie, accountUuid);
+        const active = subs.find((s) => /active/i.test(s.Status)) ?? subs[0];
+        if (!active) {
+            return {
+                success: true,
+                cards: [
+                    {
+                        header: [
+                            `Account:        ${accountEmail ?? accountName ?? "AtlasCloud"}`,
+                            "Plan:           AtlasCloud Coding Plan (no active subscription)",
+                        ],
+                    },
+                ],
+            };
+        }
+        const dailyQuota = Number(active.DailyQuota);
+        const balance = Number(active.balance);
+        const remainingPct = Number.isFinite(dailyQuota) && dailyQuota > 0
+            ? Math.max(0, Math.min(100, Math.round((balance / dailyQuota) * 100)))
+            : 0;
+        const expiry = formatAtlasExpiry(active.ExpiredAt);
+        const header = [];
+        if (accountEmail)
+            header.push(`Account:        ${accountEmail}`);
+        header.push(`Plan:           AtlasCloud ${active.PlanName} ($${active.Price}/${active.PlanType})`);
+        header.push(`Status:         ${active.Status}${active.AutoRenewal ? " · auto-renew" : ""}`);
+        const detail = [];
+        if (Number.isFinite(balance) && Number.isFinite(dailyQuota)) {
+            detail.push(`Used today:     ${Math.round(dailyQuota - balance).toLocaleString()} / ${dailyQuota.toLocaleString()}`);
+        }
+        const windows = [
+            {
+                label: "Daily quota",
+                remaining: remainingPct,
+                detail: detail.length ? detail : undefined,
+                resetAt: nextDailyResetIso(),
+            },
+        ];
+        const footer = [];
+        if (expiry.iso)
+            footer.push(`Subscription expires: ${expiry.text} (${expiry.iso.slice(0, 10)})`);
+        if (jwtExp) {
+            const cookieExp = new Date(jwtExp * 1000).toISOString();
+            footer.push(`Cookie expires:       ${formatResetAt(cookieExp)} (${cookieExp.slice(0, 10)})`);
+        }
+        const recent = await fetchAtlasRecentCosts(cookies.cookie, accountUuid, 86_400_000, 5);
+        if (recent && recent.items.length) {
+            const usedToday = recent.items.reduce((s, it) => s + Number(it.amount ?? 0), 0);
+            footer.push("");
+            footer.push(`Recent calls (last 24h, ${recent.total} total, top 5):`);
+            for (const it of recent.items.slice(0, 5)) {
+                const time = new Date(it.finishTime).toISOString().slice(11, 16);
+                const cost = Math.round(Number(it.amount ?? 0)).toLocaleString();
+                const inT = it.usage?.input ?? 0;
+                const outT = it.usage?.output ?? 0;
+                footer.push(`  ${time}  ${it.model.padEnd(30)} ${String(inT).padStart(6)}in/${String(outT).padStart(4)}out  -${cost}`);
+            }
+            if (Number.isFinite(usedToday)) {
+                footer.push(`  (top-5 24h burn: -${Math.round(usedToday).toLocaleString()})`);
+            }
+        }
+        return {
+            success: true,
+            cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+        };
+    }
+    catch (err) {
+        return {
+            success: false,
+            error: `AtlasCloud: ${err instanceof Error ? err.message : String(err)}`,
+        };
+    }
+}
+// Daily quota resets at UTC midnight (per AtlasCloud dashboard behavior).
+function nextDailyResetIso() {
+    const now = new Date();
+    const reset = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
+    return reset.toISOString();
+}
+// ============================================================
 // NanoGPT (nano-gpt.com)
 // ============================================================
 //
@@ -2930,6 +3174,7 @@ function resolveWidth(explicit, cfg) {
 }
 const PROVIDERS = [
     { id: "anthropic", title: "Anthropic Account Quota", query: (a, ansi) => queryAnthropic(a.anthropic, ansi) },
+    { id: "atlascloud", title: "AtlasCloud Coding Plan", query: (_a, ansi) => queryAtlasCloud(_a, ansi) },
     { id: "byteplus", title: "BytePlus Coding Plan", query: (_a, ansi) => queryBytePlus(_a, ansi) },
     { id: "copilot", title: "GitHub Copilot Account Quota", query: (a, ansi) => queryCopilot(a["github-copilot"], ansi) },
     { id: "google", title: "Google Account Quota", query: (_a, ansi) => queryGoogle(ansi) },
@@ -3263,7 +3508,7 @@ async function runMyStatus(args) {
 export const MyStatusPlugin = async () => ({
     tool: {
         mystatus: tool({
-            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, and BytePlus Coding Plan. Output is a single-column stack of provider cards, sorted by urgency, with a summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,byteplus,copilot,google,minimax,mistral,nanogpt,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
+            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, and BytePlus Coding Plan. Output is a single-column stack of provider cards, sorted by urgency, with a summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,minimax,mistral,nanogpt,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
             args: {
                 format: tool.schema.string().optional(),
                 threshold: tool.schema.number().optional(),

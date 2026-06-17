@@ -76,6 +76,31 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
+╭─ AtlasCloud Coding Plan ─────────────────────────────────────────╮
+│                                                                  │
+│  Account:        user@example.com                                │
+│  Plan:           AtlasCloud Lite ($20/monthly)                   │
+│  Status:         active                                          │
+│                                                                  │
+│  Daily quota                                                     │
+│  🟩 ██████████████████████████████████████████░░░ 94% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Used today:     131,999 / 2,200,000                             │
+│  Resets in: 2h 15m                                               │
+│                                                                  │
+│  Subscription expires: 29d 23h 29m (2026-07-17)                  │
+│  Cookie expires:       6d 8h 12m (2026-06-24)                    │
+│                                                                  │
+│  Recent calls (last 24h, 18 total, top 5):                       │
+│    21:34  deepseek-ai/deepseek-v4-pro         5in/  58out  -348  │
+│    21:34  deepseek-ai/deepseek-v4-pro         5in/  98out  -578  │
+│    21:31  deepseek-ai/deepseek-v4-pro     14402in/  84out  -41…  │
+│    21:31  deepseek-ai/deepseek-v4-pro     14078in/ 141out  -41…  │
+│    21:31  deepseek-ai/deepseek-v4-pro     13801in/ 130out  -40…  │
+│    (top-5 24h burn: -124,313)                                    │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
 ╭─ BytePlus Coding Plan ───────────────────────────────────────────╮
 │                                                                  │
 │  Plan:           BytePlus Ark Coding Plan                        │
@@ -355,6 +380,7 @@ Some providers don't expose a public usage API. The card only renders if you cap
 
 | Provider | Config file | Required values | Why |
 |---|---|---|---|
+| **AtlasCloud** | `~/.config/opencode/atlas-cookies.json` | `{ "cookie": "<full Cookie header string from console.atlascloud.ai including access-token=…>", "accountUuid": "<optional, auto-resolved via /current-user>" }` | No public usage REST API — plugin reads the console's authenticated dashboard API. Coding-plan `apikey-…` cannot read usage. |
 | **BytePlus** | `~/.config/opencode/byteplus-cookies.json` | `{ "cookie": "<full Cookie header string from console.byteplus.com>" }` | No public usage REST API — plugin scrapes the internal dashboard API. |
 | **QwenCloud** | `~/.config/opencode/qwencloud-cookies.json` | `{ "ticket": "<login_qwencloud_ticket>", "aliyunPk": "<login_aliyunid_pk>", "isg": "<isg>", "esmTicket": "<login_ESM_account_ticket>" }` (`esmTicket` optional) | No public usage REST API — plugin reads the Aliyun BSS console API. |
 | **StepFun** | `~/.config/opencode/stepfun-cookies.json` | `{ "oasisToken": "<Oasis-Token>", "oasisWebid": "<Oasis-Webid>", "sessionToken": "<__Secure-next-auth.session-token>" }` | No public usage REST API — plugin hits the dashboard's internal tRPC API. |
@@ -367,6 +393,7 @@ All session tokens expire periodically — re-capture and overwrite when the car
 | Provider | Account type | What you see |
 |---|---|---|
 | **Anthropic** | Claude Pro / Max | 5-hour, 7-day, and per-model windows (auto token refresh) |
+| **AtlasCloud** | Coding Plan (Starter/Lite/Plus/Max/Ultra) | Plan details + daily quota remaining + subscription/cookie expiry + recent-call log |
 | **BytePlus** | Ark Coding Plan | Plan details + rolling / weekly / monthly windows |
 | **GitHub Copilot** | Individual / Business | Premium, Chat & Completions usage |
 | **Google** | Antigravity free quota | Gemini Pro / Flash / Claude, per account |
@@ -481,7 +508,7 @@ All options are optional and can be set per-call or as [defaults in your config]
 | `fresh` | boolean | `false` | Bypass the cache and force a live fetch |
 | `format` | `ansi` · `json` | `ansi` | `json` returns machine-readable output |
 
-Provider ids: `anthropic`, `byteplus`, `copilot`, `google`, `minimax`, `mistral`, `nanogpt`, `openai`, `opencode-go`, `poe`, `qwencloud`, `stepfun`, `xai`, `zai`.
+Provider ids: `anthropic`, `atlascloud`, `byteplus`, `copilot`, `google`, `minimax`, `mistral`, `nanogpt`, `openai`, `opencode-go`, `poe`, `qwencloud`, `stepfun`, `xai`, `zai`.
 
 ## Configuration
 
@@ -517,6 +544,36 @@ Anything authenticated inside OpenCode is detected automatically. The collapsibl
 <br>
 
 Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Refreshes the Claude Code OAuth token and queries `api.anthropic.com/api/oauth/usage`.
+</details>
+
+<details>
+<summary><strong>AtlasCloud (Coding Plan)</strong> — requires browser session token</summary>
+
+<br>
+
+No public usage REST API. The coding-plan API key (`apikey-…`) authenticates `api.atlascloud.ai/v1/chat/completions` only — it cannot read plan usage. The plugin reads the console's authenticated dashboard API on your behalf using a browser session cookie.
+
+1. Log into `https://console.atlascloud.ai`.
+2. Open DevTools → Application → Cookies → `console.atlascloud.ai` (or `.atlascloud.ai`).
+3. Copy the full cookie header string (at minimum the `access-token=` JWT).
+4. Save to `~/.config/opencode/atlas-cookies.json`:
+
+```json
+{
+  "cookie": "access-token=eyJ...; g_state=...; _atlas_user_hint=..."
+}
+```
+
+`accountUuid` is auto-resolved via `/api/v1/current-user`; add it explicitly only if you have multiple Atlas accounts and want to pin a specific one:
+
+```json
+{
+  "cookie": "access-token=eyJ...",
+  "accountUuid": "019xxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+}
+```
+
+The `access-token` JWT expires after ~7 days — the card surfaces the expiry countdown. Re-capture and overwrite when the card stops rendering. Missing file → AtlasCloud card is silently skipped.
 </details>
 
 <details>
@@ -690,11 +747,12 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 
 <br>
 
-**Read (never modified):** `~/.local/share/opencode/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `qwencloud-cookies.json`, `byteplus-cookies.json` under `~/.config/opencode/`.
+**Read (never modified):** `~/.local/share/opencode/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `qwencloud-cookies.json`, `byteplus-cookies.json`, `atlas-cookies.json` under `~/.config/opencode/`.
 
 | Provider | Endpoint(s) |
 |---|---|
 | Anthropic | `api.anthropic.com/api/oauth/usage`, `console.anthropic.com/v1/oauth/token` |
+| AtlasCloud | `console.atlascloud.ai/api/v1/current-user`, `.../codeplan/get`, `.../codeplan/costs` |
 | BytePlus | `console.byteplus.com/api/...` |
 | GitHub Copilot | `api.github.com/copilot_internal/*`, `api.github.com/users/*/settings/billing/...` |
 | Google | `cloudcode-pa.googleapis.com/...:fetchAvailableModels`, `oauth2.googleapis.com/token` |
@@ -730,7 +788,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Credits
 
-Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, BytePlus (Ark Coding Plan), GitHub Copilot, MiniMax, Mistral (Vibe Usage), NanoGPT, OpenCode Go+Zen, Poe, multi-account Google, QwenCloud, StepFun, xAI/Grok, and Z.AI.
+Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, AtlasCloud (Coding Plan), BytePlus (Ark Coding Plan), GitHub Copilot, MiniMax, Mistral (Vibe Usage), NanoGPT, OpenCode Go+Zen, Poe, multi-account Google, QwenCloud, StepFun, xAI/Grok, and Z.AI.
 
 ## License
 
