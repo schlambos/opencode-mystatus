@@ -16,6 +16,7 @@
  *   - QwenCloud   (Token Plan)              qwencloud-cookies.json → dashboard API
  *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
  *   - AtlasCloud  (Coding Plan)             atlas-cookies.json → console API
+ *   - Ollama      (Cloud Pro/Max)             ollama-cookies.json → settings SSR
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)
@@ -273,27 +274,87 @@ function oauthExpires(cred) {
     const e = c.expires;
     return typeof e === "number" && Number.isFinite(e) ? e : undefined;
 }
-async function loadAntigravityAccountsMerged() {
-    const paths = searchPaths("antigravity-accounts.json", "config");
-    const merged = [];
-    const seen = new Set();
-    for (const p of paths) {
+function googleRefreshFromCred(cred) {
+    const refresh = cred?.refresh;
+    if (!refresh)
+        return null;
+    const [token] = refresh.split("|");
+    return token || null;
+}
+async function collectGoogleAuthRefreshTokens() {
+    const tokens = new Set();
+    for (const p of searchPaths("auth.json", "data")) {
         try {
-            const raw = await readFile(p, "utf-8");
-            const file = JSON.parse(raw);
-            for (const a of file.accounts ?? []) {
-                const key = `${a.email ?? ""}:${String(a.refreshToken ?? "").slice(-16)}`;
-                if (seen.has(key))
+            const data = JSON.parse(await readFile(p, "utf-8"));
+            for (const [provider, cred] of Object.entries(data)) {
+                if (provider !== "google")
                     continue;
-                seen.add(key);
-                merged.push(a);
+                const token = googleRefreshFromCred(cred);
+                if (token)
+                    tokens.add(token);
             }
         }
         catch {
             // skip
         }
     }
-    return merged;
+    return tokens;
+}
+function antigravityAccountFreshness(a) {
+    return Math.max(a.lastUsed ?? 0, a.cachedQuotaUpdatedAt ?? 0, a.addedAt ?? 0);
+}
+function mergeAntigravityAccount(existing, candidate) {
+    const pick = antigravityAccountFreshness(candidate) >= antigravityAccountFreshness(existing)
+        ? candidate
+        : existing;
+    const other = pick === candidate ? existing : candidate;
+    return {
+        ...other,
+        ...pick,
+        cachedQuota: pick.cachedQuota ?? other.cachedQuota,
+        cachedQuotaUpdatedAt: pick.cachedQuotaUpdatedAt ?? other.cachedQuotaUpdatedAt,
+        fingerprint: pick.fingerprint ?? other.fingerprint,
+        projectId: pick.projectId ?? other.projectId,
+        managedProjectId: pick.managedProjectId ?? other.managedProjectId,
+        enabled: pick.enabled !== false && other.enabled !== false,
+    };
+}
+async function loadAntigravityAccountsMerged(cfg = {}) {
+    const paths = searchPaths("antigravity-accounts.json", "config");
+    const authTokens = await collectGoogleAuthRefreshTokens();
+    const excluded = new Set((cfg.google?.excludeEmails ?? []).map((e) => e.trim().toLowerCase()).filter(Boolean));
+    const byEmail = new Map();
+    for (const p of paths) {
+        try {
+            const raw = await readFile(p, "utf-8");
+            const file = JSON.parse(raw);
+            for (const a of file.accounts ?? []) {
+                const email = (a.email ?? "").trim().toLowerCase();
+                if (!email || a.enabled === false || excluded.has(email))
+                    continue;
+                const existing = byEmail.get(email);
+                if (existing) {
+                    existing.profileCount += 1;
+                    existing.account = mergeAntigravityAccount(existing.account, a);
+                }
+                else {
+                    byEmail.set(email, { account: a, profileCount: 1 });
+                }
+            }
+        }
+        catch {
+            // skip
+        }
+    }
+    return [...byEmail.values()]
+        .filter(({ account, profileCount }) => {
+        if (authTokens.has(account.refreshToken))
+            return true;
+        // Pool accounts mirrored across profiles (e.g. mattg4542) stay visible;
+        // single-profile orphans (removed auth, stale workspace copy) drop out.
+        return profileCount >= 2;
+    })
+        .map(({ account }) => account);
 }
 // ============================================================
 // OpenAI
@@ -639,7 +700,7 @@ function formatCachedAgeMinutes(updatedAt) {
     return ` (${mins} min ago)`;
 }
 async function queryGoogle(ansi = false) {
-    const allAccounts = await loadAntigravityAccountsMerged();
+    const allAccounts = await loadAntigravityAccountsMerged(loadConfig());
     if (allAccounts.length === 0) {
         return {
             success: false,
@@ -2573,6 +2634,171 @@ function nextDailyResetIso() {
     return reset.toISOString();
 }
 // ============================================================
+// Ollama Cloud (ollama.com/settings)
+// ============================================================
+//
+//   Quota source:    GET https://ollama.com/settings (SSR HTML)
+//   Billing enrich:  GET https://ollama.com/settings/billing (renewal date)
+//   Auth:            Browser session cookies in ollama-cookies.json
+//
+//   { "cookie": "__Secure-session=...; aid=..." }
+//
+//   Inference API keys (auth.json → ollama-cloud) cannot read account quota.
+const OLLAMA_SETTINGS_URL = "https://ollama.com/settings";
+const OLLAMA_BILLING_URL = "https://ollama.com/settings/billing";
+const OLLAMA_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:151.0) Gecko/20100101 Firefox/151.0";
+function ollamaCookiesPath() {
+    return findReadable("ollama-cookies.json", "config")
+        ?? join(opencodeConfigDir(), "ollama-cookies.json");
+}
+function loadOllamaCookies() {
+    try {
+        const p = ollamaCookiesPath();
+        if (!existsSync(p))
+            return null;
+        const raw = readFileSync(p, "utf-8");
+        const parsed = JSON.parse(raw);
+        const cookie = typeof parsed.cookie === "string" ? parsed.cookie.trim() : null;
+        if (!cookie)
+            return null;
+        return { cookie };
+    }
+    catch {
+        return null;
+    }
+}
+function parseOllamaUsageBlock(html, kind) {
+    const usedMatch = html.match(new RegExp(`aria-label="${kind} usage ([\\d.]+)% used"`));
+    if (!usedMatch)
+        return null;
+    const anchor = html.indexOf(`aria-label="${kind} usage`);
+    const sliceStart = anchor >= 0 ? anchor : 0;
+    const weeklyIdx = html.indexOf("Weekly usage");
+    const sliceEnd = kind === "Session" && weeklyIdx > sliceStart ? weeklyIdx : html.length;
+    const block = html.slice(sliceStart, sliceEnd);
+    const resetMatch = block.match(/data-time="([^"]+)"/);
+    const models = [...block.matchAll(/data-model="([^"]+)"\s+data-requests="(\d+)"/g)].map((m) => ({
+        model: m[1],
+        requests: Number(m[2]),
+    }));
+    return {
+        usedPct: parseFloat(usedMatch[1]),
+        resetAt: resetMatch?.[1],
+        models,
+    };
+}
+function parseOllamaSettingsHtml(html) {
+    if (!html.includes("Cloud usage"))
+        return null;
+    const email = html.match(/class="text-sm text-neutral-500 break-words">([^<]+)/)?.[1]?.trim();
+    const plan = html.match(/Cloud usage<\/span>\s*<span[^>]*>\s*(\w+)\s*<\/span>/s)?.[1]?.trim();
+    const extraBalanceUsd = html
+        .match(/Balance remaining<\/div>\s*<div[^>]*>\$([^<]+)/)?.[1]
+        ?.trim();
+    const windows = [];
+    const session = parseOllamaUsageBlock(html, "Session");
+    const weekly = parseOllamaUsageBlock(html, "Weekly");
+    if (session)
+        windows.push({ label: "Session", ...session });
+    if (weekly)
+        windows.push({ label: "Weekly", ...weekly });
+    if (!windows.length)
+        return null;
+    return { email, plan, extraBalanceUsd, windows };
+}
+function parseOllamaBillingRenewal(html) {
+    return html.match(/subscription renews on\s*<span[^>]*>([^<]+)<\/span>/i)?.[1]?.trim();
+}
+async function fetchOllamaHtml(url, cookie) {
+    const res = await fetchTimeout(url, {
+        headers: {
+            Cookie: cookie,
+            Accept: "text/html",
+            "User-Agent": OLLAMA_USER_AGENT,
+        },
+    });
+    if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`);
+    }
+    return res.text();
+}
+async function queryOllama(_a, _ansi = false) {
+    const cookies = loadOllamaCookies();
+    if (!cookies)
+        return null;
+    if (!/__Secure-session=/.test(cookies.cookie)) {
+        return {
+            success: false,
+            error: "ollama-cookies.json found but `cookie` is missing `__Secure-session=`.\n" +
+                "Copy the Cookie header from ollama.com after signing in (DevTools → Network).",
+        };
+    }
+    try {
+        const settingsHtml = await fetchOllamaHtml(OLLAMA_SETTINGS_URL, cookies.cookie);
+        const parsed = parseOllamaSettingsHtml(settingsHtml);
+        if (!parsed) {
+            return {
+                success: false,
+                error: "⚠️ Ollama session invalid or settings page layout changed.\n" +
+                    "Re-login at https://ollama.com and refresh ollama-cookies.json.",
+            };
+        }
+        let renewal;
+        try {
+            const billingHtml = await fetchOllamaHtml(OLLAMA_BILLING_URL, cookies.cookie);
+            renewal = parseOllamaBillingRenewal(billingHtml);
+        }
+        catch {
+            // billing page is optional enrichment
+        }
+        const header = [];
+        if (parsed.email)
+            header.push(`Account:        ${parsed.email}`);
+        if (parsed.plan)
+            header.push(`Plan:           Ollama ${parsed.plan}`);
+        const windows = parsed.windows.map((w) => ({
+            label: w.label,
+            remaining: Math.max(0, Math.min(100, Math.round(100 - w.usedPct))),
+            detail: [`Used: ${w.usedPct}%`],
+            resetAt: w.resetAt,
+        }));
+        const footer = [];
+        if (renewal)
+            footer.push(`Subscription renews: ${renewal}`);
+        if (parsed.extraBalanceUsd !== undefined) {
+            footer.push(`Extra usage balance: $${parsed.extraBalanceUsd}`);
+        }
+        const session = parsed.windows.find((w) => w.label === "Session");
+        const weekly = parsed.windows.find((w) => w.label === "Weekly");
+        if (session?.models.length || weekly?.models.length) {
+            footer.push("");
+            if (session?.models.length) {
+                footer.push("Session models:");
+                for (const m of session.models.slice(0, 6)) {
+                    footer.push(`  ${m.model}: ${m.requests} request${m.requests === 1 ? "" : "s"}`);
+                }
+            }
+            if (weekly?.models.length) {
+                footer.push("Weekly models:");
+                for (const m of weekly.models.slice(0, 8)) {
+                    footer.push(`  ${m.model}: ${m.requests} request${m.requests === 1 ? "" : "s"}`);
+                }
+            }
+        }
+        return {
+            success: true,
+            cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+        };
+    }
+    catch (err) {
+        return {
+            success: false,
+            error: `Ollama: ${err instanceof Error ? err.message : String(err)}`,
+        };
+    }
+}
+// ============================================================
 // NanoGPT (nano-gpt.com)
 // ============================================================
 //
@@ -3182,6 +3408,7 @@ const PROVIDERS = [
     { id: "mistral", title: "Mistral Vibe Usage", query: (_a, ansi) => queryMistral(_a, ansi) },
     { id: "nanogpt", title: "NanoGPT Account Quota", query: (a, ansi) => queryNanoGpt(a["nano-gpt"], ansi) },
     { id: "openai", title: "OpenAI Account Quota", query: (a, ansi) => queryOpenAI(a.openai, ansi) },
+    { id: "ollama", title: "Ollama Cloud", query: (_a, ansi) => queryOllama(_a, ansi) },
     { id: "opencode-go", title: "OpenCode Go+Zen Account Quota", query: (a, ansi) => queryOpenCodeGoZen(a["opencode-go"], ansi) },
     { id: "poe", title: "Poe Account Quota", query: (a, ansi) => queryPoe(a.poe, ansi) },
     { id: "qwencloud", title: "QwenCloud Token Plan", query: (_a, ansi) => queryQwenCloud(ansi) },
@@ -3508,7 +3735,7 @@ async function runMyStatus(args) {
 export const MyStatusPlugin = async () => ({
     tool: {
         mystatus: tool({
-            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, and BytePlus Coding Plan. Output is a single-column stack of provider cards, sorted by urgency, with a summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,minimax,mistral,nanogpt,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
+            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Ollama Cloud, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a single-column stack of provider cards, sorted by urgency, with a summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
             args: {
                 format: tool.schema.string().optional(),
                 threshold: tool.schema.number().optional(),

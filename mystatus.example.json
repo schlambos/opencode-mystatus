@@ -38,8 +38,8 @@
   "historyMax": 60,            // snapshots to retain (ring buffer)
   "historyMinIntervalSec": 60, // ignore snapshots taken sooner than this
 
-  // Provider control. Ids: openai, anthropic, google, copilot, opencode-go,
-  // poe, zai, xai, minimax, nanogpt.
+  // Provider control. Ids: openai, anthropic, google, copilot, opencode-go, ollama,
+  // poe, zai, xai, minimax, nanogpt, atlascloud, byteplus, mistral, qwencloud, stepfun.
   "providers": {
     // Hide providers entirely (also via the `exclude` arg):
     "disabled": [],

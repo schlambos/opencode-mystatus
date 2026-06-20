@@ -16,6 +16,7 @@
  *   - QwenCloud   (Token Plan)              qwencloud-cookies.json → dashboard API
  *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
  *   - AtlasCloud  (Coding Plan)             atlas-cookies.json → console API
+ *   - Ollama      (Cloud Pro/Max)             ollama-cookies.json → settings SSR
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)

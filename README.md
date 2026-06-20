@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>All your AI usage, in one glance.</strong><br>
-  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — fourteen providers, one command.
+  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — fifteen providers, one command.
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@ Subscriptions pile up — ChatGPT, Claude, Gemini, Copilot, Grok, and a handful 
 ## Why you'll want it
 
 - **Never get surprised by a limit again.** See what's running low *before* it blocks you, with projected "time to empty" estimates.
-- **One place for everything.** Fourteen providers, multiple accounts each, in a single scrollable view.
+- **One place for everything.** Fifteen providers, multiple accounts each, in a single scrollable view.
 - **Zero busywork.** If you've signed into a provider in OpenCode, it just works — no extra keys to wire up.
 - **Built for the terminal.** Responsive cards that size to your window, color-coded bars, and a summary up top.
 
@@ -49,7 +49,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 ```text
 ╭─ Summary ────────────────────────────────────────────────────────╮
 │                                                                  │
-│  Accounts:       14   🟩 8  🟨 3  🟧 2  🟥 1                     │
+│  Accounts:       15   🟩 8  🟨 3  🟧 2  🟥 1                     │
 │  Lowest:         MiniMax Token Plan · 5-hour  3%                 │
 │  Soonest reset:  BytePlus Coding Plan · Session  0m              │
 │                                                                  │
@@ -273,6 +273,35 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
+╭─ Ollama Cloud ───────────────────────────────────────────────────╮
+│                                                                  │
+│  Account:        user@example.com                                │
+│  Plan:           Ollama pro                                      │
+│                                                                  │
+│  Session                                                         │
+│  🟩 ████████████████████████████████████████████░ 99% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Used: 0.5%                                                      │
+│  Resets in: 1h                                                   │
+│                                                                  │
+│  Weekly                                                          │
+│  🟩 ████████████████████████████████████████████░ 99% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Used: 0.2%                                                      │
+│  Resets in: 1d 12h                                               │
+│                                                                  │
+│  Subscription renews: July 19, 2026                              │
+│  Extra usage balance: $0                                         │
+│                                                                  │
+│  Session models:                                                 │
+│    nemotron-3-ultra: 7 requests                                  │
+│    glm-5: 3 requests                                             │
+│  Weekly models:                                                  │
+│    nemotron-3-ultra: 8 requests                                  │
+│    deepseek-v4-pro: 1 request                                    │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
 ╭─ Poe Account Quota ──────────────────────────────────────────────╮
 │                                                                  │
 │  Balance:        687,420 pts ($16.50 USD)                        │
@@ -382,6 +411,7 @@ Some providers don't expose a public usage API. The card only renders if you cap
 |---|---|---|---|
 | **AtlasCloud** | `~/.config/opencode/atlas-cookies.json` | `{ "cookie": "<full Cookie header string from console.atlascloud.ai including access-token=…>", "accountUuid": "<optional, auto-resolved via /current-user>" }` | No public usage REST API — plugin reads the console's authenticated dashboard API. Coding-plan `apikey-…` cannot read usage. |
 | **BytePlus** | `~/.config/opencode/byteplus-cookies.json` | `{ "cookie": "<full Cookie header string from console.byteplus.com>" }` | No public usage REST API — plugin scrapes the internal dashboard API. |
+| **Ollama** | `~/.config/opencode/ollama-cookies.json` | `{ "cookie": "<full Cookie header from ollama.com including __Secure-session=…>" }` | No account usage REST API — plugin scrapes `ollama.com/settings` SSR. Inference API keys cannot read quota. |
 | **QwenCloud** | `~/.config/opencode/qwencloud-cookies.json` | `{ "ticket": "<login_qwencloud_ticket>", "aliyunPk": "<login_aliyunid_pk>", "isg": "<isg>", "esmTicket": "<login_ESM_account_ticket>" }` (`esmTicket` optional) | No public usage REST API — plugin reads the Aliyun BSS console API. |
 | **StepFun** | `~/.config/opencode/stepfun-cookies.json` | `{ "oasisToken": "<Oasis-Token>", "oasisWebid": "<Oasis-Webid>", "sessionToken": "<__Secure-next-auth.session-token>" }` | No public usage REST API — plugin hits the dashboard's internal tRPC API. |
 | **OpenCode Go+Zen** | `~/.config/opencode/opencode-go.json` | `{ "workspaceId": "...", "authCookie": "<auth cookie from opencode.ai>" }` (multi-account form: `{ "accounts": [ { "id": "...", "workspaceId": "...", "authCookie": "..." } ] }`) | API key alone only confirms reachability. Quota windows + Zen balance/spend come from authenticated workspace dashboard SSR. |
@@ -401,6 +431,7 @@ All session tokens expire periodically — re-capture and overwrite when the car
 | **Mistral** | Vibe Usage | Plan details + usage tracking |
 | **NanoGPT** | Balance + subscription | USD balance, weekly tokens & daily image allowances |
 | **OpenAI** | ChatGPT Plus / Team / Pro | 5-hour & 7-day rolling windows, credits |
+| **Ollama** | Cloud Pro / Max | Session & weekly GPU-time windows, per-model request breakdown, renewal date |
 | **OpenCode Go+Zen** | Any Go subscription | Rolling/weekly/monthly quota **+** Zen balance & per-model spend |
 | **Poe** | Subscription or pay-go | Monthly points, daily grant, USD value |
 | **QwenCloud** | Token Plan (Team Edition) | Credits remaining + cycle dates |
@@ -646,6 +677,24 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 </details>
 
 <details>
+<summary><strong>Ollama Cloud</strong> — requires browser session token</summary>
+
+<br>
+
+Ollama's inference API key (`auth.json` → `ollama-cloud`) can run models but **cannot** read account quota. Save your signed-in browser session to `~/.config/opencode/ollama-cookies.json`:
+
+```json
+{
+  "cookie": "__Secure-session=...; aid=..."
+}
+```
+
+Copy the `Cookie` header from DevTools → Network on any `ollama.com` request after signing in. The plugin scrapes `ollama.com/settings` for session/weekly GPU-time windows and enriches with the renewal date from `/settings/billing`.
+
+`__Secure-session` expires periodically — overwrite when the card stops rendering. Missing file → Ollama card is silently skipped.
+</details>
+
+<details>
 <summary><strong>OpenCode Go+Zen</strong> — add a workspace cookie for full quota + spend</summary>
 
 <br>
@@ -747,7 +796,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 
 <br>
 
-**Read (never modified):** `~/.local/share/opencode/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `qwencloud-cookies.json`, `byteplus-cookies.json`, `atlas-cookies.json` under `~/.config/opencode/`.
+**Read (never modified):** `~/.local/share/opencode/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `qwencloud-cookies.json`, `byteplus-cookies.json`, `atlas-cookies.json`, `ollama-cookies.json` under `~/.config/opencode/`.
 
 | Provider | Endpoint(s) |
 |---|---|
@@ -760,6 +809,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 | Mistral | `vibe.mistral.ai/api/...` |
 | NanoGPT | `nano-gpt.com/api/check-balance`, `nano-gpt.com/api/subscription/v1/usage` |
 | OpenAI | `chatgpt.com/backend-api/wham/usage` |
+| Ollama | `ollama.com/settings`, `ollama.com/settings/billing` |
 | OpenCode Go+Zen | `opencode.ai/zen/go/v1/models`, `opencode.ai/workspace/*/{go,billing,usage}` |
 | Poe | `api.poe.com/usage/current_balance` |
 | QwenCloud | `home.qwencloud.com/data/api.json?...GetSeatSubscriptionSummary` |
@@ -788,7 +838,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Credits
 
-Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, AtlasCloud (Coding Plan), BytePlus (Ark Coding Plan), GitHub Copilot, MiniMax, Mistral (Vibe Usage), NanoGPT, OpenCode Go+Zen, Poe, multi-account Google, QwenCloud, StepFun, xAI/Grok, and Z.AI.
+Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, AtlasCloud (Coding Plan), BytePlus (Ark Coding Plan), GitHub Copilot, MiniMax, Mistral (Vibe Usage), NanoGPT, Ollama Cloud, OpenCode Go+Zen, Poe, multi-account Google, QwenCloud, StepFun, xAI/Grok, and Z.AI.
 
 ## License
 
