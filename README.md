@@ -41,6 +41,7 @@ Subscriptions pile up — ChatGPT, Claude, Gemini, Copilot, Grok, and a handful 
 - 🛟 **Resilient** — automatic retries, a cache fallback when a provider is flaky, and graceful per-provider errors.
 - 🤖 **Scriptable** — `format: json` for machine-readable output.
 - 🏃 **Standalone CLI** — run `mystatus` or `usage` from any terminal, no OpenCode session needed.
+- 📺 **Live dashboard** — `mystatus --watch` opens a full-screen TUI with Current / Weekly / Monthly views, live countdowns, and a 60s refresh cycle.
 
 ## What it looks like
 
@@ -497,6 +498,107 @@ mystatus --trend full       # with projections
 mystatus --fresh            # bypass cache
 mystatus --help             # all options
 ```
+
+### Live dashboard
+
+`mystatus --watch` opens a full-screen terminal dashboard — separate from the one-shot card output. It is optimized for **at-a-glance scanning**: one provider block at a time, bucket label on its own line, meter underneath, sorted by what's lowest.
+
+```bash
+mystatus --watch
+mystatus --watch --interval 60    # provider sync interval (default 60s)
+mystatus --watch --trend full     # trends still feed history; one-shot output unchanged
+```
+
+#### Three views
+
+Press `1`, `2`, `3`, or `Tab` to switch. Each view shows a different time horizon — not three copies of the same list.
+
+| View | Key | What it shows |
+|------|-----|----------------|
+| **Current** | `1` | What you have left **right now**. Short-term windows (5h, session, daily) when present. If a provider only has weekly or monthly/credits quotas, those appear here too — that's their total available quota (e.g. Grok credits, Mistral vibe-only plans). **Every configured provider appears on this tab.** |
+| **Weekly** | `2` | 7-day and weekly windows — **only for providers that also have shorter-term tiers** on the Current tab. |
+| **Monthly** | `3` | Monthly and billing-cycle windows — **only for providers that also have shorter tiers**. Credits-only providers stay on Current. |
+
+Reset countdowns tick every second between provider syncs. Press `r` to force a refresh, `q` to quit.
+
+Configure in `~/.config/opencode/mystatus.json`:
+
+```json
+"watchIntervalSec": 60,
+"uiRefreshSec": 1,
+"cacheTtlSec": 60
+```
+
+Pairing `cacheTtlSec` with `watchIntervalSec` reduces redundant API calls.
+
+#### Keys
+
+| Key | Action |
+|-----|--------|
+| `1` / `2` / `3` | Switch Current / Weekly / Monthly |
+| `Tab` | Cycle views |
+| `j` / `k` or arrows | Scroll |
+| `g` / `G` | Jump to top / bottom |
+| `r` | Force sync |
+| `q` | Quit |
+
+#### Sample output (Current view)
+
+Representative layout with anonymized accounts. ANSI colors render in-terminal; shown here as plain text.
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ usage remaining quota                                    50s ago   refresh 10s │
+│ 8 accounts  ·  5 ok  ·  1 watch  ·  2 low                                  │
+│ [1 Current]    2 Weekly     3 Monthly              what you have left now    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Mistral Vibe Usage                                              lowest 0%    │
+│     Vibe Usage · account-a@example.com                                       │
+│     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   0% left   resets 9d 11h       │
+│     Vibe Usage · account-b@example.com                                       │
+│     ████████████████████████████████████░░░░   96% left  resets 9d 11h     │
+│                                                                              │
+│ xAI/Grok                                                        lowest 21%   │
+│     SuperGrok credits                                                        │
+│     ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   21% left  resets 9d 11h       │
+│                                                                              │
+│ Ollama                                                          lowest 95%   │
+│     Session                                                                  │
+│     ████████████████████████████████████░░░░   95% left  resets 2h 46m      │
+│                                                                              │
+│ BytePlus                                                        lowest 97%   │
+│     Session                                                                  │
+│     █████████████████████████████████████░░░   97% left  resets 4h 38m      │
+│                                                                              │
+│ OpenAI                                                          lowest 99%   │
+│     5-hour limit                                                             │
+│     ████████████████████████████████████████   99% left  resets 5h          │
+│                                                                              │
+│ StepFun                                                        lowest 100%   │
+│     5-hour rolling                                                           │
+│     ████████████████████████████████████████   100% left resets now         │
+│                                                                              │
+│ Google                                                         lowest 100%   │
+│     Gemini Pro · user@example.com                                            │
+│     ████████████████████████████████████████   100% left resets 4h 59m      │
+│     Gemini Flash · user@example.com                                          │
+│     ████████████████████████████████████████   100% left resets 4h 59m      │
+│     Claude · user@example.com                                                │
+│     ████████████████████████████████████████   100% left resets 4h 59m      │
+│     GPT-OSS · user@example.com                                               │
+│     ████████████████████████████████████████   100% left resets 4h 59m      │
+│                                                                              │
+│ Anthropic                                                      lowest 100%   │
+│     5-hour limit                                                             │
+│     ████████████████████████████████████████   100% left resets —            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 1/2/3 views   j/k scroll   r sync   q quit                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+The **Weekly** tab would add longer windows (7-day limits, weekly pools) for providers that also have short-term quotas on Current — Anthropic 7-day, Ollama Weekly, OpenAI 7-day, and so on. The **Monthly** tab shows billing-cycle windows for multi-tier plans (e.g. BytePlus Monthly).
+
+One-shot `mystatus` and `/mystatus` in OpenCode are unchanged — same card grid as before.
 
 An alias `usage` is also installed (symlinked to `mystatus`).
 

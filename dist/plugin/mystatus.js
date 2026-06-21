@@ -3222,17 +3222,12 @@ function padLine(s, w) {
     }
     return s + " ".repeat(Math.max(0, w - vw));
 }
-// ============================================================
-// Single-column card layout
-// ============================================================
-//
-// Every provider is rendered as its own full-width card, stacked vertically
-// with internal padding and a blank line of breathing room between cards.
-// Cards size to the target width (capped so they stay readable) and embedded
-// progress bars are rescaled to fit, so borders stay aligned at any size.
 const MIN_INNER = 30; // narrowest interior (between the │ borders)
 const MAX_INNER = 66; // widest interior, so cards stay readable on big screens
 const PAD_X = 2; // left/right interior padding
+const GUTTER = "  "; // horizontal gap between side-by-side cards
+const GUTTER_W = GUTTER.length;
+const MIN_TWO_COL = 2 * (MIN_INNER + 2) + GUTTER_W; // minimum termWidth for two columns
 const DEFAULT_WIDTH = 100; // fallback when no width can be determined
 // Rounded outer corners: a clean, modern card frame.
 const BOX = {
@@ -3276,37 +3271,93 @@ function fitBar(line, budget) {
     const nf = Math.round(ratio * barW);
     return before + "\u2588".repeat(nf) + "\u2591".repeat(Math.max(0, barW - nf)) + after;
 }
-function renderGrid(cells, termWidth) {
-    const innerW = Math.max(MIN_INNER, Math.min(MAX_INNER, termWidth - 2));
-    const contentW = innerW - PAD_X * 2; // usable text width inside the padding
-    const out = [];
-    // A fully blank interior row, used for top/bottom vertical padding.
+function columnInnerW(termWidth, colCount) {
+    if (colCount <= 1) {
+        return Math.max(MIN_INNER, Math.min(MAX_INNER, termWidth - 2));
+    }
+    const perCol = Math.floor((termWidth - GUTTER_W) / colCount) - 2;
+    return Math.max(MIN_INNER, Math.min(MAX_INNER, perCol));
+}
+function resolveColumnCount(termWidth, layout) {
+    const canFitTwo = termWidth >= MIN_TWO_COL;
+    if (layout === "single")
+        return 1;
+    if (layout === "double")
+        return canFitTwo ? 2 : 1;
+    return canFitTwo ? 2 : 1;
+}
+function resolveLayout(explicit, cfg) {
+    const v = (explicit ?? cfg.layout ?? "auto").toLowerCase();
+    if (v === "single" || v === "double")
+        return v;
+    return "auto";
+}
+// Render one card as an array of terminal lines (header, body, footer).
+function renderCard(cell, innerW) {
+    const contentW = innerW - PAD_X * 2;
+    const lines = [];
     const blankRow = BOX.v + " ".repeat(innerW) + BOX.v;
-    for (const cell of cells) {
-        // Header: ╭─ Title ─────────╮
-        const title = truncateW(cell.title, innerW - 4);
-        out.push(BOX.tl +
-            BOX.h +
-            " " +
-            title +
-            " " +
-            BOX.h.repeat(Math.max(0, innerW - 3 - displayWidth(title))) +
-            BOX.tr);
-        // Body with vertical padding and left/right interior padding.
-        out.push(blankRow);
-        for (const raw of cell.lines) {
-            const line = fitBar(raw, contentW);
-            out.push(BOX.v +
-                " ".repeat(PAD_X) +
-                padLine(line, contentW) +
-                " ".repeat(PAD_X) +
-                BOX.v);
+    const title = truncateW(cell.title, innerW - 4);
+    lines.push(BOX.tl +
+        BOX.h +
+        " " +
+        title +
+        " " +
+        BOX.h.repeat(Math.max(0, innerW - 3 - displayWidth(title))) +
+        BOX.tr);
+    lines.push(blankRow);
+    for (const raw of cell.lines) {
+        const line = fitBar(raw, contentW);
+        lines.push(BOX.v + " ".repeat(PAD_X) + padLine(line, contentW) + " ".repeat(PAD_X) + BOX.v);
+    }
+    lines.push(blankRow);
+    lines.push(BOX.bl + BOX.h.repeat(innerW) + BOX.br);
+    return lines;
+}
+function blankCardRow(innerW) {
+    return BOX.v + " ".repeat(innerW) + BOX.v;
+}
+// Pad the shorter card with empty interior rows before its footer.
+function extendCardHeight(lines, targetLen, innerW) {
+    if (lines.length >= targetLen)
+        return lines;
+    const footer = lines[lines.length - 1];
+    const prefix = lines.slice(0, -1);
+    const blankRow = blankCardRow(innerW);
+    const extra = targetLen - lines.length;
+    return [...prefix, ...Array.from({ length: extra }, () => blankRow), footer];
+}
+// Place two equal-height cards side-by-side.
+function joinCardRows(left, right, gutter) {
+    return left.map((l, idx) => l + gutter + right[idx]);
+}
+function renderGrid(cells, termWidth, layout = "auto") {
+    const out = [];
+    let i = 0;
+    // Summary always spans the full terminal width.
+    if (cells[i]?.title === "Summary") {
+        out.push(...renderCard(cells[i], columnInnerW(termWidth, 1)), "");
+        i++;
+    }
+    const colCount = resolveColumnCount(termWidth, layout);
+    const innerW = columnInnerW(termWidth, colCount);
+    if (colCount === 1) {
+        for (; i < cells.length; i++) {
+            out.push(...renderCard(cells[i], innerW), "");
         }
-        out.push(blankRow);
-        // Footer: ╰──────────────────╯
-        out.push(BOX.bl + BOX.h.repeat(innerW) + BOX.br);
-        // Spacing between providers.
-        out.push("");
+    }
+    else {
+        for (; i < cells.length; i += 2) {
+            const left = renderCard(cells[i], innerW);
+            const right = cells[i + 1] ? renderCard(cells[i + 1], innerW) : null;
+            if (right) {
+                const target = Math.max(left.length, right.length);
+                out.push(...joinCardRows(extendCardHeight(left, target, innerW), extendCardHeight(right, target, innerW), GUTTER), "");
+            }
+            else {
+                out.push(...left, "");
+            }
+        }
     }
     return out.join("\n");
 }
@@ -3369,7 +3420,7 @@ function stripJsonComments(input) {
     }
     return out;
 }
-function loadConfig() {
+export function loadConfig() {
     try {
         const raw = readFileSync(configFile("mystatus.json"), "utf-8");
         return JSON.parse(stripJsonComments(raw));
@@ -3664,54 +3715,150 @@ function sortCells(cells, mode) {
         });
     }
 }
-async function runMyStatus(args) {
+function prepareStatusView(snapshot, args, opts = {}) {
+    const recordHistory = opts.recordHistory !== false;
     const now = Date.now();
     const cfg = loadConfig();
+    if (snapshot.authError)
+        return { error: snapshot.authError };
     const format = args.format ?? "ansi";
     const isJson = format === "json";
     const useAnsi = !isJson;
     const threshold = args.threshold ?? 25;
-    const termWidth = resolveWidth(args.width, cfg);
     const sortMode = (args.sort ?? cfg.sort ?? "urgency");
-    const showSummary = (args.summary ?? cfg.summary ?? true) && !isJson;
     const trendMode = (isJson ? "off" : (args.trend ?? cfg.trend ?? "compact"));
+    const history = loadHistory();
+    const trend = makeTrendFn(buildSeries(history), trendMode, useAnsi, now);
+    const cells = [];
+    const errors = [];
+    for (const { title, result } of snapshot.ran) {
+        collect(result, title, cells, errors, useAnsi, trend);
+    }
+    if (cells.length === 0) {
+        return {
+            error: errors.length
+                ? `\u274c Failed to query:\n${errors.join("\n\n")}`
+                : "No accounts found.",
+        };
+    }
+    const metrics = gatherMetrics(cells);
+    if (recordHistory)
+        recordSnapshot(history, metrics, cfg, now);
+    const alerts = extractAlerts(cells, threshold);
+    sortCells(cells, sortMode);
+    return { cells, errors, metrics, alerts, threshold, sortMode };
+}
+/** Build structured view data for the live TUI dashboard. */
+export function buildMyStatusViewModel(snapshot, args, opts = {}) {
+    const prepared = prepareStatusView(snapshot, args, opts);
+    if ("error" in prepared)
+        return prepared;
+    const { cells, errors, metrics, alerts, threshold } = prepared;
+    let green = 0;
+    let yellow = 0;
+    let red = 0;
+    for (const cell of cells) {
+        const min = cellMinRemaining(cell);
+        if (min > 100)
+            continue;
+        if (min >= 50)
+            green++;
+        else if (min >= threshold)
+            yellow++;
+        else
+            red++;
+    }
+    let lowest;
+    for (const m of metrics)
+        if (!lowest || m.remaining < lowest.remaining)
+            lowest = m;
+    let soonest;
+    for (const m of metrics) {
+        if (typeof m.resetMs === "number" && (!soonest || (soonest.resetMs ?? Infinity) > m.resetMs)) {
+            soonest = m;
+        }
+    }
+    const providers = cells.map((cell) => {
+        let note;
+        for (const line of cell.lines) {
+            const plain = line.replace(ANSI_RE, "");
+            if (plain.startsWith("cached")) {
+                note = plain;
+                break;
+            }
+        }
+        return {
+            name: cell.title,
+            minRemaining: cellMinRemaining(cell),
+            soonestResetMs: cellSoonestReset(cell),
+            windows: (cell.metrics ?? []).map((m) => ({
+                label: m.label,
+                remaining: m.remaining,
+                resetMs: m.resetMs,
+            })),
+            note,
+        };
+    });
+    return {
+        summary: {
+            accounts: cells.length,
+            green,
+            yellow,
+            red,
+            lowest: lowest
+                ? { provider: lowest.cellTitle, label: lowest.label, remaining: lowest.remaining }
+                : undefined,
+            soonest: soonest && typeof soonest.resetMs === "number"
+                ? { provider: soonest.cellTitle, label: soonest.label, resetMs: soonest.resetMs }
+                : undefined,
+        },
+        providers,
+        errors,
+        alerts,
+        threshold,
+    };
+}
+export async function queryMyStatus(args) {
+    const cfg = loadConfig();
+    const format = args.format ?? "ansi";
+    const isJson = format === "json";
+    const useAnsi = !isJson;
     const cacheTtlMs = Math.max(0, cfg.cacheTtlSec ?? 0) * 1000;
     const fresh = args.fresh === true;
-    // Merge auth.json across the active opencode-multi profile, sibling profiles,
-    // and the legacy ~/.local/share/opencode location. Same credential present
-    // in multiple files is deduped so one logical account isn't double-counted.
     const auth = await loadAuthMerged();
     if (Object.keys(auth).length === 0) {
         const tried = candidateDirs("data").map((d) => join(d, "auth.json"));
-        return `\u274c No auth.json found in any opencode profile.\nLooked at: ${tried.join(", ")}`;
+        return {
+            ran: [],
+            fetchedAt: Date.now(),
+            authError: `\u274c No auth.json found in any opencode profile.\nLooked at: ${tried.join(", ")}`,
+        };
     }
     const providers = selectProviders(cfg, args.only, args.exclude);
     const cache = loadCache();
     const ran = await Promise.all(providers.map((p) => runProvider(p, auth, useAnsi, cache, cacheTtlMs, fresh, 15_000)));
     saveCache(cache);
-    // Build trend annotations from prior history, record the new snapshot after.
-    const history = loadHistory();
-    const trend = makeTrendFn(buildSeries(history), trendMode, useAnsi, now);
-    const cells = [];
-    const errors = [];
-    for (const { title, result } of ran) {
-        collect(result, title, cells, errors, useAnsi, trend);
-    }
-    if (cells.length === 0) {
-        return errors.length
-            ? `\u274c Failed to query:\n${errors.join("\n\n")}`
-            : "No accounts found.";
-    }
-    const metrics = gatherMetrics(cells);
-    recordSnapshot(history, metrics, cfg, now);
-    const alerts = extractAlerts(cells, threshold);
+    return { ran, fetchedAt: Date.now() };
+}
+export function formatMyStatus(snapshot, args, opts = {}) {
+    const cfg = loadConfig();
+    const prepared = prepareStatusView(snapshot, args, opts);
+    if ("error" in prepared)
+        return prepared.error;
+    const format = args.format ?? "ansi";
+    const isJson = format === "json";
+    const useAnsi = !isJson;
+    const termWidth = resolveWidth(args.width, cfg);
+    const layoutMode = resolveLayout(args.layout, cfg);
+    const showSummary = (args.summary ?? cfg.summary ?? true) && !isJson;
+    const { cells, errors, metrics, alerts, threshold } = prepared;
     if (isJson) {
         return cellsToJson(cells, alerts, errors);
     }
-    sortCells(cells, sortMode);
+    const renderCells = [...cells];
     if (showSummary)
-        cells.unshift(buildSummaryCell(cells, metrics, threshold, useAnsi));
-    let output = renderGrid(cells, termWidth).trimEnd();
+        renderCells.unshift(buildSummaryCell(cells, metrics, threshold, useAnsi));
+    let output = renderGrid(renderCells, termWidth, layoutMode).trimEnd();
     if (alerts.length > 0) {
         if (useAnsi) {
             output += `\n\n${ANSI_BOLD}${ANSI_RED}\u26a0\ufe0f Low quota alerts:${ANSI_RESET}`;
@@ -3729,17 +3876,22 @@ async function runMyStatus(args) {
     }
     return output;
 }
+async function runMyStatus(args) {
+    const snapshot = await queryMyStatus(args);
+    return formatMyStatus(snapshot, args);
+}
 // ============================================================
 // Plugin entry point
 // ============================================================
 export const MyStatusPlugin = async () => ({
     tool: {
         mystatus: tool({
-            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Ollama Cloud, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a single-column stack of provider cards, sorted by urgency, with a summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
+            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Ollama Cloud, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
             args: {
                 format: tool.schema.string().optional(),
                 threshold: tool.schema.number().optional(),
                 width: tool.schema.number().optional(),
+                layout: tool.schema.string().optional(),
                 sort: tool.schema.string().optional(),
                 summary: tool.schema.boolean().optional(),
                 trend: tool.schema.string().optional(),

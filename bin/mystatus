@@ -1,19 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve the real path so symlinked installs (e.g. ~/.local/bin/mystatus ->
+# repo/bin/mystatus) compute REPO_DIR correctly.
+SCRIPT_PATH="$(realpath "$0" 2>/dev/null || python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0" 2>/dev/null || echo "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CLI="$REPO_DIR/bin/mystatus-cli.ts"
 
 if [ "${1:-}" = "--install" ]; then
   TARGET="${2:-$HOME/.local/bin}"
   mkdir -p "$TARGET"
-  ln -sf "$REPO_DIR/bin/mystatus" "$TARGET/mystatus"
+  ln -sf "$SCRIPT_PATH" "$TARGET/mystatus"
   ln -sf "$TARGET/mystatus" "$TARGET/usage"
-  echo "Installed mystatus -> $TARGET/mystatus"
+  echo "Installed mystatus -> $TARGET/mystatus (symlink to $SCRIPT_PATH)"
   echo "Installed usage   -> $TARGET/usage"
   echo ""
   echo "Run: mystatus"
   exit 0
 fi
 
-exec bun run "$REPO_DIR/bin/mystatus-cli.ts" -- "$@"
+if [ ! -f "$CLI" ]; then
+  echo "mystatus: cannot find $CLI" >&2
+  echo "Re-run: $(dirname "$SCRIPT_PATH")/mystatus --install" >&2
+  exit 1
+fi
+
+exec bun "$CLI" "$@"

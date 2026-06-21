@@ -9,10 +9,12 @@
   //  Reload opencode after editing for changes to take effect.
   // ────────────────────────────────────────────────────────────────────
 
-  // Target render width in columns. Cards are a single column capped at ~68
-  // wide, so values above ~70 mainly add right margin. Leave unset to use
-  // MYSTATUS_WIDTH / COLUMNS env, then a safe default (100).
+  // Target render width in columns. Leave unset to use MYSTATUS_WIDTH /
+  // COLUMNS env, then a safe default (100).
   // "width": 100,
+
+  // Card layout: "auto" (two columns when width >= ~66), "single", or "double".
+  "layout": "auto",
 
   // Card order: "urgency" (lowest remaining first), "name", or "reset"
   // (soonest reset first).
@@ -37,6 +39,11 @@
   // Usage history (powers trends), stored in mystatus-history.json.
   "historyMax": 60,            // snapshots to retain (ring buffer)
   "historyMinIntervalSec": 60, // ignore snapshots taken sooner than this
+
+  // Live TUI (`mystatus --watch`) refresh cadence.
+  // Pair cacheTtlSec with watchIntervalSec to reduce API calls between fetches.
+  "watchIntervalSec": 60, // full provider re-query interval (seconds)
+  "uiRefreshSec": 1,      // screen repaint interval for countdown ticks (seconds)
 
   // Provider control. Ids: openai, anthropic, google, copilot, opencode-go, ollama,
   // poe, zai, xai, minimax, nanogpt, atlascloud, byteplus, mistral, qwencloud, stepfun.

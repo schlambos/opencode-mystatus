@@ -26,5 +26,119 @@
  *   - Go + Zen merged into single cell per account
  */
 import { type Plugin } from "@opencode-ai/plugin";
+interface QuotaWindow {
+    label: string;
+    remaining: number;
+    resetAt?: string;
+    resetInSec?: number;
+    resetText?: string;
+    suffix?: string;
+    detail?: string[];
+    extra?: string[];
+    warn?: string;
+    sectionHeader?: string;
+    trendKey?: string;
+}
+interface ProviderCard {
+    subtitle?: string;
+    note?: string;
+    header?: string[];
+    windows?: QuotaWindow[];
+    footer?: string[];
+}
+interface QueryResult {
+    success: boolean;
+    cards?: ProviderCard[];
+    output?: string;
+    error?: string;
+}
+type LayoutMode = "auto" | "single" | "double";
+interface MyStatusConfig {
+    width?: number;
+    layout?: LayoutMode;
+    sort?: "urgency" | "name" | "reset";
+    summary?: boolean;
+    trend?: "off" | "compact" | "full";
+    cacheTtlSec?: number;
+    historyMax?: number;
+    historyMinIntervalSec?: number;
+    watchIntervalSec?: number;
+    uiRefreshSec?: number;
+    providers?: {
+        disabled?: string[];
+        order?: string[];
+    };
+    google?: {
+        excludeEmails?: string[];
+    };
+}
+export declare function loadConfig(): MyStatusConfig;
+export interface RanProvider {
+    title: string;
+    result: QueryResult | null;
+}
+export interface MyStatusArgs {
+    format?: string;
+    threshold?: number;
+    width?: number;
+    layout?: string;
+    sort?: string;
+    summary?: boolean;
+    trend?: string;
+    only?: string;
+    exclude?: string;
+    fresh?: boolean;
+}
+export interface MyStatusSnapshot {
+    ran: RanProvider[];
+    fetchedAt: number;
+    authError?: string;
+}
+export interface FormatMyStatusOptions {
+    /** When false, skip writing a history snapshot (for TUI repaint ticks). Default true. */
+    recordHistory?: boolean;
+}
+/** Structured quota data for the live TUI (does not affect one-shot / tool output). */
+export interface MyStatusViewWindow {
+    label: string;
+    remaining: number;
+    resetMs?: number;
+}
+export interface MyStatusViewProvider {
+    name: string;
+    minRemaining: number;
+    soonestResetMs?: number;
+    windows: MyStatusViewWindow[];
+    note?: string;
+}
+export interface MyStatusViewModel {
+    summary: {
+        accounts: number;
+        green: number;
+        yellow: number;
+        red: number;
+        lowest?: {
+            provider: string;
+            label: string;
+            remaining: number;
+        };
+        soonest?: {
+            provider: string;
+            label: string;
+            resetMs: number;
+        };
+    };
+    providers: MyStatusViewProvider[];
+    errors: string[];
+    alerts: string[];
+    threshold: number;
+}
+/** Build structured view data for the live TUI dashboard. */
+export declare function buildMyStatusViewModel(snapshot: MyStatusSnapshot, args: MyStatusArgs, opts?: FormatMyStatusOptions): MyStatusViewModel | {
+    error: string;
+};
+export declare function queryMyStatus(args: MyStatusArgs): Promise<MyStatusSnapshot>;
+export declare function formatMyStatus(snapshot: MyStatusSnapshot, args: MyStatusArgs, opts?: FormatMyStatusOptions): string;
 export declare const MyStatusPlugin: Plugin;
+export {};
 //# sourceMappingURL=mystatus.d.ts.map
