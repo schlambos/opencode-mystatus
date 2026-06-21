@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>All your AI usage, in one glance.</strong><br>
-  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — fifteen providers, one command.
+  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — sixteen providers, one command.
 </p>
 
 <p align="center">
@@ -26,8 +26,8 @@ Subscriptions pile up — ChatGPT, Claude, Gemini, Copilot, Grok, and a handful 
 ## Why you'll want it
 
 - **Never get surprised by a limit again.** See what's running low *before* it blocks you, with projected "time to empty" estimates.
-- **One place for everything.** Fifteen providers, multiple accounts each, in a single scrollable view.
-- **Zero busywork.** If you've signed into a provider in OpenCode, it just works — no extra keys to wire up.
+- **One place for everything.** Sixteen providers, multiple accounts each, in a single scrollable view.
+- **Zero busywork for OAuth providers.** Signed-in OpenCode accounts are picked up automatically; cookie-based providers (AtlasCloud, BytePlus, LongCat, Ollama, QwenCloud, StepFun, OpenCode Go+Zen) need a one-time browser session capture.
 - **Built for the terminal.** Responsive cards that size to your window, color-coded bars, and a summary up top.
 
 ## Highlights
@@ -50,7 +50,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 ```text
 ╭─ Summary ────────────────────────────────────────────────────────╮
 │                                                                  │
-│  Accounts:       15   🟩 8  🟨 3  🟧 2  🟥 1                     │
+│  Accounts:       16   🟩 8  🟨 3  🟧 2  🟥 1                     │
 │  Lowest:         MiniMax Token Plan · 5-hour  3%                 │
 │  Soonest reset:  BytePlus Coding Plan · Session  0m              │
 │                                                                  │
@@ -175,6 +175,27 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │  🟥 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0% remaining  │
 │     → 0% ▇▇▇▇▇▇▇▇▁▁                                              │
 │  Resets in: 6d 23h 45m                                           │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ LongCat API Quota ───────────────────────────────────────────────╮
+│                                                                  │
+│  Account:        user@example.com                                │
+│  Plan:           LongCat API                                     │
+│  Active API keys: 3                                              │
+│                                                                  │
+│  Free quota                                                      │
+│  🟧 ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 11% remaining  │
+│     ▼8%/2h ▅▄▄▄▄▄▄▄▄                                            │
+│  Used:           4,429,544 / 5,000,000                           │
+│                                                                  │
+│  Total tokens                                                    │
+│  🟩 ████████████████████░░░░░░░░░░░░░░░░░░░░░░░ 78% remaining  │
+│     → 0% ▆▆▆▆▆▆▆▆▆▆                                              │
+│  Used:           4,429,544 / 20,000,000                          │
+│                                                                  │
+│  Fuel packages:  3 active · 15,000,000 tokens remaining          │
+│  Nearest expiry: 27d                                             │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
@@ -397,12 +418,13 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 ╰──────────────────────────────────────────────────────────────────╯
 
 ⚠️ Low quota alerts:
+  • LongCat API Quota · Free quota: 11%
   • MiniMax Token Plan · 5-hour: 3%
   • xAI/Grok: 22%
   • Google — janedoe@gmail.com: 0%
 ```
 
-Sort by `urgency` (default), `name`, or `reset`. Hide specific providers with `exclude=poe,qwencloud` (or persist in `mystatus.json`).
+Sort by `urgency` (default), `name`, or `reset`. Hide specific providers with `exclude=poe,longcat` (or persist in `mystatus.json`).
 
 ### Providers that need a browser session token
 
@@ -413,6 +435,7 @@ Some providers don't expose a public usage API. The card only renders if you cap
 | **AtlasCloud** | `~/.config/opencode/atlas-cookies.json` | `{ "cookie": "<full Cookie header string from console.atlascloud.ai including access-token=…>", "accountUuid": "<optional, auto-resolved via /current-user>" }` | No public usage REST API — plugin reads the console's authenticated dashboard API. Coding-plan `apikey-…` cannot read usage. |
 | **BytePlus** | `~/.config/opencode/byteplus-cookies.json` | `{ "cookie": "<full Cookie header string from console.byteplus.com>" }` | No public usage REST API — plugin scrapes the internal dashboard API. |
 | **Ollama** | `~/.config/opencode/ollama-cookies.json` | `{ "cookie": "<full Cookie header from ollama.com including __Secure-session=…>" }` | No account usage REST API — plugin scrapes `ollama.com/settings` SSR. Inference API keys cannot read quota. |
+| **LongCat** | `~/.config/opencode/longcat-cookies.json` | `{ "passportToken": "<passport_token_key>", "region": "2" }` or `{ "cookie": "passport_token_key=…; long_cat_region_key=2; …" }` | Inference `ak_…` keys in `opencode.json` run models only — quota lives on the platform portal (`passport_token_key` + `long_cat_region_key` cookies). |
 | **QwenCloud** | `~/.config/opencode/qwencloud-cookies.json` | `{ "ticket": "<login_qwencloud_ticket>", "aliyunPk": "<login_aliyunid_pk>", "isg": "<isg>", "esmTicket": "<login_ESM_account_ticket>" }` (`esmTicket` optional) | No public usage REST API — plugin reads the Aliyun BSS console API. |
 | **StepFun** | `~/.config/opencode/stepfun-cookies.json` | `{ "oasisToken": "<Oasis-Token>", "oasisWebid": "<Oasis-Webid>", "sessionToken": "<__Secure-next-auth.session-token>" }` | No public usage REST API — plugin hits the dashboard's internal tRPC API. |
 | **OpenCode Go+Zen** | `~/.config/opencode/opencode-go.json` | `{ "workspaceId": "...", "authCookie": "<auth cookie from opencode.ai>" }` (multi-account form: `{ "accounts": [ { "id": "...", "workspaceId": "...", "authCookie": "..." } ] }`) | API key alone only confirms reachability. Quota windows + Zen balance/spend come from authenticated workspace dashboard SSR. |
@@ -428,6 +451,7 @@ All session tokens expire periodically — re-capture and overwrite when the car
 | **BytePlus** | Ark Coding Plan | Plan details + rolling / weekly / monthly windows |
 | **GitHub Copilot** | Individual / Business | Premium, Chat & Completions usage |
 | **Google** | Antigravity free quota | Gemini Pro / Flash / Claude, per account |
+| **LongCat** | API token quota (`ak_…` in `opencode.json`) | Account email, active API key count, **free quota** (blocks inference when empty), **total tokens** (incl. fuel packs), fuel-package expiry |
 | **MiniMax** | Token Plan | 5-hour & 7-day text windows |
 | **Mistral** | Vibe Usage | Plan details + usage tracking |
 | **NanoGPT** | Balance + subscription | USD balance, weekly tokens & daily image allowances |
@@ -492,6 +516,7 @@ The plugin ships with a terminal CLI so you can check your quotas without launch
 
 ```bash
 mystatus                    # all providers, ANSI
+mystatus --only longcat     # single provider
 mystatus --only openai      # single provider
 mystatus --format json      # machine-readable
 mystatus --trend full       # with projections
@@ -552,6 +577,12 @@ Representative layout with anonymized accounts. ANSI colors render in-terminal; 
 │ 8 accounts  ·  5 ok  ·  1 watch  ·  2 low                                  │
 │ [1 Current]    2 Weekly     3 Monthly              what you have left now    │
 ├──────────────────────────────────────────────────────────────────────────────┤
+│ LongCat API Quota                                               lowest 11%   │
+│     Free quota                                                               │
+│     ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   11% left                      │
+│     Total tokens                                                             │
+│     ████████████████████████████████░░░░░░░░   78% left                      │
+│                                                                              │
 │ Mistral Vibe Usage                                              lowest 0%    │
 │     Vibe Usage · account-a@example.com                                       │
 │     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   0% left   resets 9d 11h       │
@@ -596,7 +627,7 @@ Representative layout with anonymized accounts. ANSI colors render in-terminal; 
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The **Weekly** tab would add longer windows (7-day limits, weekly pools) for providers that also have short-term quotas on Current — Anthropic 7-day, Ollama Weekly, OpenAI 7-day, and so on. The **Monthly** tab shows billing-cycle windows for multi-tier plans (e.g. BytePlus Monthly).
+The **Weekly** tab would add longer windows (7-day limits, weekly pools) for providers that also have short-term quotas on Current — Anthropic 7-day, Ollama Weekly, OpenAI 7-day, and so on. The **Monthly** tab shows billing-cycle windows for multi-tier plans (e.g. BytePlus Monthly). LongCat only exposes token pools (no rolling reset windows), so it stays on **Current**.
 
 One-shot `mystatus` and `/mystatus` in OpenCode are unchanged — same card grid as before.
 
@@ -641,11 +672,11 @@ All options are optional and can be set per-call or as [defaults in your config]
 | `fresh` | boolean | `false` | Bypass the cache and force a live fetch |
 | `format` | `ansi` · `json` | `ansi` | `json` returns machine-readable output |
 
-Provider ids: `anthropic`, `atlascloud`, `byteplus`, `copilot`, `google`, `minimax`, `mistral`, `nanogpt`, `openai`, `opencode-go`, `poe`, `qwencloud`, `stepfun`, `xai`, `zai`.
+Provider ids: `anthropic`, `atlascloud`, `byteplus`, `copilot`, `google`, `longcat`, `minimax`, `mistral`, `nanogpt`, `openai`, `opencode-go`, `poe`, `qwencloud`, `stepfun`, `xai`, `zai`.
 
 ## Configuration
 
-Most setups need **no configuration at all**. To set persistent defaults, create `~/.config/opencode/mystatus.json` (comments are allowed). A fully documented sample lives at [`mystatus.example.json`](mystatus.example.json):
+Most setups need **no configuration at all**. To set persistent defaults, create `~/.config/opencode/mystatus.json` (comments are allowed). A fully documented sample lives at [`mystatus.example.json`](mystatus.example.json). Cookie-based providers have their own example files (e.g. [`longcat-cookies.example.json`](longcat-cookies.example.json)):
 
 ```jsonc
 {
@@ -656,7 +687,7 @@ Most setups need **no configuration at all**. To set persistent defaults, create
   "historyMax": 60,         // trend snapshots to retain
   "historyMinIntervalSec": 60,
   "providers": {
-    "disabled": [],         // e.g. ["xai"]
+    "disabled": [],         // e.g. ["xai", "longcat"]
     "order": []             // preferred ordering before sort
   }
   // "width": 100           // uncomment to pin a render width
@@ -797,6 +828,52 @@ Copy the `Cookie` header from DevTools → Network on any `ollama.com` request a
 </details>
 
 <details>
+<summary><strong>LongCat API</strong> — requires browser session token</summary>
+
+<br>
+
+LongCat's inference API key (`ak_…` in `opencode.json` → `provider.longcat`) can call `api.longcat.chat` but **cannot** read account quota. Quota is served only by the signed-in platform portal at `longcat.chat`.
+
+**Required browser cookies**
+
+| Cookie | Config field | Notes |
+|---|---|---|
+| `passport_token_key` | `passportToken` | Meituan/Friday passport session — **required** |
+| `long_cat_region_key` | `region` | Region selector — **required** (usually `"2"`) |
+
+**Setup**
+
+1. Log into [longcat.chat/platform/usage](https://longcat.chat/platform/usage).
+2. Open DevTools → **Network** → reload → pick any `longcat.chat/api/…` request.
+3. Copy the `Cookie` header **or** extract `passport_token_key` and `long_cat_region_key` from Application → Cookies.
+4. Save to `~/.config/opencode/longcat-cookies.json` (see [`longcat-cookies.example.json`](longcat-cookies.example.json)):
+
+```json
+{
+  "passportToken": "<passport_token_key cookie value>",
+  "region": "2"
+}
+```
+
+Full cookie string also works (both required cookies must be present):
+
+```json
+{
+  "cookie": "passport_token_key=...; long_cat_region_key=2; ..."
+}
+```
+
+**What the card shows**
+
+- **Free quota** — `freeAvailableToken / freeRefreshToken`. This is what depletes first and triggers `Token 额度不足` on the inference API when empty.
+- **Total tokens** — `availableToken / totalToken` across free tier + unredeemed fuel packages.
+- **Fuel packages** — count, combined remaining tokens, nearest expiry.
+- **Header** — account email (from `/api/v1/user-current`), active API key count.
+
+`passport_token_key` expires periodically — re-capture and overwrite when the card stops rendering. Missing file → LongCat card is silently skipped.
+</details>
+
+<details>
 <summary><strong>OpenCode Go+Zen</strong> — add a workspace cookie for full quota + spend</summary>
 
 <br>
@@ -898,7 +975,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 
 <br>
 
-**Read (never modified):** `~/.local/share/opencode/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `qwencloud-cookies.json`, `byteplus-cookies.json`, `atlas-cookies.json`, `ollama-cookies.json` under `~/.config/opencode/`.
+**Read (never modified):** `~/.local/share/opencode/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `qwencloud-cookies.json`, `byteplus-cookies.json`, `atlas-cookies.json`, `ollama-cookies.json`, `longcat-cookies.json` under `~/.config/opencode/`.
 
 | Provider | Endpoint(s) |
 |---|---|
@@ -912,6 +989,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 | NanoGPT | `nano-gpt.com/api/check-balance`, `nano-gpt.com/api/subscription/v1/usage` |
 | OpenAI | `chatgpt.com/backend-api/wham/usage` |
 | Ollama | `ollama.com/settings`, `ollama.com/settings/billing` |
+| LongCat | `longcat.chat/api/lc-platform/v1/tokenUsage`, `longcat.chat/api/v1/user-current`, `longcat.chat/api/lc-platform/v1/query-active-apiKeys` |
 | OpenCode Go+Zen | `opencode.ai/zen/go/v1/models`, `opencode.ai/workspace/*/{go,billing,usage}` |
 | Poe | `api.poe.com/usage/current_balance` |
 | QwenCloud | `home.qwencloud.com/data/api.json?...GetSeatSubscriptionSummary` |
@@ -940,7 +1018,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Credits
 
-Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, AtlasCloud (Coding Plan), BytePlus (Ark Coding Plan), GitHub Copilot, MiniMax, Mistral (Vibe Usage), NanoGPT, Ollama Cloud, OpenCode Go+Zen, Poe, multi-account Google, QwenCloud, StepFun, xAI/Grok, and Z.AI.
+Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, AtlasCloud (Coding Plan), BytePlus (Ark Coding Plan), GitHub Copilot, LongCat API, MiniMax, Mistral (Vibe Usage), NanoGPT, Ollama Cloud, OpenCode Go+Zen, Poe, multi-account Google, QwenCloud, StepFun, xAI/Grok, and Z.AI.
 
 ## License
 

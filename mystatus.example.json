@@ -46,7 +46,7 @@
   "uiRefreshSec": 1,      // screen repaint interval for countdown ticks (seconds)
 
   // Provider control. Ids: openai, anthropic, google, copilot, opencode-go, ollama,
-  // poe, zai, xai, minimax, nanogpt, atlascloud, byteplus, mistral, qwencloud, stepfun.
+  // longcat, poe, zai, xai, minimax, nanogpt, atlascloud, byteplus, mistral, qwencloud, stepfun.
   "providers": {
     // Hide providers entirely (also via the `exclude` arg):
     "disabled": [],

@@ -17,6 +17,7 @@
  *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
  *   - AtlasCloud  (Coding Plan)             atlas-cookies.json → console API
  *   - Ollama      (Cloud Pro/Max)             ollama-cookies.json → settings SSR
+ *   - LongCat     (API token quota)           longcat-cookies.json → platform API
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)
@@ -2799,6 +2800,223 @@ async function queryOllama(_a, _ansi = false) {
     }
 }
 // ============================================================
+// LongCat API (longcat.chat platform)
+// ============================================================
+//
+//   Quota source:    GET https://longcat.chat/api/lc-platform/v1/tokenUsage?day=today
+//   Account source:  GET https://longcat.chat/api/v1/user-current
+//   Auth:            Browser session cookies (passport_token_key + long_cat_region_key)
+//                    stored in ~/.config/opencode/longcat-cookies.json
+//   Note:            The inference API key (ak_…) in opencode.json cannot read quota.
+//
+//   To set up: log into https://longcat.chat/platform/usage, open DevTools → Network,
+//   copy cookie values from any longcat.chat/api request, and save as either:
+//     { "passportToken": "<passport_token_key>", "region": "2" }
+//     { "cookie": "passport_token_key=...; long_cat_region_key=2; ..." }
+const LONGCAT_PLATFORM_BASE = "https://longcat.chat";
+const LONGCAT_APPKEY = "fe_com.sankuai.friday.longcat.platform";
+const LONGCAT_EXT_SKIP_KEYS = new Set(["applyButtonGray", "newUser"]);
+function longcatCookiesPath() {
+    return findReadable("longcat-cookies.json", "config")
+        ?? join(opencodeConfigDir(), "longcat-cookies.json");
+}
+function resolveLongCatSession(cfg) {
+    const passportFromField = typeof cfg.passportToken === "string" ? cfg.passportToken.trim() : "";
+    if (passportFromField) {
+        const region = typeof cfg.region === "string" && cfg.region.trim() ? cfg.region.trim() : "2";
+        return { passportToken: passportFromField, region };
+    }
+    const cookie = typeof cfg.cookie === "string" ? cfg.cookie.trim() : "";
+    if (!cookie)
+        return null;
+    const passport = cookie.match(/(?:^|;\s*)passport_token_key=([^;]+)/)?.[1]?.trim();
+    if (!passport)
+        return null;
+    const region = cookie.match(/(?:^|;\s*)long_cat_region_key=([^;]+)/)?.[1]?.trim() || "2";
+    return { passportToken: passport, region };
+}
+function loadLongCatCookies() {
+    try {
+        const p = longcatCookiesPath();
+        if (!existsSync(p))
+            return null;
+        const raw = readFileSync(p, "utf-8");
+        const parsed = JSON.parse(raw);
+        return resolveLongCatSession(parsed);
+    }
+    catch {
+        return null;
+    }
+}
+function longcatPlatformHeaders(session) {
+    return {
+        Cookie: `passport_token_key=${session.passportToken}; long_cat_region_key=${session.region}`,
+        "m-appkey": LONGCAT_APPKEY,
+        "content-type": "application/json",
+        "x-client-language": "en",
+        "x-requested-with": "XMLHttpRequest",
+        Accept: "*/*",
+        Referer: "https://longcat.chat/platform/usage",
+        "User-Agent": "OpenCode-AllStatus/1.0",
+    };
+}
+function longcatRemainPercent(remaining, total) {
+    if (!Number.isFinite(total) || total <= 0)
+        return 0;
+    if (!Number.isFinite(remaining))
+        return 0;
+    return Math.max(0, Math.min(100, Math.round((remaining / total) * 100)));
+}
+function longcatModelEntries(extData) {
+    if (!extData)
+        return [];
+    const out = [];
+    for (const [key, val] of Object.entries(extData)) {
+        if (LONGCAT_EXT_SKIP_KEYS.has(key))
+            continue;
+        if (!val || typeof val !== "object")
+            continue;
+        const usage = val;
+        if (typeof usage.totalToken !== "number" &&
+            typeof usage.freeRefreshToken !== "number" &&
+            typeof usage.availableToken !== "number") {
+            continue;
+        }
+        out.push([key, usage]);
+    }
+    return out.sort((a, b) => a[0].localeCompare(b[0]));
+}
+function longcatFuelSummary(packages) {
+    if (!packages?.length)
+        return [];
+    const active = packages.filter((p) => (p.remainQuota ?? 0) > 0);
+    if (!active.length)
+        return [];
+    const totalRemain = active.reduce((sum, p) => sum + (p.remainQuota ?? 0), 0);
+    const nearestExpire = active.reduce((min, p) => {
+        const days = p.daysUntilExpire;
+        if (typeof days !== "number" || !Number.isFinite(days))
+            return min;
+        return min === null ? days : Math.min(min, days);
+    }, null);
+    const lines = [`Fuel packages:  ${active.length} active · ${totalRemain.toLocaleString()} tokens remaining`];
+    if (nearestExpire !== null) {
+        lines.push(`Nearest expiry: ${nearestExpire}d`);
+    }
+    return lines;
+}
+async function fetchLongCatJson(path, session) {
+    const url = `${LONGCAT_PLATFORM_BASE}${path}`;
+    const res = await fetchTimeout(url, { headers: longcatPlatformHeaders(session) });
+    const body = await res.text().catch(() => "");
+    let data;
+    try {
+        data = JSON.parse(body);
+    }
+    catch {
+        throw new Error(`LongCat API error (${res.status}): ${body.slice(0, 200)}`);
+    }
+    if (data.code === 401 || /not logged in/i.test(data.message ?? "")) {
+        throw new Error("LongCat session expired or invalid.\n" +
+            "Re-login at https://longcat.chat/platform/usage and refresh longcat-cookies.json.");
+    }
+    if (data.code !== 0) {
+        throw new Error(`LongCat API error: ${data.message ?? `code ${data.code}`}`);
+    }
+    return data;
+}
+async function queryLongCat(_ansi = false) {
+    const session = loadLongCatCookies();
+    if (!session)
+        return null;
+    try {
+        const [usageRes, userRes, keysRes] = await Promise.all([
+            fetchLongCatJson(`/api/lc-platform/v1/tokenUsage?day=today&t=${Date.now()}`, session),
+            fetchLongCatJson("/api/v1/user-current", session).catch(() => null),
+            fetchLongCatJson("/api/lc-platform/v1/query-active-apiKeys", session).catch(() => null),
+        ]);
+        const models = longcatModelEntries(usageRes.data?.extData);
+        if (models.length === 0) {
+            return {
+                success: true,
+                cards: [{ header: ["Plan:           LongCat API (no usage data returned)"] }],
+            };
+        }
+        const header = [];
+        const email = userRes?.data?.email;
+        const name = userRes?.data?.name;
+        if (email)
+            header.push(`Account:        ${email}`);
+        else if (name)
+            header.push(`Account:        ${name}`);
+        header.push("Plan:           LongCat API");
+        const activeKeys = keysRes?.data?.extData?.activeKeyCount;
+        if (typeof activeKeys === "number") {
+            header.push(`Active API keys: ${activeKeys}`);
+        }
+        const windows = [];
+        const footer = [];
+        const displayModels = [];
+        for (const [modelKey, usage] of models) {
+            const freeTotal = usage.freeRefreshToken ?? 0;
+            const total = usage.totalToken ?? 0;
+            if (freeTotal <= 0 && total <= 0)
+                continue;
+            displayModels.push([modelKey, usage]);
+        }
+        if (displayModels.length === 0) {
+            return {
+                success: true,
+                cards: [{ header: [...header, "Status:         No active quota returned"] }],
+            };
+        }
+        const multi = displayModels.length > 1;
+        for (const [modelKey, usage] of displayModels) {
+            const label = usage.aliasName ?? modelKey;
+            const sectionHeader = multi ? label : undefined;
+            const freeTotal = usage.freeRefreshToken ?? 0;
+            const freeAvail = usage.freeAvailableToken ?? 0;
+            if (freeTotal > 0) {
+                const freeUsed = usage.freeUsedToken ?? Math.max(0, freeTotal - freeAvail);
+                windows.push({
+                    label: multi ? `${label} · Free quota` : "Free quota",
+                    remaining: longcatRemainPercent(freeAvail, freeTotal),
+                    sectionHeader,
+                    trendKey: `${label} · Free`,
+                    detail: [
+                        `Used:           ${freeUsed.toLocaleString()} / ${freeTotal.toLocaleString()}`,
+                    ],
+                });
+            }
+            const total = usage.totalToken ?? 0;
+            const avail = usage.availableToken ?? 0;
+            if (total > 0) {
+                const used = usage.usedToken ?? Math.max(0, total - avail);
+                windows.push({
+                    label: multi ? `${label} · Total tokens` : "Total tokens",
+                    remaining: longcatRemainPercent(avail, total),
+                    trendKey: `${label} · Total`,
+                    detail: [`Used:           ${used.toLocaleString()} / ${total.toLocaleString()}`],
+                });
+            }
+            const fuelLines = longcatFuelSummary(usage.fuelPackageList);
+            if (fuelLines.length) {
+                footer.push(...(multi ? [`${label}:`, ...fuelLines.map((l) => `  ${l}`)] : fuelLines));
+            }
+        }
+        return {
+            success: true,
+            cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+        };
+    }
+    catch (err) {
+        return {
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+        };
+    }
+}
+// ============================================================
 // NanoGPT (nano-gpt.com)
 // ============================================================
 //
@@ -3455,6 +3673,7 @@ const PROVIDERS = [
     { id: "byteplus", title: "BytePlus Coding Plan", query: (_a, ansi) => queryBytePlus(_a, ansi) },
     { id: "copilot", title: "GitHub Copilot Account Quota", query: (a, ansi) => queryCopilot(a["github-copilot"], ansi) },
     { id: "google", title: "Google Account Quota", query: (_a, ansi) => queryGoogle(ansi) },
+    { id: "longcat", title: "LongCat API Quota", query: (_a, ansi) => queryLongCat(ansi) },
     { id: "minimax", title: "MiniMax Token Plan", query: (a, ansi) => queryMiniMax(a["minimax-coding-plan"], ansi) },
     { id: "mistral", title: "Mistral Vibe Usage", query: (_a, ansi) => queryMistral(_a, ansi) },
     { id: "nanogpt", title: "NanoGPT Account Quota", query: (a, ansi) => queryNanoGpt(a["nano-gpt"], ansi) },
@@ -3886,7 +4105,7 @@ async function runMyStatus(args) {
 export const MyStatusPlugin = async () => ({
     tool: {
         mystatus: tool({
-            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Ollama Cloud, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
+            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,longcat,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
             args: {
                 format: tool.schema.string().optional(),
                 threshold: tool.schema.number().optional(),

@@ -2,7 +2,7 @@
   "name": "opencode-mystatus",
   "private": true,
   "version": "3.0.0",
-  "description": "All-in-one AI usage & quota dashboard for OpenCode. Tracks remaining quota, spend, and reset timers across OpenAI, Anthropic (Claude.ai), Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax, NanoGPT, StepFun, QwenCloud, BytePlus, and AtlasCloud — with a summary card, urgency sorting, and usage trends.",
+  "description": "All-in-one AI usage & quota dashboard for OpenCode. Tracks remaining quota, spend, and reset timers across OpenAI, Anthropic (Claude.ai), Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax, NanoGPT, StepFun, QwenCloud, BytePlus, AtlasCloud, Mistral, and Ollama Cloud — with a summary card, urgency sorting, and usage trends.",
   "type": "module",
   "main": "dist/plugin/mystatus.js",
   "types": "dist/plugin/mystatus.d.ts",
@@ -46,6 +46,7 @@
     "grok",
     "minimax",
     "nanogpt",
+    "longcat",
     "byteplus",
     "atlascloud"
   ],

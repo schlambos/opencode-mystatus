@@ -20,4 +20,6 @@ npm-debug.log*
 
 # Cookie / secret files
 *cookies.json
+!*cookies.example.json
 auth.json
+opencode-backup.json

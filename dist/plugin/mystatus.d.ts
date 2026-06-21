@@ -17,6 +17,7 @@
  *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
  *   - AtlasCloud  (Coding Plan)             atlas-cookies.json → console API
  *   - Ollama      (Cloud Pro/Max)             ollama-cookies.json → settings SSR
+ *   - LongCat     (API token quota)           longcat-cookies.json → platform API
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)
