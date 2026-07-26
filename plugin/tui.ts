@@ -36,7 +36,7 @@ type Horizon = "current" | "weekly" | "monthly";
 
 const VIEWS: { id: Horizon; key: string; title: string; hint: string }[] = [
   { id: "current", key: "1", title: "Current", hint: "what you have left now" },
-  { id: "weekly", key: "2", title: "Weekly", hint: "7-day / weekly (multi-tier only)" },
+  { id: "weekly", key: "2", title: "Weekly", hint: "7-day / weekly limits" },
   { id: "monthly", key: "3", title: "Monthly", hint: "monthly / credits (multi-tier only)" },
 ];
 
@@ -139,10 +139,10 @@ function windowTier(label: string, resetMs?: number): Tier {
   const l = label.toLowerCase();
 
   if (/\bmonthly\b/.test(l) || /\b30[\s-]?day\b/.test(l)) return "monthly";
+  if (/\bweekly\b/.test(l) || /\b7[\s-]?day\b/.test(l) || /\bweek\b/.test(l)) return "weekly";
   if (/\bcredits?\b/.test(l) || /\bbalance\b/.test(l) || /\bpoints\b/.test(l) || /\btotal\b/.test(l)) {
     return "monthly";
   }
-  if (/\bweekly\b/.test(l) || /\b7[\s-]?day\b/.test(l) || /\bweek\b/.test(l)) return "weekly";
   if (
     /\b5[\s-]?h(our|\b)/.test(l) ||
     /\b5h\b/.test(l) ||
@@ -186,7 +186,7 @@ function splitTiers(windows: MyStatusViewWindow[]): {
 
 /**
  * Current  = actionable quota now (short-term, or best available if that's all they have).
- * Weekly   = longer windows only when the provider also has short-term tiers.
+ * Weekly   = every 7-day/weekly window, including weekly-only providers.
  * Monthly  = billing-cycle windows only when the provider also has shorter tiers.
  */
 function windowsForView(windows: MyStatusViewWindow[], view: Horizon): MyStatusViewWindow[] {
@@ -197,7 +197,7 @@ function windowsForView(windows: MyStatusViewWindow[], view: Horizon): MyStatusV
       if (weekly.length > 0) return weekly;
       return monthly;
     case "weekly":
-      return short.length > 0 ? weekly : [];
+      return weekly;
     case "monthly":
       return short.length > 0 || weekly.length > 0 ? monthly : [];
   }

@@ -45,7 +45,28 @@
   "watchIntervalSec": 60, // full provider re-query interval (seconds)
   "uiRefreshSec": 1,      // screen repaint interval for countdown ticks (seconds)
 
-  // Provider control. Ids: openai, anthropic, google, copilot, opencode-go, ollama,
+  // Antigravity Tools is auto-discovered from
+  // ~/.antigravity_tools/gui_config.json. It supplies richer Google quota
+  // groups plus local proxy token/request statistics. Each enabled Google
+  // account renders as its own card. The existing antigravity-accounts.json
+  // path remains the automatic fallback and uses the same per-account layout.
+  "antigravityTools": {
+    "enabled": true,
+    // Stats window used for totals, per-account usage, and top models.
+    "usageHours": 168,
+    // Custom/remote instances can also set these, but environment variables
+    // are recommended for secrets:
+    // "baseUrl": "http://127.0.0.1:8045/v1",
+    // "apiKey": "sk-...",
+    // "adminPassword": "...",
+    // Env: ANTIGRAVITY_TOOLS_BASE_URL, ANTIGRAVITY_TOOLS_API_KEY,
+    //      ANTIGRAVITY_TOOLS_ADMIN_PASSWORD, ANTIGRAVITY_TOOLS_USAGE_HOURS
+    // Set false to show account quota without local proxy usage totals.
+    "includeUsage": true
+  },
+
+  // Provider control. Antigravity Tools enriches the existing `google` id.
+  // Ids: openai, anthropic, google, copilot, opencode-go, ollama,
   // longcat, poe, zai, xai, minimax, nanogpt, atlascloud, byteplus, mistral, qwencloud, stepfun.
   "providers": {
     // Hide providers entirely (also via the `exclude` arg):

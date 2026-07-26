@@ -4,12 +4,12 @@
  * Platforms:
  *   - OpenAI      (ChatGPT Plus/Team/Pro)    auth.json → openai
  *   - Anthropic   (Claude.ai)               auth.json → anthropic
- *   - Google      (Antigravity free quota)   antigravity-accounts.json
+ *   - Google      (Antigravity quota/usage)  Antigravity Tools API → antigravity-accounts.json fallback
  *   - GitHub Copilot                        auth.json → github-copilot (+ optional PAT)
  *   - OpenCode Go+Zen (merged cell)         shared dashboard config (workspaceId + authCookie)
  *   - Poe         (points balance)          auth.json, env var, or poe-api-key.json
  *   - Z.AI        (GLM Coding Plan)         auth.json → zai-coding-plan
- *   - xAI/Grok    (SuperGrok free credits + dev API)  auth.json → xai/xai-oauth (dev) + ~/.grok/auth.json (consumer, auto-refreshed) via cli-chat-proxy /v1/billing[?format=credits]
+ *   - xAI/Grok    (SuperGrok weekly/monthly usage + extra credits)  auth.json → xai/xai-oauth (dev) + ~/.grok/auth.json (consumer, auto-refreshed) via cli-chat-proxy /v1/billing[?format=credits]
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
@@ -71,6 +71,14 @@ interface MyStatusConfig {
     };
     google?: {
         excludeEmails?: string[];
+    };
+    antigravityTools?: {
+        enabled?: boolean;
+        baseUrl?: string;
+        apiKey?: string;
+        adminPassword?: string;
+        usageHours?: number;
+        includeUsage?: boolean;
     };
 }
 export declare function loadConfig(): MyStatusConfig;

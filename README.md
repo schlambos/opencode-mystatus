@@ -27,7 +27,7 @@ Subscriptions pile up — ChatGPT, Claude, Gemini, Copilot, Grok, and a handful 
 
 - **Never get surprised by a limit again.** See what's running low *before* it blocks you, with projected "time to empty" estimates.
 - **One place for everything.** Sixteen providers, multiple accounts each, in a single scrollable view.
-- **Zero busywork for OAuth providers.** Signed-in OpenCode accounts are picked up automatically; cookie-based providers (AtlasCloud, BytePlus, LongCat, Ollama, QwenCloud, StepFun, OpenCode Go+Zen) need a one-time browser session capture.
+- **Zero busywork for OAuth and Antigravity Tools.** Signed-in OpenCode accounts are picked up automatically, and a local Antigravity Tools install is discovered from `~/.antigravity_tools/gui_config.json`; cookie-based providers (AtlasCloud, BytePlus, LongCat, Ollama, QwenCloud, StepFun, OpenCode Go+Zen) need a one-time browser session capture.
 - **Built for the terminal.** Responsive cards that size to your window, color-coded bars, and a summary up top.
 
 ## Highlights
@@ -70,7 +70,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │     → 0% ▆▆▆▅▅▅▅▅▅▅                                              │
 │  Resets in: 4d 7h 50m                                            │
 │                                                                  │
-│  7-day (Sonnet)                                                  │
+│  7-day (Fable)                                                   │
 │  🟩 ███████████████████████████████████████████░░ 98% remaining  │
 │     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
 │  Resets in: 4d 7h 50m                                            │
@@ -83,13 +83,18 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │  Plan:           AtlasCloud Lite ($20/monthly)                   │
 │  Status:         active                                          │
 │                                                                  │
-│  Daily quota                                                     │
+│  Weekly plan cap                                                 │
 │  🟩 ██████████████████████████████████████████░░░ 94% remaining  │
 │     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
-│  Used today:     131,999 / 2,200,000                             │
-│  Resets in: 2h 15m                                               │
+│  Used this week: 1,980,000 / 33,000,000 credits                  │
+│  Resets in: 2d 2h                                                │
 │                                                                  │
-│  Subscription expires: 29d 23h 29m (2026-07-17)                  │
+│  Monthly plan total                                              │
+│  🟩 ██████████████████████████████████████░░░░░░░ 84% remaining  │
+│  Used: 10,560,000 / 66,000,000 credits                           │
+│  Resets in: 29d 23h                                              │
+│                                                                  │
+│  Plan expires:   29d 23h 29m (2026-08-18)                       │
 │  Cookie expires:       6d 8h 12m (2026-06-24)                    │
 │                                                                  │
 │  Recent calls (last 24h, 18 total, top 5):                       │
@@ -126,25 +131,20 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 
 ╭─ GitHub Copilot Account Quota ───────────────────────────────────╮
 │                                                                  │
-│  Account:        GitHub Copilot (business)                       │
+│  Account:        GitHub Copilot (@johndoe)                       │
+│  Plan:           pro                                             │
 │                                                                  │
-│  Premium                                                         │
+│  Monthly AI credits                                              │
 │  🟨 ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░ 44% remaining  │
 │     ▼1%/4h ▆▆▆▆▆▅▅▅▅▄                                            │
-│  Used: 168 / 300                                                 │
-│                                                                  │
-│  Chat                                                            │
-│  🟩 ███████████████████████████████████░░░░░░░░░░ 77% remaining  │
-│     → 0% ▇▇▇▇▇▇▆▆▆▆                                              │
-│  Used: 230 / 1,000                                               │
-│                                                                  │
-│  Resets in: 12d 8h 0m                                            │
+│  Used: 840 / 1,500 credits                                       │
+│  Resets in: 12d 8h                                               │
+│  By model: GPT-5.3-Codex 710 · Claude Sonnet 5 130               │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
-╭─ Google Account Quota ───────────────────────────────────────────╮
+╭─ Google — johndoe@gmail.com ─────────────────────────────────────╮
 │                                                                  │
-│  ── johndoe@gmail.com ──                                         │
 │  Gemini Pro                                                      │
 │  🟩 ███████████████████████████████████████████░░ 97% remaining  │
 │     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
@@ -165,7 +165,10 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │     → 0% ▇▇▇▇▇▇▇▇▆▆                                              │
 │  Resets in: 4h 44m                                               │
 │                                                                  │
-│  ── janedoe@gmail.com ──                                         │
+╰──────────────────────────────────────────────────────────────────╯
+
+╭─ Google — janedoe@gmail.com ─────────────────────────────────────╮
+│                                                                  │
 │  Gemini Pro                                                      │
 │  🟥 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0% remaining  │
 │     → 0% ▁▁▁▁▁▁▁▁▁▁                                              │
@@ -201,13 +204,13 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 
 ╭─ MiniMax Token Plan ─────────────────────────────────────────────╮
 │                                                                  │
-│  General (text/M3) — 5h                                          │
+│  General (unified pool) — 5h                                     │
 │  🟧 █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 3% remaining │
 │     ▼12%/30m ▅▄▃▂▂▁▁▁▁▁                                          │
 │  Used: 4,850 / 5,000                                             │
 │  Resets in: 1h 0m                                                │
 │                                                                  │
-│  General (text/M3) — 7-day                                       │
+│  General (unified pool) — 7-day                                  │
 │  🟩 █████████████████████████████████████████████ 99% remaining  │
 │     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
 │  Used: 350 / 50,000                                              │
@@ -218,7 +221,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 ╭─ Mistral Vibe Usage ─────────────────────────────────────────────╮
 │                                                                  │
 │  ── johndoe@example.com (johndoe) ──                             │
-│  Vibe Usage                                                      │
+│  Monthly Vibe budget                                             │
 │  🟩 ███████████████████████████████████████████░░ 96% remaining  │
 │     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
 │  Resets in: 13d 2h 50m                                           │
@@ -262,6 +265,11 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │     ▼1%/1h ▄▄▄▄▄▄▄▄▄▄                                            │
 │  Resets in: 18h 27m                                              │
 │                                                                  │
+│  GPT-5.3-Codex-Spark — 7-day limit                               │
+│  🟩 █████████████████████████████████████░░░░░░░░ 82% remaining  │
+│     → 0% ▇▇▇▇▇▇▇▇▇▇                                              │
+│  Resets in: 5d 18h                                               │
+│                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
 ╭─ OpenCode Go+Zen Account Quota ──────────────────────────────────╮
@@ -277,7 +285,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │     ▼2%/8h ▅▅▅▅▄▄▄▄▄▄                                            │
 │  Resets in: 3d 14h                                               │
 │                                                                  │
-│  Monthly                                                         │
+│  Monthly plan points                                             │
 │  🟩 ████████████████████████████████░░░░░░░░░░░░░ 71% remaining  │
 │     → 0% ▆▆▆▆▆▆▆▆▆▆                                              │
 │  Resets in: 21d 6h                                               │
@@ -332,7 +340,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │  Monthly                                                         │
 │  🟨 █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░ 46% remaining  │
 │     ▼1%/3h ▅▅▅▅▅▅▄▄▄▄                                            │
-│  Points: 687,420 / 1,500,000                                     │
+│  Plan points: 687,420 / 1,500,000                                │
 │  Resets in: 11d 18h                                              │
 │                                                                  │
 │  Add-on points:  120,000                                         │
@@ -379,13 +387,13 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │  Auth:           valid                                           │
 │  Token expires:  2h 39m                                          │
 │                                                                  │
-│  SuperGrok credits                                               │
+│  Weekly SuperGrok limit                                          │
 │  🟧 ██████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 22% remaining  │
 │     → 0% ▂▂▂▂▂▂                                                  │
-│  Credits used: 77.59% · Resets Jul 1                             │
-│  Build: 51.19% · SuperGrok: 25.59%                               │
-│  Used: 11,639 / 15,000 credits                                   │
-│  Resets in: 13d 2h 50m                                           │
+│  Weekly usage: 77.59% used · Resets Jul 26                       │
+│  By product: API 25.59% · Build 51.19% · Chat 0.00% · Imagine 0… │
+│  Separate monthly billing: $116.39 / $150.00 (reference only)    │
+│  Resets in: 6d 2h 50m                                            │
 │                                                                  │
 ╰──────────────────────────────────────────────────────────────────╯
 
@@ -409,7 +417,7 @@ A single-column stack of cards, sorted by urgency, with a summary on top and low
 │    glm-4.6: 540, glm-4.5: 180                                    │
 │  Resets in: 4d 19h                                               │
 │                                                                  │
-│  Monthly                                                         │
+│  Monthly MCP / tool calls                                        │
 │  🟩 █████████████████████████████████████░░░░░░░░ 82% remaining  │
 │     → 0% ▆▆▆▆▆▆▆▆▆▆                                              │
 │  Used: 5,400 / 30,000                                            │
@@ -434,6 +442,7 @@ Some providers don't expose a public usage API. The card only renders if you cap
 |---|---|---|---|
 | **AtlasCloud** | `~/.config/opencode/atlas-cookies.json` | `{ "cookie": "<full Cookie header string from console.atlascloud.ai including access-token=…>", "accountUuid": "<optional, auto-resolved via /current-user>" }` | No public usage REST API — plugin reads the console's authenticated dashboard API. Coding-plan `apikey-…` cannot read usage. |
 | **BytePlus** | `~/.config/opencode/byteplus-cookies.json` | `{ "cookie": "<full Cookie header string from console.byteplus.com>" }` | No public usage REST API — plugin scrapes the internal dashboard API. |
+| **Mistral** | `~/.config/opencode/mistral-cookies.json` | `{ "cookie": "<full Cookie header from console.mistral.ai including csrftoken=…>" }` (also supports `{ "accounts": [...] }`) | The Vibe monthly-budget percentage is exposed by the authenticated console, not a normal inference API key. |
 | **Ollama** | `~/.config/opencode/ollama-cookies.json` | `{ "cookie": "<full Cookie header from ollama.com including __Secure-session=…>" }` | No account usage REST API — plugin scrapes `ollama.com/settings` SSR. Inference API keys cannot read quota. |
 | **LongCat** | `~/.config/opencode/longcat-cookies.json` | `{ "passportToken": "<passport_token_key>", "region": "2" }` or `{ "cookie": "passport_token_key=…; long_cat_region_key=2; …" }` | Inference `ak_…` keys in `opencode.json` run models only — quota lives on the platform portal (`passport_token_key` + `long_cat_region_key` cookies). |
 | **QwenCloud** | `~/.config/opencode/qwencloud-cookies.json` | `{ "ticket": "<login_qwencloud_ticket>", "aliyunPk": "<login_aliyunid_pk>", "isg": "<isg>", "esmTicket": "<login_ESM_account_ticket>" }` (`esmTicket` optional) | No public usage REST API — plugin reads the Aliyun BSS console API. |
@@ -446,23 +455,23 @@ All session tokens expire periodically — re-capture and overwrite when the car
 
 | Provider | Account type | What you see |
 |---|---|---|
-| **Anthropic** | Claude Pro / Max | 5-hour, 7-day, and per-model windows (auto token refresh) |
-| **AtlasCloud** | Coding Plan (Starter/Lite/Plus/Max/Ultra) | Plan details + daily quota remaining + subscription/cookie expiry + recent-call log |
+| **Anthropic** | Claude Pro / Max | Dynamic 5-hour, weekly, model/surface limits (including Fable), plus usage-credit spend/caps when enabled |
+| **AtlasCloud** | Monthly subscription or pay-go pack | Independent weekly + full-cycle caps, every active stacked pack, plan/cookie expiry, and recent-call log; legacy daily plans remain supported |
 | **BytePlus** | Ark Coding Plan | Plan details + rolling / weekly / monthly windows |
-| **GitHub Copilot** | Individual / Business | Premium, Chat & Completions usage |
-| **Google** | Antigravity free quota | Gemini Pro / Flash / Claude, per account |
+| **GitHub Copilot** | Individual / Business / Enterprise | Current monthly AI-credit usage for PAT-backed individual plans, pooled-organization usage without a fabricated per-user remainder, legacy premium requests, and every OAuth quota snapshot |
+| **Google** | Antigravity / Google AI Pro | With Antigravity Tools: Gemini + Claude/GPT 5-hour and weekly quota, reset times, account status, and proxy token/request usage. Falls back to auth-plugin Gemini Pro / Flash / Claude / GPT-OSS quota. |
 | **LongCat** | API token quota (`ak_…` in `opencode.json`) | Account email, active API key count, **free quota** (blocks inference when empty), **total tokens** (incl. fuel packs), fuel-package expiry |
-| **MiniMax** | Token Plan | 5-hour & 7-day text windows |
-| **Mistral** | Vibe Usage | Plan details + usage tracking |
-| **NanoGPT** | Balance + subscription | USD balance, weekly tokens & daily image allowances |
-| **OpenAI** | ChatGPT Plus / Team / Pro | 5-hour & 7-day rolling windows, credits |
+| **MiniMax** | Token Plan | Unified 5-hour + weekly plan windows (with compatibility for older named capability buckets) |
+| **Mistral** | Vibe plan | Monthly Vibe budget and reset per configured account |
+| **NanoGPT** | Balance + subscription | USD/XNO balance plus every returned legacy daily/monthly operation pool and newer weekly-token/daily-image pool |
+| **OpenAI** | ChatGPT Plus / Team / Pro | General, code-review, and named model/product quotas (for example GPT-5.3-Codex-Spark), reset credits, credit balance/message estimates, and spend controls |
 | **Ollama** | Cloud Pro / Max | Session & weekly GPU-time windows, per-model request breakdown, renewal date |
 | **OpenCode Go+Zen** | Any Go subscription | Rolling/weekly/monthly quota **+** Zen balance & per-model spend |
-| **Poe** | Subscription or pay-go | Monthly points, daily grant, USD value |
+| **Poe** | Subscription or pay-go | Authoritative total points/USD balance and grants; a monthly percentage only when the API separately reports plan-only points |
 | **QwenCloud** | Token Plan (Team Edition) | Credits remaining + cycle dates |
-| **StepFun** | Step Plan (Plus/Pro/etc.) | Plan details + 5-hour & weekly rolling windows |
-| **xAI / Grok** | SuperGrok | Subscription credits with per-product breakdown (Build, SuperGrok), absolute credit count, on-demand & prepaid balance |
-| **Z.AI** | GLM Coding Plan | Plan details + rolling / weekly / monthly windows |
+| **StepFun** | Step Plan (Flash Mini/Plus/Pro/Max) | Plan details + the 5-hour pool and any weekly pool actually returned by the dashboard API |
+| **xAI / Grok** | SuperGrok | Shared weekly usage pool, reset time, per-product breakdown (API, Build, Chat, Imagine, Voice), and extra-usage credits |
+| **Z.AI** | GLM Coding Plan | 5-hour + weekly prompt pools and distinctly labeled monthly MCP/tool-call quotas with model/tool breakdowns |
 
 Providers you aren't signed into are skipped silently — you only ever see what's relevant to you.
 
@@ -540,8 +549,8 @@ Press `1`, `2`, `3`, or `Tab` to switch. Each view shows a different time horizo
 
 | View | Key | What it shows |
 |------|-----|----------------|
-| **Current** | `1` | What you have left **right now**. Short-term windows (5h, session, daily) when present. If a provider only has weekly or monthly/credits quotas, those appear here too — that's their total available quota (e.g. Grok credits, Mistral vibe-only plans). **Every configured provider appears on this tab.** |
-| **Weekly** | `2` | 7-day and weekly windows — **only for providers that also have shorter-term tiers** on the Current tab. |
+| **Current** | `1` | What you have left **right now**. Short-term windows (5h, session, daily) when present. If a provider only has weekly or monthly/credits quotas, those appear here too — that's its actionable quota (for example, SuperGrok's weekly pool). **Every configured provider appears on this tab.** |
+| **Weekly** | `2` | Every 7-day and weekly window, including weekly-only providers such as Grok. |
 | **Monthly** | `3` | Monthly and billing-cycle windows — **only for providers that also have shorter tiers**. Credits-only providers stay on Current. |
 
 Reset countdowns tick every second between provider syncs. Press `r` to force a refresh, `q` to quit.
@@ -590,8 +599,8 @@ Representative layout with anonymized accounts. ANSI colors render in-terminal; 
 │     ████████████████████████████████████░░░░   96% left  resets 9d 11h     │
 │                                                                              │
 │ xAI/Grok                                                        lowest 21%   │
-│     SuperGrok credits                                                        │
-│     ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   21% left  resets 9d 11h       │
+│     Weekly SuperGrok limit                                                   │
+│     ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   21% left  resets 6d 11h       │
 │                                                                              │
 │ Ollama                                                          lowest 95%   │
 │     Session                                                                  │
@@ -627,7 +636,7 @@ Representative layout with anonymized accounts. ANSI colors render in-terminal; 
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The **Weekly** tab would add longer windows (7-day limits, weekly pools) for providers that also have short-term quotas on Current — Anthropic 7-day, Ollama Weekly, OpenAI 7-day, and so on. The **Monthly** tab shows billing-cycle windows for multi-tier plans (e.g. BytePlus Monthly). LongCat only exposes token pools (no rolling reset windows), so it stays on **Current**.
+The **Weekly** tab collects every longer window — Anthropic's general and Fable limits, OpenAI's general and named-model limits, Ollama Weekly, SuperGrok's shared weekly pool, and so on. Weekly-only providers remain visible on **Current** as their actionable quota and also appear under **Weekly** for correct horizon grouping. The **Monthly** tab shows billing-cycle windows for multi-tier plans (e.g. BytePlus Monthly). LongCat only exposes token pools (no rolling reset windows), so it stays on **Current**.
 
 One-shot `mystatus` and `/mystatus` in OpenCode are unchanged — same card grid as before.
 
@@ -672,7 +681,7 @@ All options are optional and can be set per-call or as [defaults in your config]
 | `fresh` | boolean | `false` | Bypass the cache and force a live fetch |
 | `format` | `ansi` · `json` | `ansi` | `json` returns machine-readable output |
 
-Provider ids: `anthropic`, `atlascloud`, `byteplus`, `copilot`, `google`, `longcat`, `minimax`, `mistral`, `nanogpt`, `openai`, `opencode-go`, `poe`, `qwencloud`, `stepfun`, `xai`, `zai`.
+Provider ids: `anthropic`, `atlascloud`, `byteplus`, `copilot`, `google`, `longcat`, `minimax`, `mistral`, `nanogpt`, `ollama`, `openai`, `opencode-go`, `poe`, `qwencloud`, `stepfun`, `xai`, `zai`.
 
 ## Configuration
 
@@ -680,6 +689,7 @@ Most setups need **no configuration at all**. To set persistent defaults, create
 
 ```jsonc
 {
+  // "width": 100,         // uncomment to pin a render width
   "sort": "urgency",        // urgency | name | reset
   "summary": true,          // show the summary card
   "trend": "full",          // off | compact | full
@@ -689,8 +699,12 @@ Most setups need **no configuration at all**. To set persistent defaults, create
   "providers": {
     "disabled": [],         // e.g. ["xai", "longcat"]
     "order": []             // preferred ordering before sort
+  },
+  "antigravityTools": {
+    "enabled": true,        // auto-discovers ~/.antigravity_tools/gui_config.json
+    "usageHours": 168,      // proxy stats period (7 days)
+    "includeUsage": true    // quota still renders if false
   }
-  // "width": 100           // uncomment to pin a render width
 }
 ```
 
@@ -707,7 +721,7 @@ Anything authenticated inside OpenCode is detected automatically. The collapsibl
 
 <br>
 
-Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Refreshes the Claude Code OAuth token and queries `api.anthropic.com/api/oauth/usage`.
+Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Refreshes the Claude Code OAuth token and queries `api.anthropic.com/api/oauth/usage`. The current structured `limits[]` response is rendered dynamically, including scoped model limits such as **7-day (Fable)**. The canonical `spend` object is also used for usage-credit balance, extra-usage caps, and spend percentage; the older fixed-window and `extra_usage` shapes remain supported.
 </details>
 
 <details>
@@ -737,7 +751,7 @@ No public usage REST API. The coding-plan API key (`apikey-…`) authenticates `
 }
 ```
 
-The `access-token` JWT expires after ~7 days — the card surfaces the expiry countdown. Re-capture and overwrite when the card stops rendering. Missing file → AtlasCloud card is silently skipped.
+Current monthly subscriptions expose independent **weekly** and **full-cycle** caps; pay-as-you-go packs have their own balance and expiry and can be stacked. The plugin renders every active subscription/pack instead of stopping at the first response item. Older daily-reset plans remain supported. The `access-token` JWT expires after ~7 days — the card surfaces the expiry countdown. Re-capture and overwrite when the card stops rendering. Missing file → AtlasCloud card is silently skipped.
 </details>
 
 <details>
@@ -765,16 +779,32 @@ Two auth paths are tried in order:
    ```json
    { "token": "github_pat_...", "username": "YourGitHubUsername", "tier": "pro" }
    ```
-   Tiers &amp; monthly premium limits: `free` (50), `pro` (300), `pro+` (1500), `business` (300), `enterprise` (1000).
+   Set `tier` to `pro`, `pro+`, or `max` for an individual plan. The current monthly AI-credit allowances are 1,500, 7,000, and 20,000 respectively. Business/Enterprise credits are organization-pooled, so the user-level report shows consumed credits but deliberately does not invent a per-user remainder. Accounts still on request-based billing automatically fall back to the legacy premium-request report.
 2. **OAuth fallback** from `auth.json` → `github-copilot` (with automatic token exchange).
+
+Both public billing endpoints use GitHub's current API version. The OAuth path renders every `quota_snapshots` entry returned by Copilot, rather than a fixed three-field allowlist.
 </details>
 
 <details>
-<summary><strong>Google (Antigravity)</strong> — requires the auth plugin</summary>
+<summary><strong>Google (Antigravity)</strong> — Antigravity Tools auto-detected, auth-plugin fallback</summary>
 
 <br>
 
-Install [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) and sign into at least one account. Accounts are read from `~/.config/opencode/antigravity-accounts.json`. Each account attempts a live fetch and falls back to the cached quota (labelled with its age) if the live call fails. Multiple accounts render as separate cards.
+When Antigravity Tools is installed locally, `mystatus` reads its port and management credential from `~/.antigravity_tools/gui_config.json` and prefers its read-only management API. Each enabled Google account gets its own provider card with Gemini and Claude/GPT **5-hour + weekly** quota, reset times, current/proxy-disabled state, and per-account token usage. Aggregate input/output/cache totals and top proxy models stay on the current account's card. The management credential is sent only back to the configured Antigravity Tools origin; credentials auto-read from `gui_config.json` are never sent to a non-loopback URL.
+
+No configuration is needed for the normal local setup. For a custom port, container, or remote instance, use environment variables (recommended for secrets):
+
+```bash
+export ANTIGRAVITY_TOOLS_BASE_URL="http://127.0.0.1:8045/v1"
+export ANTIGRAVITY_TOOLS_API_KEY="sk-..."
+# If Antigravity Tools has a separate Web UI/admin password:
+export ANTIGRAVITY_TOOLS_ADMIN_PASSWORD="..."
+export ANTIGRAVITY_TOOLS_USAGE_HOURS=168
+```
+
+`/v1` or `/api` at the end of `BASE_URL` is accepted and normalized to the service root. The same values can be persisted under `antigravityTools` in `mystatus.json` as `baseUrl`, `apiKey`, `adminPassword`, `usageHours`, and `includeUsage`; environment variables take precedence. Set `antigravityTools.enabled` to `false` to force the fallback path.
+
+If the management API is unavailable, the provider falls back automatically to [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth): accounts are read from `~/.config/opencode/antigravity-accounts.json`, queried live through Google, and served from cached quota when the live call fails. This fallback also renders one card per enabled account.
 </details>
 
 <details>
@@ -782,15 +812,21 @@ Install [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigr
 
 <br>
 
-Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Reads `minimax-coding-plan` (key must start with `sk-cp-`); shows 5h and 7-day text windows.
+Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Reads `minimax-coding-plan` (key must start with `sk-cp-`); shows the current unified 5-hour and weekly Token Plan pools. Older responses with named capability buckets remain compatible, and reset durations are normalized without confusing weekly seconds for milliseconds.
 </details>
 
 <details>
-<summary><strong>Mistral</strong> — zero-config</summary>
+<summary><strong>Mistral</strong> — requires browser session token</summary>
 
 <br>
 
-Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Reads `mistral-vibe`; shows Vibe Usage plan details and usage tracking.
+Mistral's inference key does not expose the Vibe plan budget. Save the signed-in `console.mistral.ai` Cookie header (including `csrftoken`) to `~/.config/opencode/mistral-cookies.json`:
+
+```json
+{ "alias": "primary", "cookie": "csrftoken=...; ..." }
+```
+
+For multiple organizations/accounts, use `{ "accounts": [ { "alias": "...", "cookie": "..." } ] }`. Each account's console-reported percentage and reset is labeled as its **Monthly Vibe budget**.
 </details>
 
 <details>
@@ -798,7 +834,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 
 <br>
 
-Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Reads native `auth.json` `nano-gpt` keys and `opencode-nanogpt-multi-auth`'s `~/.local/share/opencode/nanogpt-keys.json` pool; shows USD/Nano balance and, for subscribers, weekly-token and daily-image allowances with renewal date.
+Reads native `auth.json` `nano-gpt` keys and `opencode-nanogpt-multi-auth`'s `~/.local/share/opencode/nanogpt-keys.json` pool. It always shows USD/XNO balance and dynamically supports both subscription contracts: documented daily/monthly operation allowances and the newer weekly-input-token/daily-image limits. Missing `remaining` values are derived from `limit - used` rather than treated as zero.
 </details>
 
 <details>
@@ -806,7 +842,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 
 <br>
 
-Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Calls `chatgpt.com/backend-api/wham/usage`; reports plan, credits, and 5h/7d windows.
+Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Calls `chatgpt.com/backend-api/wham/usage`; reports plan, credits, and all returned quota buckets. The general Codex limit, `code_review_rate_limit`, and every backend-named `additional_rate_limits` entry (for example **GPT-5.3-Codex-Spark**) get independent windows, reset timers, trends, and alerts. Available/applicable reset credits, approximate local/cloud message ranges, and spend-control state are included when present.
 </details>
 
 <details>
@@ -905,6 +941,8 @@ Single-account shorthand `{ "workspaceId": "...", "authCookie": "..." }` or the 
 <br>
 
 Resolved in priority order: `auth.json` → `poe` (populated when you use a Poe model in OpenCode), then `POE_API_KEY`, then `~/.config/opencode/poe-api-key.json` (`{ "apiKey": "..." }`). Get a key at <https://poe.com/api_key>.
+
+Poe's documented endpoint guarantees the **total current point balance**. Some accounts also return plan-only points, add-on points, and grant metadata. `mystatus` only calculates a monthly percentage when both the monthly grant and plan-only balance are present, so add-on points cannot inflate the subscription remainder. Epoch-second, millisecond, and microsecond grant times are all accepted.
 </details>
 
 <details>
@@ -942,6 +980,8 @@ No public usage REST API. The plugin hits the dashboard's internal tRPC API on y
 ```
 
 Session expires periodically — overwrite the file when the card stops rendering. Missing file → StepFun card is silently skipped.
+
+The current public Step Plan advertises a 5-hour prompt pool. The dashboard response is treated as authoritative: the weekly window is shown only if its fields are actually returned, rather than rendering an empty/`NaN` quota.
 </details>
 
 <details>
@@ -951,7 +991,7 @@ Session expires periodically — overwrite the file when the card stops renderin
 
 Reads OpenCode's `auth.json` (`xai-oauth` / `xai` — opencode dev-referrer OAuth token) for the dev-API liveness check and as a billing fallback. If you've also run `grok login`, it picks up the consumer (grok-build) token at `~/.grok/auth.json` and prefers it for billing (auto-refreshes via `refresh_token`).
 
-Billing comes from `cli-chat-proxy.grok.com/v1/billing` — a single subscription credit ledger shown two ways: percent + per-product breakdown (Build, SuperGrok) via `?format=credits`, and absolute credit count via the default view. Both views report the same depletion; the card collapses them into one window.
+Usage comes from `cli-chat-proxy.grok.com/v1/billing`. SuperGrok now provides one shared **weekly** included-usage pool across API, Build, Chat, Imagine, and Voice, followed by optional extra-usage credits. The `?format=credits` view supplies the authoritative weekly percentage, per-product breakdown, and reset shown by Grok Build's `/usage` command. The default view is a separate monthly dollar ledger; when present, the card labels it as a reference instead of treating it as part of the weekly allowance. The live TUI places the actual limit on the Weekly pane.
 </details>
 
 <details>
@@ -959,7 +999,7 @@ Billing comes from `cli-chat-proxy.grok.com/v1/billing` — a single subscriptio
 
 <br>
 
-Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Reads `zai-coding-plan`; shows plan details plus rolling/weekly/monthly windows.
+Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Reads `zai-coding-plan`; shows the 5-hour and weekly prompt pools plus monthly MCP/tool-call limits. Limit `type` and usage-detail metadata are used to keep multiple monthly pools distinct instead of presenting several anonymous “Monthly” rows.
 </details>
 
 ## Security &amp; privacy
@@ -975,7 +1015,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 
 <br>
 
-**Read (never modified):** `~/.local/share/opencode/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `qwencloud-cookies.json`, `byteplus-cookies.json`, `atlas-cookies.json`, `ollama-cookies.json`, `longcat-cookies.json` under `~/.config/opencode/`.
+**Read (never modified):** `~/.local/share/opencode/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), optional `~/.antigravity_tools/gui_config.json`, and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `qwencloud-cookies.json`, `byteplus-cookies.json`, `atlas-cookies.json`, `mistral-cookies.json`, `ollama-cookies.json`, `longcat-cookies.json` under `~/.config/opencode/`.
 
 | Provider | Endpoint(s) |
 |---|---|
@@ -983,7 +1023,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 | AtlasCloud | `console.atlascloud.ai/api/v1/current-user`, `.../codeplan/get`, `.../codeplan/costs` |
 | BytePlus | `console.byteplus.com/api/...` |
 | GitHub Copilot | `api.github.com/copilot_internal/*`, `api.github.com/users/*/settings/billing/...` |
-| Google | `cloudcode-pa.googleapis.com/...:fetchAvailableModels`, `oauth2.googleapis.com/token` |
+| Google / Antigravity Tools | Local/configured Antigravity Tools `/health`, `/api/accounts`, `/api/stats/token/{summary,by-account,by-model}`; fallback: `cloudcode-pa.googleapis.com/...:{loadCodeAssist,retrieveUserQuota}`, `oauth2.googleapis.com/token` |
 | MiniMax | `api.minimax.io/v1/token_plan/remains` |
 | Mistral | `vibe.mistral.ai/api/...` |
 | NanoGPT | `nano-gpt.com/api/check-balance`, `nano-gpt.com/api/subscription/v1/usage` |

@@ -4,12 +4,12 @@
  * Platforms:
  *   - OpenAI      (ChatGPT Plus/Team/Pro)    auth.json → openai
  *   - Anthropic   (Claude.ai)               auth.json → anthropic
- *   - Google      (Antigravity free quota)   antigravity-accounts.json
+ *   - Google      (Antigravity quota/usage)  Antigravity Tools API → antigravity-accounts.json fallback
  *   - GitHub Copilot                        auth.json → github-copilot (+ optional PAT)
  *   - OpenCode Go+Zen (merged cell)         shared dashboard config (workspaceId + authCookie)
  *   - Poe         (points balance)          auth.json, env var, or poe-api-key.json
  *   - Z.AI        (GLM Coding Plan)         auth.json → zai-coding-plan
- *   - xAI/Grok    (SuperGrok free credits + dev API)  auth.json → xai/xai-oauth (dev) + ~/.grok/auth.json (consumer, auto-refreshed) via cli-chat-proxy /v1/billing[?format=credits]
+ *   - xAI/Grok    (SuperGrok weekly/monthly usage + extra credits)  auth.json → xai/xai-oauth (dev) + ~/.grok/auth.json (consumer, auto-refreshed) via cli-chat-proxy /v1/billing[?format=credits]
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
@@ -70,7 +70,13 @@ function createProgressBar(remainPercent, width = 26, useAnsi = false) {
         return `${emoji} ${bar}`;
     return `${emoji} ${colorForPercent(p)}${bar}${ANSI_RESET}`;
 }
+function clampPercent(value) {
+    return Math.max(0, Math.min(100, value));
+}
 function formatDuration(totalSeconds) {
+    if (!Number.isFinite(totalSeconds))
+        return "-";
+    totalSeconds = Math.max(0, totalSeconds);
     const d = Math.floor(totalSeconds / 86400);
     const h = Math.floor((totalSeconds % 86400) / 3600);
     const m = Math.floor((totalSeconds % 3600) / 60);
@@ -87,7 +93,10 @@ function formatResetAt(isoTime) {
     if (!isoTime)
         return "-";
     try {
-        const diffMs = new Date(isoTime).getTime() - Date.now();
+        const timestamp = new Date(isoTime).getTime();
+        if (!Number.isFinite(timestamp))
+            return "-";
+        const diffMs = timestamp - Date.now();
         if (diffMs <= 0)
             return "resetting";
         return formatDuration(Math.floor(diffMs / 1000));
@@ -95,6 +104,26 @@ function formatResetAt(isoTime) {
     catch {
         return "-";
     }
+}
+// Provider dashboards are inconsistent about epoch precision. Normalize the
+// common seconds, milliseconds, and microseconds forms before constructing a
+// Date so a valid timestamp cannot silently render in 1970 or the far future.
+function epochToMs(raw) {
+    const value = typeof raw === "string" ? Number(raw) : raw;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+        return undefined;
+    if (value < 10_000_000_000)
+        return value * 1000;
+    if (value > 10_000_000_000_000)
+        return Math.floor(value / 1000);
+    return value;
+}
+function epochToIso(raw) {
+    const ms = epochToMs(raw);
+    if (ms === undefined)
+        return undefined;
+    const date = new Date(ms);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const backoffDelay = (attempt) => 300 * 2 ** attempt + Math.floor(Math.random() * 150);
@@ -373,12 +402,68 @@ function parseJwtPayload(token) {
         return null;
     }
 }
-function openAIWindow(w) {
-    const sec = w.limit_window_seconds;
-    const label = sec >= 86400
-        ? `${Math.round(sec / 86400)}-day limit`
-        : `${Math.round(sec / 3600)}-hour limit`;
-    return { label, remaining: Math.round(100 - w.used_percent), resetInSec: w.reset_after_seconds };
+function openAIWindowLabel(seconds, fallback) {
+    if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0)
+        return fallback;
+    if (seconds >= 86_400)
+        return `${Math.round(seconds / 86_400)}-day limit`;
+    if (seconds >= 3_600)
+        return `${Math.round(seconds / 3_600)}-hour limit`;
+    return `${Math.max(1, Math.round(seconds / 60))}-minute limit`;
+}
+function openAIWindow(w, scope, fallback = "Usage limit") {
+    const baseLabel = openAIWindowLabel(w.limit_window_seconds, fallback);
+    const label = scope && scope.trim()
+        ? `${scope.trim()} — ${baseLabel}`
+        : baseLabel;
+    const resetAt = typeof w.reset_at === "number" && Number.isFinite(w.reset_at) && w.reset_at > 0
+        ? new Date(w.reset_at * 1000).toISOString()
+        : undefined;
+    return {
+        label,
+        remaining: Math.round(clampPercent(100 - w.used_percent)),
+        resetAt,
+        resetInSec: resetAt === undefined && typeof w.reset_after_seconds === "number"
+            ? w.reset_after_seconds
+            : undefined,
+    };
+}
+function openAIApproximateMessageRange(label, range) {
+    if (!Array.isArray(range))
+        return null;
+    const values = range.filter((value) => typeof value === "number" && Number.isFinite(value));
+    if (!values.length || values.every((value) => value <= 0))
+        return null;
+    const low = Math.min(...values);
+    const high = Math.max(...values);
+    const value = low === high ? low.toLocaleString() : `${low.toLocaleString()}–${high.toLocaleString()}`;
+    return `${label}: ~${value}`;
+}
+function appendOpenAIRateLimitWindows(windows, rateLimit, scope) {
+    if (!rateLimit)
+        return;
+    const start = windows.length;
+    if (rateLimit.primary_window && typeof rateLimit.primary_window.used_percent === "number") {
+        windows.push(openAIWindow(rateLimit.primary_window, scope, "Primary limit"));
+    }
+    if (rateLimit.secondary_window && typeof rateLimit.secondary_window.used_percent === "number") {
+        windows.push(openAIWindow(rateLimit.secondary_window, scope, "Secondary limit"));
+    }
+    if ((rateLimit.limit_reached || rateLimit.allowed === false) && windows.length > start) {
+        windows[start].warn = `⚠️ ${scope ? `${scope} quota` : "Rate limit"} reached`;
+    }
+}
+function openAIAdditionalLimitName(limit, index) {
+    const name = limit.limit_name?.trim();
+    if (name)
+        return name;
+    const feature = limit.metered_feature?.trim();
+    if (feature && !/^codex(?:_[a-z]+)?$/i.test(feature)) {
+        return feature
+            .replace(/[_-]+/g, " ")
+            .replace(/\b\w/g, (character) => character.toUpperCase());
+    }
+    return `Additional quota ${index + 1}`;
 }
 async function queryOpenAI(auth, ansi = false) {
     if (!auth || auth.type !== "oauth" || !auth.access)
@@ -402,7 +487,7 @@ async function queryOpenAI(auth, ansi = false) {
         const data = (await res.json());
         const header = [
             `Account:        ${data.email ?? email ?? "unknown"}`,
-            `Plan:           ChatGPT ${data.plan_type}`,
+            `Plan:           ChatGPT ${data.plan_type ?? "unknown"}`,
         ];
         const credits = data.credits;
         if (credits) {
@@ -416,19 +501,36 @@ async function queryOpenAI(auth, ansi = false) {
                 header.push("Overage:        \u26a0\ufe0f limit reached");
         }
         const windows = [];
-        if (data.rate_limit?.primary_window)
-            windows.push(openAIWindow(data.rate_limit.primary_window));
-        if (data.rate_limit?.secondary_window)
-            windows.push(openAIWindow(data.rate_limit.secondary_window));
+        appendOpenAIRateLimitWindows(windows, data.rate_limit);
+        appendOpenAIRateLimitWindows(windows, data.code_review_rate_limit, "Code review");
+        for (const [index, additional] of (data.additional_rate_limits ?? []).entries()) {
+            appendOpenAIRateLimitWindows(windows, additional.rate_limit, openAIAdditionalLimitName(additional, index));
+        }
         const footer = [];
+        const localMessages = openAIApproximateMessageRange("Approx. local messages", credits?.approx_local_messages);
+        const cloudMessages = openAIApproximateMessageRange("Approx. cloud messages", credits?.approx_cloud_messages);
+        if (localMessages)
+            footer.push(localMessages);
+        if (cloudMessages)
+            footer.push(cloudMessages);
+        if (data.spend_control?.reached) {
+            footer.push("⚠️ Spend control reached");
+        }
+        else if (typeof data.spend_control?.individual_limit === "number" ||
+            typeof data.spend_control?.individual_limit === "string") {
+            footer.push(`Spend control: ${data.spend_control.individual_limit}`);
+        }
+        const resetCredits = data.rate_limit_reset_credits;
+        const availableResetCredits = resetCredits?.available_count ?? 0;
+        const applicableResetCredits = resetCredits?.applicable_available_count ?? 0;
+        if (availableResetCredits > 0) {
+            footer.push(`Rate-limit resets: ${applicableResetCredits} applicable / ${availableResetCredits} available`);
+        }
         if (data.rate_limit?.limit_reached) {
             const reason = data.rate_limit_reached_type?.type
                 ? ` (${data.rate_limit_reached_type.type})`
                 : "";
             footer.push(`\u26a0\ufe0f Rate limit reached!${reason}`);
-            const resetCredits = data.rate_limit_reset_credits?.available_count ?? 0;
-            if (resetCredits > 0)
-                footer.push(`Reset credits available: ${resetCredits}`);
         }
         return {
             success: true,
@@ -445,13 +547,148 @@ async function queryOpenAI(auth, ansi = false) {
 const ANTHROPIC_CLAUDE_CODE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const ANTHROPIC_BETA_HEADER = "oauth-2025-04-20";
 const ANTHROPIC_USER_AGENT = "claude-code/1.0.17";
-const ANTHROPIC_MODEL_WINDOWS = [
-    { key: "seven_day_opus", label: "7-day (Opus)" },
-    { key: "seven_day_sonnet", label: "7-day (Sonnet)" },
-    { key: "seven_day_cowork", label: "7-day (Cowork)" },
-];
 function anthropicWindow(label, w) {
-    return { label, remaining: Math.round(100 - w.utilization), resetAt: w.resets_at };
+    return {
+        label,
+        remaining: Math.round(clampPercent(100 - w.utilization)),
+        resetAt: w.resets_at,
+    };
+}
+function anthropicScopeValue(value) {
+    if (typeof value === "string")
+        return value.trim() || null;
+    if (!value)
+        return null;
+    return value.display_name?.trim() || value.id?.trim() || null;
+}
+function anthropicLimitLabel(limit) {
+    const kind = (limit.kind ?? "").trim().toLowerCase();
+    const group = (limit.group ?? "").trim().toLowerCase();
+    const scope = [
+        anthropicScopeValue(limit.scope?.model),
+        anthropicScopeValue(limit.scope?.surface),
+    ].filter((value) => Boolean(value)).join(" · ");
+    if (kind === "session" || group === "session") {
+        return scope ? `5-hour (${scope})` : "5-hour limit";
+    }
+    if (kind.startsWith("weekly") || group === "weekly") {
+        return scope ? `7-day (${scope})` : "7-day limit";
+    }
+    const raw = kind || group || "usage";
+    const name = raw
+        .replace(/[_-]+/g, " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase());
+    return scope ? `${name} (${scope})` : `${name} limit`;
+}
+function anthropicLimitWindow(limit) {
+    if (typeof limit.percent !== "number" || !Number.isFinite(limit.percent))
+        return null;
+    let resetAt;
+    if (typeof limit.resets_at === "string" && Number.isFinite(Date.parse(limit.resets_at))) {
+        resetAt = limit.resets_at;
+    }
+    else if (typeof limit.resets_at === "number" && Number.isFinite(limit.resets_at)) {
+        resetAt = new Date(limit.resets_at * (limit.resets_at < 10_000_000_000 ? 1000 : 1)).toISOString();
+    }
+    const severity = (limit.severity ?? "").toLowerCase();
+    return {
+        label: anthropicLimitLabel(limit),
+        remaining: Math.round(clampPercent(100 - limit.percent)),
+        resetAt,
+        warn: /critical|exhausted|blocked/.test(severity) ? `⚠️ ${limit.severity}` : undefined,
+    };
+}
+function anthropicMoneyValue(value) {
+    if (typeof value?.amount_minor !== "number" || !Number.isFinite(value.amount_minor))
+        return null;
+    const exponent = typeof value.exponent === "number" && Number.isFinite(value.exponent)
+        ? Math.max(0, Math.min(8, Math.round(value.exponent)))
+        : 2;
+    return value.amount_minor / 10 ** exponent;
+}
+function formatAnthropicMoney(value) {
+    const amount = anthropicMoneyValue(value);
+    if (amount === null)
+        return null;
+    const currency = value?.currency?.trim().toUpperCase() || "USD";
+    try {
+        return new Intl.NumberFormat("en-US", {
+            style: "currency",
+            currency,
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+        }).format(amount);
+    }
+    catch {
+        return `${amount.toFixed(2)} ${currency}`;
+    }
+}
+function appendAnthropicSpend(windows, footer, spend) {
+    if (!spend)
+        return false;
+    const usedAmount = anthropicMoneyValue(spend.used);
+    const used = formatAnthropicMoney(spend.used);
+    const limit = formatAnthropicMoney(spend.limit);
+    const balance = formatAnthropicMoney(spend.balance);
+    const cap = formatAnthropicMoney(spend.cap);
+    const hasPercent = typeof spend.percent === "number" && Number.isFinite(spend.percent);
+    const hasData = Boolean(spend.enabled ||
+        limit ||
+        balance ||
+        cap ||
+        (usedAmount !== null && usedAmount !== 0) ||
+        (hasPercent && spend.percent !== 0));
+    if (!hasData)
+        return false;
+    if (hasPercent && (spend.enabled || limit)) {
+        const detail = [];
+        if (used && limit)
+            detail.push(`Used: ${used} / ${limit}`);
+        else if (used)
+            detail.push(`Used: ${used}`);
+        const severity = (spend.severity ?? "").toLowerCase();
+        windows.push({
+            label: "Extra usage spend",
+            remaining: Math.round(clampPercent(100 - spend.percent)),
+            detail: detail.length ? detail : undefined,
+            warn: /critical|exhausted|blocked/.test(severity)
+                ? `⚠️ ${spend.severity}`
+                : undefined,
+        });
+    }
+    else if (used) {
+        footer.push(`Extra usage spent: ${used}`);
+    }
+    if (balance)
+        footer.push(`Usage-credit balance: ${balance}`);
+    if (cap && cap !== limit)
+        footer.push(`Extra-usage cap: ${cap}`);
+    if (spend.enabled === false && spend.disabled_reason) {
+        footer.push(`Extra usage disabled: ${spend.disabled_reason}`);
+    }
+    return true;
+}
+function isAnthropicWindow(value) {
+    return Boolean(value &&
+        typeof value === "object" &&
+        typeof value.utilization === "number" &&
+        typeof value.resets_at === "string");
+}
+function anthropicLegacyWindowLabel(key) {
+    if (key === "five_hour")
+        return "5-hour limit";
+    if (key === "seven_day")
+        return "7-day limit";
+    if (key.startsWith("seven_day_")) {
+        const scope = key
+            .slice("seven_day_".length)
+            .replace(/[_-]+/g, " ")
+            .replace(/\b\w/g, (character) => character.toUpperCase());
+        return `7-day (${scope})`;
+    }
+    return key
+        .replace(/[_-]+/g, " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 async function refreshAnthropicToken(refreshToken) {
     try {
@@ -506,18 +743,31 @@ async function queryAnthropic(auth, ansi = false) {
         const data = (await res.json());
         const header = ["Account:        Claude Pro/Max"];
         const windows = [];
-        if (data.five_hour)
-            windows.push(anthropicWindow("5-hour limit", data.five_hour));
-        if (data.seven_day)
-            windows.push(anthropicWindow("7-day limit", data.seven_day));
-        for (const { key, label } of ANTHROPIC_MODEL_WINDOWS) {
-            const w = data[key];
-            if (w && typeof w.utilization === "number")
-                windows.push(anthropicWindow(label, w));
+        for (const limit of data.limits ?? []) {
+            const window = anthropicLimitWindow(limit);
+            if (window)
+                windows.push(window);
+        }
+        // Older Claude usage responses exposed one fixed property per window.
+        // Keep a dynamic compatibility path so newly added model/surface fields do
+        // not need a plugin release even when the canonical `limits` array is absent.
+        if (!windows.length) {
+            for (const [key, value] of Object.entries(data)) {
+                if (!isAnthropicWindow(value))
+                    continue;
+                windows.push(anthropicWindow(anthropicLegacyWindowLabel(key), value));
+            }
         }
         const footer = [];
         const extra = data.extra_usage;
-        if (extra?.is_enabled) {
+        if (isAnthropicWindow(extra?.daily)) {
+            windows.push(anthropicWindow("Extra usage — Daily", extra.daily));
+        }
+        if (isAnthropicWindow(extra?.weekly)) {
+            windows.push(anthropicWindow("Extra usage — Weekly", extra.weekly));
+        }
+        const usedCanonicalSpend = appendAnthropicSpend(windows, footer, data.spend);
+        if (!usedCanonicalSpend && extra?.is_enabled) {
             const cur = extra.currency ?? "USD";
             const used = extra.used_credits ?? 0;
             const limit = extra.monthly_limit;
@@ -532,7 +782,7 @@ async function queryAnthropic(auth, ansi = false) {
                 footer.push(`Used: ${used} ${cur}`);
             }
         }
-        if (!data.five_hour && !data.seven_day) {
+        if (!windows.length) {
             footer.push("(No rolling-window limits found \u2014 may be API-key plan or unlimited)");
         }
         return {
@@ -548,7 +798,13 @@ async function queryAnthropic(auth, ansi = false) {
     }
 }
 // ============================================================
-// Google Antigravity (cached-quota + live API fallback)
+// Google Antigravity
+//
+// Preferred source: the local Antigravity Tools management API. It exposes
+// richer 5-hour + weekly quota groups and proxy token statistics without
+// requiring this plugin to refresh Google OAuth tokens itself. If the service
+// is unavailable (or not configured), the existing auth-plugin live/cached
+// path below remains the fallback.
 // ============================================================
 const GOOGLE_CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const GOOGLE_CLIENT_SECRET = "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";
@@ -700,20 +956,390 @@ function formatCachedAgeMinutes(updatedAt) {
         return " (1 min ago)";
     return ` (${mins} min ago)`;
 }
+const ANTIGRAVITY_TOOLS_GUI_CONFIG = join(homedir(), ".antigravity_tools", "gui_config.json");
+function loadAntigravityToolsGuiConfig() {
+    try {
+        return JSON.parse(readFileSync(ANTIGRAVITY_TOOLS_GUI_CONFIG, "utf-8"));
+    }
+    catch {
+        return null;
+    }
+}
+function normalizeAntigravityToolsBaseUrl(raw) {
+    const value = raw.trim();
+    if (!value)
+        return null;
+    try {
+        const url = new URL(value.includes("://") ? value : `http://${value}`);
+        if (url.protocol !== "http:" && url.protocol !== "https:")
+            return null;
+        url.search = "";
+        url.hash = "";
+        let pathname = url.pathname.replace(/\/+$/, "");
+        while (/\/(?:v1|api)$/i.test(pathname))
+            pathname = pathname.replace(/\/(?:v1|api)$/i, "");
+        return `${url.origin}${pathname && pathname !== "/" ? pathname : ""}`;
+    }
+    catch {
+        return null;
+    }
+}
+function isLoopbackBaseUrl(baseUrl) {
+    try {
+        const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+        if (host === "localhost" || host === "::1")
+            return true;
+        const octets = host.split(".");
+        return (octets.length === 4 &&
+            octets[0] === "127" &&
+            octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255));
+    }
+    catch {
+        return false;
+    }
+}
+function resolveAntigravityToolsSettings(cfg) {
+    const configured = cfg.antigravityTools;
+    if (configured?.enabled === false)
+        return null;
+    const gui = loadAntigravityToolsGuiConfig();
+    const envBase = process.env.ANTIGRAVITY_TOOLS_BASE_URL;
+    const envApiKey = process.env.ANTIGRAVITY_TOOLS_API_KEY;
+    const envAdminPassword = process.env.ANTIGRAVITY_TOOLS_ADMIN_PASSWORD;
+    const envUsageHours = process.env.ANTIGRAVITY_TOOLS_USAGE_HOURS;
+    const explicitlyRequested = Boolean(configured || envBase || envApiKey || envAdminPassword || envUsageHours);
+    // The persisted `proxy.enabled` flag can be false while an auto-started
+    // service is actively listening, so config-file presence is the reliable
+    // zero-config discovery signal. A stopped service fails fast and falls back.
+    if (!explicitlyRequested && !gui)
+        return null;
+    const port = typeof gui?.proxy?.port === "number" && gui.proxy.port > 0 && gui.proxy.port <= 65_535
+        ? Math.floor(gui.proxy.port)
+        : 8045;
+    const baseUrl = normalizeAntigravityToolsBaseUrl(envBase ?? configured?.baseUrl ?? `http://127.0.0.1:${port}`);
+    if (!baseUrl)
+        return null;
+    const credentials = [];
+    const addCredential = (value) => {
+        if (!value || credentials.includes(value))
+            return;
+        credentials.push(value);
+    };
+    // Management routes prefer a separate admin password when one is set.
+    // Only auto-send credentials from the local GUI config to loopback URLs;
+    // explicit remote instances must provide their own env/config credential.
+    addCredential(envAdminPassword);
+    addCredential(configured?.adminPassword);
+    if (isLoopbackBaseUrl(baseUrl))
+        addCredential(gui?.proxy?.admin_password);
+    addCredential(envApiKey);
+    addCredential(configured?.apiKey);
+    if (isLoopbackBaseUrl(baseUrl))
+        addCredential(gui?.proxy?.api_key);
+    const configuredHours = Number(envUsageHours ?? configured?.usageHours ?? 168);
+    const usageHours = Number.isFinite(configuredHours)
+        ? Math.max(1, Math.min(24 * 365, Math.floor(configuredHours)))
+        : 168;
+    return {
+        baseUrl,
+        credentials,
+        usageHours,
+        includeUsage: configured?.includeUsage !== false,
+    };
+}
+function antigravityToolsHeaders(credential) {
+    const headers = {
+        Accept: "application/json",
+        "User-Agent": "OpenCode-MyStatus/3",
+    };
+    if (credential)
+        headers.Authorization = `Bearer ${credential}`;
+    return headers;
+}
+async function connectAntigravityTools(settings) {
+    const candidates = settings.credentials.length
+        ? settings.credentials
+        : [undefined];
+    let authRejected = false;
+    for (const credential of candidates) {
+        let res;
+        try {
+            res = await fetchTimeout(`${settings.baseUrl}/api/accounts`, { method: "GET", headers: antigravityToolsHeaders(credential) }, 4_000, 0);
+        }
+        catch (err) {
+            throw new Error(`Antigravity Tools is unavailable at ${settings.baseUrl}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        if (res.status === 401 || res.status === 403) {
+            authRejected = true;
+            continue;
+        }
+        if (!res.ok)
+            throw new Error(`Antigravity Tools accounts API error (${res.status})`);
+        const accounts = (await res.json());
+        if (!Array.isArray(accounts.accounts)) {
+            throw new Error("Antigravity Tools accounts API returned an unexpected response");
+        }
+        return { settings, credential, accounts };
+    }
+    throw new Error(authRejected
+        ? "Antigravity Tools management authentication failed; configure its admin password or API key"
+        : "Antigravity Tools management API requires an admin password or API key");
+}
+async function fetchAntigravityToolsJson(client, path) {
+    const res = await fetchTimeout(`${client.settings.baseUrl}${path}`, { method: "GET", headers: antigravityToolsHeaders(client.credential) }, 4_000, 0);
+    if (!res.ok)
+        throw new Error(`Antigravity Tools API error (${res.status}) for ${path}`);
+    return (await res.json());
+}
+async function fetchAntigravityToolsOptional(client, paths) {
+    for (const path of paths) {
+        try {
+            return await fetchAntigravityToolsJson(client, path);
+        }
+        catch {
+            // Newer /stats/token routes and their older aliases are both supported.
+        }
+    }
+    return null;
+}
+function antigravityToolsPeriod(hours) {
+    if (hours % (24 * 7) === 0)
+        return `${hours / (24 * 7)}w`;
+    if (hours % 24 === 0)
+        return `${hours / 24}d`;
+    return `${hours}h`;
+}
+function antigravityToolsGroupLabel(raw) {
+    const label = (raw ?? "Quota").replace(/\s+models?$/i, "").trim();
+    return label.replace(/\s+and\s+/gi, " & ");
+}
+function antigravityToolsBucketLabel(bucket) {
+    const window = (bucket.window ?? "").toLowerCase();
+    if (window === "5h" || window === "five-hour")
+        return "5-hour";
+    if (window === "weekly" || window === "week")
+        return "Weekly";
+    if (window === "daily" || window === "day")
+        return "Daily";
+    return (bucket.display_name ?? bucket.window ?? "Limit")
+        .replace(/\s+limit$/i, "")
+        .replace(/five[ -]hour/i, "5-hour");
+}
+function antigravityToolsQuotaWindows(account) {
+    const quota = account.quota;
+    if (!quota)
+        return [];
+    const email = account.email ?? account.name ?? account.id ?? "unknown";
+    const windows = [];
+    for (const group of quota.quota_groups ?? []) {
+        const groupLabel = antigravityToolsGroupLabel(group.display_name);
+        const buckets = [...(group.buckets ?? [])].sort((a, b) => {
+            const rank = (w) => {
+                const value = (w ?? "").toLowerCase();
+                if (value === "5h" || value.includes("hour"))
+                    return 0;
+                if (value === "daily")
+                    return 1;
+                if (value === "weekly")
+                    return 2;
+                return 3;
+            };
+            return rank(a.window) - rank(b.window);
+        });
+        for (const bucket of buckets) {
+            const fraction = bucket.remaining_fraction;
+            if (typeof fraction !== "number" || !Number.isFinite(fraction))
+                continue;
+            const bucketLabel = antigravityToolsBucketLabel(bucket);
+            const label = `${groupLabel} · ${bucketLabel}`;
+            windows.push({
+                label,
+                trendKey: `${label} · ${email}`,
+                remaining: Math.round(Math.max(0, Math.min(1, fraction)) * 100),
+                resetAt: bucket.reset_time || undefined,
+            });
+        }
+    }
+    if (windows.length > 0)
+        return windows;
+    // Antigravity Tools versions before quota_groups exposed only per-model
+    // percentages. Collapse those into stable model families as a compatibility
+    // fallback, mirroring the direct Google source below.
+    const grouped = {};
+    for (const model of quota.models ?? []) {
+        if (!model.name || typeof model.percentage !== "number")
+            continue;
+        const group = classifyAntigravityGroup(model.name);
+        if (!group)
+            continue;
+        const remainingFraction = Math.max(0, Math.min(100, model.percentage)) / 100;
+        const existing = grouped[group];
+        const resetTs = model.reset_time ? Date.parse(model.reset_time) : Number.NaN;
+        const existingResetTs = existing?.resetTime ? Date.parse(existing.resetTime) : Number.NaN;
+        grouped[group] = {
+            remainingFraction: existing?.remainingFraction === undefined
+                ? remainingFraction
+                : Math.min(existing.remainingFraction, remainingFraction),
+            resetTime: Number.isFinite(resetTs) && (!Number.isFinite(existingResetTs) || resetTs < existingResetTs)
+                ? model.reset_time
+                : existing?.resetTime,
+            modelCount: (existing?.modelCount ?? 0) + 1,
+        };
+    }
+    for (const group of GOOGLE_QUOTA_GROUPS) {
+        const info = grouped[group.key];
+        if (info?.remainingFraction === undefined)
+            continue;
+        windows.push({
+            label: group.display,
+            trendKey: `${group.display} · ${email}`,
+            remaining: Math.round(info.remainingFraction * 100),
+            resetAt: info.resetTime,
+        });
+    }
+    return windows;
+}
+function antigravityToolsUpdatedText(lastUpdated) {
+    if (typeof lastUpdated !== "number" || !Number.isFinite(lastUpdated) || lastUpdated <= 0)
+        return null;
+    const ageSec = Math.max(0, Math.floor(Date.now() / 1000 - lastUpdated));
+    return ageSec < 60 ? "updated now" : `updated ${formatDuration(ageSec)} ago`;
+}
+function antigravityToolsStatusWarning(account) {
+    if (account.validation_blocked) {
+        return `\u26a0\ufe0f Validation blocked${account.validation_blocked_reason ? `: ${account.validation_blocked_reason}` : ""}`;
+    }
+    if (account.proxy_disabled) {
+        return `\u26a0\ufe0f Proxy disabled${account.proxy_disabled_reason ? `: ${account.proxy_disabled_reason}` : ""}`;
+    }
+    if (account.quota?.is_forbidden)
+        return "\u26a0\ufe0f Account quota access is forbidden";
+    return undefined;
+}
+async function queryAntigravityTools(cfg) {
+    const settings = resolveAntigravityToolsSettings(cfg);
+    if (!settings)
+        return null;
+    let client;
+    try {
+        client = await connectAntigravityTools(settings);
+    }
+    catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    const hoursQuery = `?hours=${settings.usageHours}`;
+    const [health, summary, accountStats, modelStats] = await Promise.all([
+        fetchAntigravityToolsOptional(client, ["/health"]),
+        settings.includeUsage
+            ? fetchAntigravityToolsOptional(client, [
+                `/api/stats/token/summary${hoursQuery}`,
+                `/api/stats/summary${hoursQuery}`,
+            ])
+            : Promise.resolve(null),
+        settings.includeUsage
+            ? fetchAntigravityToolsOptional(client, [
+                `/api/stats/token/by-account${hoursQuery}`,
+                `/api/stats/accounts${hoursQuery}`,
+            ])
+            : Promise.resolve(null),
+        settings.includeUsage
+            ? fetchAntigravityToolsOptional(client, [
+                `/api/stats/token/by-model${hoursQuery}`,
+                `/api/stats/models${hoursQuery}`,
+            ])
+            : Promise.resolve(null),
+    ]);
+    const excluded = new Set((cfg.google?.excludeEmails ?? []).map((email) => email.trim().toLowerCase()).filter(Boolean));
+    const accounts = (client.accounts.accounts ?? []).filter((account) => {
+        const email = (account.email ?? "").trim().toLowerCase();
+        return Boolean(email) && account.disabled !== true && !excluded.has(email);
+    });
+    const statsByEmail = new Map((Array.isArray(accountStats) ? accountStats : [])
+        .filter((stats) => stats.account_email)
+        .map((stats) => [stats.account_email.trim().toLowerCase(), stats]));
+    const period = antigravityToolsPeriod(settings.usageHours);
+    const cards = [];
+    for (const account of accounts) {
+        const accountWindows = antigravityToolsQuotaWindows(account);
+        const header = [
+            `Source: Antigravity Tools${health?.version ? ` ${health.version}` : ""}`,
+        ];
+        if (account.quota?.subscription_tier) {
+            header.push(`Plan: ${account.quota.subscription_tier}`);
+        }
+        header.push(`Status: enabled${account.is_current ? " · current" : ""}`);
+        const updated = antigravityToolsUpdatedText(account.quota?.last_updated);
+        if (updated)
+            header.push(`Quota: ${updated}`);
+        const warning = antigravityToolsStatusWarning(account);
+        const footer = [];
+        if (warning && accountWindows.length)
+            accountWindows[0].warn = warning;
+        else if (warning)
+            footer.push(warning);
+        const usage = statsByEmail.get((account.email ?? "").trim().toLowerCase());
+        if (usage) {
+            header.push(`Proxy ${period}: ${humanCount(usage.total_tokens ?? 0)} tokens · ${(usage.request_count ?? 0).toLocaleString()} requests`);
+        }
+        if (!accountWindows.length)
+            footer.push("No quota data available for this account.");
+        cards.push({
+            subtitle: account.email ?? account.name ?? account.id ?? "unknown",
+            header,
+            windows: accountWindows.length ? accountWindows : undefined,
+            footer: footer.length ? footer : undefined,
+        });
+    }
+    if (!cards.length) {
+        return {
+            success: false,
+            error: "Antigravity Tools returned no enabled accounts",
+        };
+    }
+    const aggregateFooter = [];
+    if (summary) {
+        aggregateFooter.push(`All proxy accounts (${period}): ${humanCount(summary.total_tokens ?? 0)} tokens · ${(summary.total_requests ?? 0).toLocaleString()} requests`, `Input / output: ${humanCount(summary.total_input_tokens ?? 0)} / ${humanCount(summary.total_output_tokens ?? 0)}`, `Cache reads: ${humanCount(summary.total_cached_tokens ?? 0)} tokens`);
+    }
+    const topModels = (Array.isArray(modelStats) ? modelStats : [])
+        .filter((stats) => stats.model && (stats.total_tokens ?? 0) > 0)
+        .sort((a, b) => (b.total_tokens ?? 0) - (a.total_tokens ?? 0))
+        .slice(0, 3);
+    if (topModels.length) {
+        aggregateFooter.push(`Top proxy models (${period}):`);
+        for (const model of topModels) {
+            aggregateFooter.push(`  ${model.model}: ${humanCount(model.total_tokens ?? 0)} tokens · ${(model.request_count ?? 0).toLocaleString()} requests`);
+        }
+    }
+    if (aggregateFooter.length) {
+        const aggregateIndex = accounts.findIndex((account) => account.is_current);
+        const aggregateCard = cards[aggregateIndex >= 0 ? aggregateIndex : 0];
+        aggregateCard.footer = [...(aggregateCard.footer ?? []), ...aggregateFooter];
+    }
+    return {
+        success: true,
+        cards,
+    };
+}
 async function queryGoogle(ansi = false) {
-    const allAccounts = await loadAntigravityAccountsMerged(loadConfig());
+    const cfg = loadConfig();
+    const toolsResult = await queryAntigravityTools(cfg);
+    if (toolsResult?.success && toolsResult.cards?.length)
+        return toolsResult;
+    const allAccounts = await loadAntigravityAccountsMerged(cfg);
     if (allAccounts.length === 0) {
         return {
             success: false,
-            error: "antigravity-accounts.json not found in any opencode profile.\n" +
-                "Install the opencode-antigravity-auth plugin and sign in to enable Google quota.",
+            error: toolsResult?.error
+                ? `Antigravity Tools: ${toolsResult.error}\nFallback: antigravity-accounts.json not found in any opencode profile.`
+                : "antigravity-accounts.json not found in any opencode profile.\n" +
+                    "Install the opencode-antigravity-auth plugin and sign in to enable Google quota.",
         };
     }
     try {
         const accounts = allAccounts.filter((a) => a.email && a.enabled !== false);
         if (!accounts.length)
             return { success: true, output: "No enabled Google accounts found." };
-        const allWindows = [];
+        const cards = [];
         for (const account of accounts) {
             const ua = account.fingerprint?.userAgent ?? "antigravity/1.23.2 windows/amd64";
             const windows = [];
@@ -756,16 +1382,19 @@ async function queryGoogle(ansi = false) {
                     }
                 }
             }
-            if (!windows.length)
-                continue;
-            const header = cachedNote ? `${account.email} (${cachedNote})` : account.email;
-            windows[0].sectionHeader = header;
-            allWindows.push(...windows);
+            cards.push({
+                subtitle: account.email,
+                note: cachedNote,
+                windows: windows.length ? windows : undefined,
+                footer: windows.length
+                    ? undefined
+                    : ["No quota data available for this account."],
+            });
         }
-        if (!allWindows.length) {
+        if (!cards.length) {
             return { success: true, output: "No quota data available for Google accounts." };
         }
-        return { success: true, cards: [{ windows: allWindows }] };
+        return { success: true, cards };
     }
     catch (err) {
         return {
@@ -784,12 +1413,22 @@ const COPILOT_HEADERS = {
     "Editor-Plugin-Version": `copilot-chat/${COPILOT_VERSION}`,
     "Copilot-Integration-Id": "vscode-chat",
 };
-const COPILOT_PLAN_LIMITS = {
+// Request-based billing is retained only for accounts still served by the
+// legacy premium-request endpoint.
+const COPILOT_LEGACY_REQUEST_LIMITS = {
     free: 50,
     pro: 300,
     "pro+": 1500,
     business: 300,
     enterprise: 1000,
+};
+// Current individual-plan allowances. Organization-managed Business and
+// Enterprise credits are pooled, so a user-level report cannot truthfully
+// derive a remaining percentage for those plans.
+const COPILOT_AI_CREDIT_LIMITS = {
+    pro: 1500,
+    "pro+": 7000,
+    max: 20_000,
 };
 function getCopilotPATPath() {
     return findReadable("copilot-quota-token.json", "config")
@@ -808,12 +1447,61 @@ function readCopilotPAT() {
         return null;
     }
 }
-function copilotWindow(label, q) {
-    if (q.unlimited)
-        return { label, remaining: 100, detail: ["Used: Unlimited"] };
-    const pct = Math.round(q.percent_remaining);
-    const used = q.entitlement - q.remaining;
-    return { label, remaining: pct, detail: [`Used: ${used} / ${q.entitlement}`] };
+function copilotWindow(label, q, resetAt) {
+    if (q.unlimited) {
+        return { label, remaining: 100, resetAt, suffix: "Unlimited", detail: ["Used: Unlimited"] };
+    }
+    const entitlement = typeof q.entitlement === "number" && Number.isFinite(q.entitlement)
+        ? q.entitlement
+        : undefined;
+    const remaining = typeof q.remaining === "number" && Number.isFinite(q.remaining) ? q.remaining : undefined;
+    const pct = typeof q.percent_remaining === "number" && Number.isFinite(q.percent_remaining)
+        ? q.percent_remaining
+        : entitlement && remaining !== undefined
+            ? (remaining / entitlement) * 100
+            : 0;
+    const detail = entitlement !== undefined && remaining !== undefined
+        ? [`Used: ${Math.max(0, entitlement - remaining)} / ${entitlement}`]
+        : undefined;
+    return { label, remaining: Math.round(clampPercent(pct)), resetAt, detail };
+}
+function normalizeCopilotTier(tier) {
+    const normalized = tier.trim().toLowerCase().replace(/^copilot[\s_-]*/, "");
+    if (/^pro(?:\+|[\s_-]?plus)$/.test(normalized))
+        return "pro+";
+    return normalized;
+}
+function nextCalendarMonthUtcIso() {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString();
+}
+function copilotBillingPeriod(period) {
+    if (!period || typeof period.year !== "number")
+        return null;
+    let value = String(period.year);
+    if (typeof period.month === "number")
+        value += `-${String(period.month).padStart(2, "0")}`;
+    if (typeof period.day === "number")
+        value += `-${String(period.day).padStart(2, "0")}`;
+    return value;
+}
+function formatCopilotQuantity(value) {
+    return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+function copilotBillingModelSummary(items) {
+    const byModel = new Map();
+    for (const item of items) {
+        if (!item.model || typeof item.grossQuantity !== "number")
+            continue;
+        byModel.set(item.model, (byModel.get(item.model) ?? 0) + item.grossQuantity);
+    }
+    const sorted = [...byModel.entries()].sort((a, b) => b[1] - a[1]);
+    if (!sorted.length)
+        return null;
+    const shown = sorted.slice(0, 4).map(([model, quantity]) => `${model} ${formatCopilotQuantity(quantity)}`);
+    if (sorted.length > shown.length)
+        shown.push(`+${sorted.length - shown.length} more`);
+    return `By model: ${shown.join(" · ")}`;
 }
 function copilotResetCountdown(date) {
     const diffMs = new Date(date).getTime() - Date.now();
@@ -862,60 +1550,169 @@ async function queryCopilotViaOAuth(auth) {
         `  ${getCopilotPATPath()}\n` +
         '  {"token": "github_pat_...", "username": "YourUsername", "tier": "pro"}');
 }
-async function queryCopilot(auth, ansi = false) {
-    const pat = readCopilotPAT();
-    if (pat) {
+async function queryCopilotViaPAT(pat) {
+    const headers = {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${pat.token}`,
+        "X-GitHub-Api-Version": "2026-03-10",
+    };
+    const base = `https://api.github.com/users/${encodeURIComponent(pat.username)}/settings/billing`;
+    const [aiCreditRes, premiumRequestRes] = await Promise.all([
+        fetchTimeout(`${base}/ai_credit/usage`, { headers }),
+        fetchTimeout(`${base}/premium_request/usage`, { headers }),
+    ]);
+    const parse = async (response) => {
+        if (!response.ok)
+            return null;
         try {
-            const res = await fetchTimeout(`https://api.github.com/users/${pat.username}/settings/billing/premium_request/usage`, {
-                headers: {
-                    Accept: "application/vnd.github+json",
-                    Authorization: `Bearer ${pat.token}`,
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-            });
-            if (!res.ok)
-                throw new Error(`Billing API error (${res.status})`);
-            const billing = (await res.json());
-            const limit = COPILOT_PLAN_LIMITS[pat.tier] ?? 300;
-            const totalUsed = billing.usageItems
-                .filter((i) => i.sku.includes("Premium"))
-                .reduce((s, i) => s + i.grossQuantity, 0);
-            const remaining = Math.max(0, limit - totalUsed);
-            const pct = Math.round((remaining / limit) * 100);
-            const period = billing.timePeriod.month
-                ? `${billing.timePeriod.year}-${String(billing.timePeriod.month).padStart(2, "0")}`
-                : String(billing.timePeriod.year);
+            return (await response.json());
+        }
+        catch {
+            return null;
+        }
+    };
+    const [aiBilling, premiumBilling] = await Promise.all([
+        parse(aiCreditRes),
+        parse(premiumRequestRes),
+    ]);
+    const tier = normalizeCopilotTier(pat.tier);
+    if (aiBilling) {
+        const items = aiBilling.usageItems ?? [];
+        const limit = COPILOT_AI_CREDIT_LIMITS[tier];
+        if (items.length > 0 || limit !== undefined) {
+            const used = items.reduce((sum, item) => sum + (typeof item.grossQuantity === "number" && Number.isFinite(item.grossQuantity)
+                ? item.grossQuantity
+                : 0), 0);
+            const windows = [];
+            const footer = [];
+            if (limit !== undefined) {
+                windows.push({
+                    label: "Monthly AI credits",
+                    remaining: Math.round(clampPercent(((limit - used) / limit) * 100)),
+                    resetAt: nextCalendarMonthUtcIso(),
+                    detail: [`Used: ${formatCopilotQuantity(used)} / ${limit.toLocaleString()} credits`],
+                });
+            }
+            else {
+                footer.push(`AI credits used: ${formatCopilotQuantity(used)}`);
+                if (tier === "business" || tier === "enterprise") {
+                    footer.push("Included credits are organization-pooled; no per-user remainder is reported.");
+                }
+            }
+            const modelSummary = copilotBillingModelSummary(items);
+            if (modelSummary)
+                footer.push(modelSummary);
+            const netAmount = items.reduce((sum, item) => sum + (typeof item.netAmount === "number" && Number.isFinite(item.netAmount)
+                ? item.netAmount
+                : 0), 0);
+            if (netAmount > 0)
+                footer.push(`Net metered amount: $${netAmount.toFixed(2)}`);
+            const period = copilotBillingPeriod(aiBilling.timePeriod);
+            if (period)
+                footer.push(`Billing period: ${period}`);
             return {
                 success: true,
-                cards: [
-                    {
-                        header: [`Account:        GitHub Copilot (@${billing.user})`],
-                        windows: [
-                            { label: "Premium", remaining: pct, detail: [`Used: ${totalUsed} / ${limit}`] },
+                cards: [{
+                        header: [
+                            `Account:        GitHub Copilot (@${aiBilling.user ?? pat.username})`,
+                            `Plan:           ${pat.tier}`,
                         ],
-                        footer: [`Billing period: ${period}`],
-                    },
-                ],
+                        windows: windows.length ? windows : undefined,
+                        footer: footer.length ? footer : undefined,
+                    }],
             };
         }
-        catch (err) {
-            return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    // Accounts still on request-based billing continue to expose the legacy
+    // report. Only use its plan caps with that endpoint; never mix request caps
+    // with the newer AI-credit ledger.
+    if (premiumBilling) {
+        const items = (premiumBilling.usageItems ?? []).filter((item) => /premium|request/i.test(`${item.product ?? ""} ${item.sku ?? ""} ${item.unitType ?? ""}`));
+        const limit = COPILOT_LEGACY_REQUEST_LIMITS[tier];
+        if (items.length > 0 || (limit !== undefined && !aiBilling)) {
+            const used = items.reduce((sum, item) => sum + (typeof item.grossQuantity === "number" && Number.isFinite(item.grossQuantity)
+                ? item.grossQuantity
+                : 0), 0);
+            const windows = [];
+            const footer = [];
+            if (limit !== undefined) {
+                windows.push({
+                    label: "Monthly premium requests (legacy)",
+                    remaining: Math.round(clampPercent(((limit - used) / limit) * 100)),
+                    detail: [`Used: ${formatCopilotQuantity(used)} / ${limit.toLocaleString()}`],
+                });
+            }
+            else {
+                footer.push(`Premium requests used: ${formatCopilotQuantity(used)}`);
+            }
+            const modelSummary = copilotBillingModelSummary(items);
+            if (modelSummary)
+                footer.push(modelSummary);
+            const period = copilotBillingPeriod(premiumBilling.timePeriod);
+            if (period)
+                footer.push(`Billing period: ${period}`);
+            return {
+                success: true,
+                cards: [{
+                        header: [
+                            `Account:        GitHub Copilot (@${premiumBilling.user ?? pat.username})`,
+                            `Plan:           ${pat.tier} (request-based billing)`,
+                        ],
+                        windows: windows.length ? windows : undefined,
+                        footer: footer.length ? footer : undefined,
+                    }],
+            };
         }
     }
-    if (!auth || auth.type !== "oauth" || !auth.refresh)
-        return null;
+    if (!aiCreditRes.ok && !premiumRequestRes.ok) {
+        throw new Error(`GitHub billing APIs unavailable (AI credits ${aiCreditRes.status}, premium requests ${premiumRequestRes.status})`);
+    }
+    return null;
+}
+async function queryCopilot(auth, ansi = false) {
+    const pat = readCopilotPAT();
+    let patError = null;
+    if (pat) {
+        try {
+            const result = await queryCopilotViaPAT(pat);
+            if (result)
+                return result;
+        }
+        catch (err) {
+            patError = err instanceof Error ? err.message : String(err);
+        }
+    }
+    if (!auth || auth.type !== "oauth" || (!auth.refresh && !auth.access)) {
+        return patError ? { success: false, error: patError } : null;
+    }
     try {
         const raw = await queryCopilotViaOAuth(auth);
         const data = JSON.parse(raw);
-        const snaps = data.quota_snapshots;
-        const windows = [copilotWindow("Premium", snaps.premium_interactions)];
-        if (snaps.chat && !snaps.chat.unlimited)
-            windows.push(copilotWindow("Chat", snaps.chat));
-        if (snaps.completions && !snaps.completions.unlimited)
-            windows.push(copilotWindow("Completions", snaps.completions));
+        const snaps = data.quota_snapshots ?? {};
+        const labels = {
+            premium_interactions: "Premium",
+            chat: "Chat",
+            completions: "Completions",
+        };
+        const order = { premium_interactions: 0, chat: 1, completions: 2 };
+        const resetAt = Number.isFinite(Date.parse(data.quota_reset_date))
+            ? data.quota_reset_date
+            : undefined;
+        const windows = Object.entries(snaps)
+            .filter((entry) => Boolean(entry[1]))
+            .sort(([a], [b]) => (order[a] ?? 99) - (order[b] ?? 99) || a.localeCompare(b))
+            .map(([key, snapshot]) => {
+            const label = labels[key] ?? key
+                .replace(/[_-]+/g, " ")
+                .replace(/\b\w/g, (character) => character.toUpperCase());
+            return copilotWindow(label, snapshot, resetAt);
+        });
+        if (!windows.length)
+            throw new Error("Copilot quota API returned no quota snapshots");
         const footer = [];
-        if (snaps.premium_interactions.overage_count)
-            footer.push(`Overage: ${snaps.premium_interactions.overage_count} requests`, "");
+        const premium = snaps.premium_interactions;
+        if (premium?.overage_count)
+            footer.push(`Overage: ${premium.overage_count} requests`, "");
         footer.push(`Resets in: ${copilotResetCountdown(data.quota_reset_date)}`);
         return {
             success: true,
@@ -925,7 +1722,8 @@ async function queryCopilot(auth, ansi = false) {
         };
     }
     catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
+        const oauthError = err instanceof Error ? err.message : String(err);
+        return { success: false, error: patError ? `${patError}\n${oauthError}` : oauthError };
     }
 }
 // ============================================================
@@ -1226,13 +2024,8 @@ async function queryOpenCodeGoZen(auth, ansi = false) {
     return { success: true, cards };
 }
 function formatPoeTimestamp(ts) {
-    if (!ts)
-        return null;
-    const ms = ts > 9_999_999_999_999 ? Math.floor(ts / 1000) : ts;
-    const diffMs = ms - Date.now();
-    if (diffMs <= 0)
-        return "now";
-    return formatDuration(Math.floor(diffMs / 1000));
+    const iso = epochToIso(ts);
+    return iso ? formatResetAt(iso) : null;
 }
 function resolvePoeApiKey(auth) {
     if (auth?.access)
@@ -1279,18 +2072,21 @@ async function queryPoe(auth, ansi = false) {
         if (daily)
             header.push(`Daily grant:    +${balance.next_daily_grant_amount ?? "?"} (Resets in: ${daily})`);
         const windows = [];
-        if (monthlyGrant > 0) {
-            const currentPts = balance.current_point_balance ?? 0;
-            const remainPct = Math.round((currentPts / monthlyGrant) * 100);
-            const monthly = formatPoeTimestamp(balance.next_monthly_grant_time);
+        if (monthlyGrant > 0 && typeof balance.plan_points_balance === "number") {
+            const planPts = balance.plan_points_balance;
+            const remainPct = Math.round(clampPercent((planPts / monthlyGrant) * 100));
             windows.push({
-                label: "Monthly",
+                label: "Monthly plan points",
                 remaining: remainPct,
-                detail: [`Points: ${currentPts} / ${monthlyGrant}`],
-                resetText: monthly ?? undefined,
+                detail: [`Plan points: ${planPts} / ${monthlyGrant}`],
+                resetAt: epochToIso(balance.next_monthly_grant_time),
             });
         }
         const footer = [];
+        if (monthlyGrant > 0 && typeof balance.plan_points_balance !== "number") {
+            const monthly = formatPoeTimestamp(balance.next_monthly_grant_time);
+            footer.push(`Next monthly grant: +${monthlyGrant}${monthly ? ` in ${monthly}` : ""}`);
+        }
         if (typeof balance.addon_point_balance === "number" && balance.addon_point_balance > 0)
             footer.push(`Add-on points:  ${balance.addon_point_balance}`);
         return {
@@ -1319,11 +2115,22 @@ function zaiUnitLabel(unit, number_) {
 // an ISO string. Returns undefined instead of throwing on bad input — this is
 // the fix for the long-standing "Invalid Date" failure that killed the card.
 function zaiResetAt(raw) {
-    if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0)
-        return undefined;
-    const ms = raw < 1e12 ? raw * 1000 : raw; // seconds vs milliseconds heuristic
-    const d = new Date(ms);
-    return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+    return epochToIso(raw);
+}
+function zaiLimitLabel(limit) {
+    const base = zaiUnitLabel(limit.unit, limit.number);
+    const type = (limit.type ?? "").trim();
+    const evidence = `${type} ${(limit.usageDetails ?? []).map((detail) => detail.modelCode).join(" ")}`;
+    if (/mcp|tool|web.?search|web.?reader/i.test(evidence)) {
+        return limit.unit === 5 ? "Monthly MCP / tool calls" : `${base} — MCP / tool calls`;
+    }
+    if (!type || /^(time|quota|usage|token|prompt)(?:_limit)?$/i.test(type))
+        return base;
+    const scope = type
+        .replace(/_limit$/i, "")
+        .replace(/[_-]+/g, " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase());
+    return `${base} — ${scope}`;
 }
 async function queryZai(auth, ansi = false) {
     if (!auth?.key)
@@ -1379,12 +2186,23 @@ async function queryZai(auth, ansi = false) {
         });
         const windows = [];
         for (const limit of limits) {
-            const remain = Math.round(100 - Math.max(0, Math.min(100, limit.percentage)));
+            const used = typeof limit.usage === "number" && Number.isFinite(limit.usage)
+                ? limit.usage
+                : typeof limit.currentValue === "number" && Number.isFinite(limit.currentValue)
+                    ? limit.currentValue
+                    : undefined;
+            const remaining = typeof limit.remaining === "number" && Number.isFinite(limit.remaining)
+                ? limit.remaining
+                : undefined;
+            const usedPercent = typeof limit.percentage === "number" && Number.isFinite(limit.percentage)
+                ? limit.percentage
+                : used !== undefined && remaining !== undefined && used + remaining > 0
+                    ? (used / (used + remaining)) * 100
+                    : 0;
+            const remain = Math.round(clampPercent(100 - usedPercent));
             const detail = [];
-            if (limit.type === "TIME_LIMIT" &&
-                typeof limit.remaining === "number" &&
-                typeof limit.usage === "number") {
-                detail.push(`Used: ${limit.usage} / ${limit.remaining + limit.usage}`);
+            if (remaining !== undefined && used !== undefined) {
+                detail.push(`Used: ${used} / ${remaining + used}`);
             }
             const extra = [];
             if (limit.usageDetails?.length) {
@@ -1394,7 +2212,7 @@ async function queryZai(auth, ansi = false) {
                 }
             }
             windows.push({
-                label: zaiUnitLabel(limit.unit, limit.number),
+                label: zaiLimitLabel(limit),
                 remaining: remain,
                 resetAt: zaiResetAt(limit.nextResetTime),
                 detail,
@@ -1413,18 +2231,20 @@ async function queryZai(auth, ansi = false) {
 // ============================================================
 // xAI/Grok
 //
-// Single billing ledger per xAI account. The SuperGrok subscription grants a
-// monthly credit allowance (e.g. $30 plan ≈ 15,000 credits/mo) consumed by
-// all xAI traffic — both Grok models on api.x.ai ("Api" product) and
-// Composer/Build models on cli-chat-proxy.grok.com ("GrokBuild" product).
-// No separate dev-API quota; the two product channels share one pool.
+// SuperGrok included usage is reported by cli-chat-proxy billing. A paid plan
+// can spend the included pool across API, Build, Chat, Imagine, and Voice;
+// extra usage credits apply after the included pool is exhausted.
 //
-// Two endpoint views expose the same ledger:
-//   GET /v1/billing                → {monthlyLimit, used, billingPeriodEnd}
-//                                     absolute credit count
-//   GET /v1/billing?format=credits → {creditUsagePercent, productUsage[],
-//                                     onDemand{Used,Cap}, prepaidBalance}
-//                                     percent + per-product breakdown
+// Two endpoint views:
+//   GET /v1/billing?format=credits
+//     Prefer: creditUsagePercent / weeklyUsagePercent, productUsage[],
+//     currentPeriod, onDemand{Used,Cap}, prepaidBalance.
+//     Unified-billing accounts may only return period metadata
+//     (isUnifiedBillingUser) without a usage percent.
+//   GET /v1/billing
+//     Ledger: used + monthlyLimit (cents) and/or weeklyLimit, with
+//     billingPeriodEnd. Used as the primary bar when credits omits percent,
+//     otherwise as a separate monthly reference under the weekly bar.
 //
 // Two OAuth tokens can read the endpoint, both for the same account:
 //   • opencode dev (~/.local/share/opencode/auth.json → "xai"/"xai-oauth",
@@ -1433,8 +2253,7 @@ async function queryZai(auth, ansi = false) {
 //       referrer "grok-build") — minted by `grok login`
 //
 // We prefer the consumer token (auto-refreshes via refresh_token) and fall
-// back to the opencode dev token. The card surfaces ONE window summarising
-// the shared ledger plus a per-product breakdown line.
+// back to the opencode dev token.
 // ============================================================
 const GROK_BILLING_BASE = "https://cli-chat-proxy.grok.com/v1/billing";
 const XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
@@ -1538,6 +2357,73 @@ function formatGrokResetDate(iso) {
         timeZone: "UTC",
     });
 }
+function grokPeriodLabel(type) {
+    const normalized = type?.trim().toLowerCase() ?? "";
+    if (/week/.test(normalized))
+        return "Weekly";
+    if (/month/.test(normalized))
+        return "Monthly";
+    if (/day/.test(normalized))
+        return "Daily";
+    if (!normalized)
+        return "Weekly";
+    return normalized
+        .replace(/[_-]+/g, " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+function formatGrokBillingCents(value) {
+    return `$${(value / 100).toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    })}`;
+}
+function grokProductLabel(product) {
+    const normalized = product.trim().toLowerCase().replace(/[_-]+/g, "");
+    const labels = {
+        api: "API",
+        build: "Build",
+        grokbuild: "Build",
+        chat: "Chat",
+        grokchat: "Chat",
+        imagine: "Imagine",
+        grokimagine: "Imagine",
+        voice: "Voice",
+        grokvoice: "Voice",
+    };
+    return labels[normalized] ?? product;
+}
+function grokCentsVal(value) {
+    return typeof value?.val === "number" && Number.isFinite(value.val) ? value.val : undefined;
+}
+function grokFinitePercent(...candidates) {
+    for (const candidate of candidates) {
+        if (typeof candidate === "number" && Number.isFinite(candidate))
+            return candidate;
+    }
+    return undefined;
+}
+function appendGrokExtraUsageDetail(detail, credits) {
+    if (!credits)
+        return;
+    const onDemand = grokCentsVal(credits.onDemandUsed) ?? 0;
+    const onDemandCap = grokCentsVal(credits.onDemandCap) ?? 0;
+    if (onDemandCap > 0)
+        detail.push(`Extra usage: ${onDemand}/${onDemandCap}`);
+    const prepaid = grokCentsVal(credits.prepaidBalance) ?? 0;
+    if (prepaid > 0)
+        detail.push(`Extra usage credits: ${prepaid}`);
+}
+function appendGrokProductDetail(detail, credits) {
+    const products = credits?.productUsage?.filter((p) => p && typeof p.product === "string");
+    if (!products?.length)
+        return;
+    detail.push(`By product: ${products
+        .map((p) => {
+        const usage = typeof p.usagePercent === "number" && Number.isFinite(p.usagePercent) ? p.usagePercent : 0;
+        return `${grokProductLabel(String(p.product))} ${usage.toFixed(2)}%`;
+    })
+        .join(" · ")}`);
+}
 async function queryXai(auth) {
     if (!auth || auth.type !== "oauth" || !auth.access)
         return null;
@@ -1551,72 +2437,148 @@ async function queryXai(auth) {
         return { success: false, error: "xAI token expired. Use a Grok model in OpenCode to refresh." };
     }
     const creditsToken = consumerToken ?? auth.access;
+    const authHeaders = { Authorization: `Bearer ${creditsToken}`, Accept: "application/json" };
     const header = [
         devTokenExpired ? "Auth:           consumer-only (dev token expired)" : "Auth:           valid",
     ];
     if (!devTokenExpired && typeof auth.expires === "number" && auth.expires > Date.now()) {
         header.push(`Token expires:  ${formatDuration(Math.floor((auth.expires - Date.now()) / 1000))}`);
     }
-    const windows = [];
-    // Subscription credits — GET /v1/billing?format=credits (percent +
-    // per-product breakdown). Single ledger shared across both Grok-API and
-    // Composer/Build product channels — not a separate "free credits" pool.
+    // Fetch both billing views. Credits may omit usage percent for unified
+    // billing users; the default ledger still carries used/limit dollars.
+    let creditsCfg = null;
+    let ledgerCfg = null;
     try {
-        const r = await fetchTimeout(`${GROK_BILLING_BASE}?format=credits`, {
-            headers: { Authorization: `Bearer ${creditsToken}`, Accept: "application/json" },
+        const r = await fetchTimeout(`${GROK_BILLING_BASE}?format=credits`, { headers: authHeaders });
+        if (r.ok)
+            creditsCfg = (await r.json()).config ?? {};
+    }
+    catch {
+        // non-fatal
+    }
+    try {
+        const billRes = await fetchTimeout(GROK_BILLING_BASE, { headers: authHeaders });
+        if (billRes.ok)
+            ledgerCfg = (await billRes.json()).config ?? {};
+    }
+    catch {
+        // non-fatal
+    }
+    const windows = [];
+    const planName = hasConsumer ? "SuperGrok" : "Grok";
+    const periodLabel = grokPeriodLabel(creditsCfg?.currentPeriod?.type);
+    const creditsUsedPct = grokFinitePercent(creditsCfg?.weeklyUsagePercent, creditsCfg?.creditUsagePercent);
+    const used = grokCentsVal(ledgerCfg?.used);
+    const weeklyLimit = grokCentsVal(ledgerCfg?.weeklyLimit);
+    const monthlyLimit = grokCentsVal(ledgerCfg?.monthlyLimit);
+    const hasWeeklyUnits = typeof used === "number" && typeof weeklyLimit === "number" && weeklyLimit > 0;
+    const hasMonthlyDollars = typeof used === "number" && typeof monthlyLimit === "number" && monthlyLimit > 0;
+    if (typeof creditsUsedPct === "number") {
+        // Preferred path: provider-reported weekly (or period) percentage.
+        const remain = Math.round(clampPercent(100 - creditsUsedPct));
+        const resetAt = creditsCfg?.currentPeriod?.end ?? creditsCfg?.weeklyResetAt ?? creditsCfg?.billingPeriodEnd;
+        const resetDate = formatGrokResetDate(resetAt);
+        const detail = [
+            `${periodLabel} usage: ${creditsUsedPct.toFixed(2)}% used${resetDate ? ` \u00b7 Resets ${resetDate}` : ""}`,
+        ];
+        appendGrokProductDetail(detail, creditsCfg);
+        appendGrokExtraUsageDetail(detail, creditsCfg);
+        if (hasWeeklyUnits) {
+            detail.push(`Weekly included units: ${used.toLocaleString()} / ${weeklyLimit.toLocaleString()}`);
+        }
+        else if (hasMonthlyDollars) {
+            detail.push(`Separate monthly billing: ${formatGrokBillingCents(used)} / ${formatGrokBillingCents(monthlyLimit)} (reference only)`);
+            const monthlyReset = formatGrokResetDate(ledgerCfg?.billingPeriodEnd);
+            if (monthlyReset)
+                detail.push(`Monthly ledger resets: ${monthlyReset}`);
+        }
+        windows.push({
+            label: `${periodLabel} ${planName} limit`,
+            remaining: remain,
+            resetAt,
+            detail,
         });
-        if (r.ok) {
-            const cfg = (await r.json()).config ?? {};
-            const usedPct = Number(cfg.creditUsagePercent ?? 0);
-            const remain = Math.max(0, Math.min(100, 100 - usedPct));
-            const resetDate = formatGrokResetDate(cfg.billingPeriodEnd);
-            const detail = [
-                `Credits used: ${usedPct.toFixed(2)}%${resetDate ? ` \u00b7 Resets ${resetDate}` : ""}`,
-            ];
-            const products = cfg.productUsage?.filter((p) => p && typeof p.product === "string" && typeof p.usagePercent === "number");
-            if (products && products.length > 0) {
-                const renameProduct = (id) => id === "GrokBuild" ? "Build" : id === "Api" ? "SuperGrok" : id;
-                detail.push(products
-                    .map((p) => `${renameProduct(String(p.product))}: ${Number(p.usagePercent).toFixed(2)}%`)
-                    .join(" · "));
-            }
-            const onDemand = cfg.onDemandUsed?.val ?? 0;
-            const onDemandCap = cfg.onDemandCap?.val ?? 0;
-            if (onDemandCap > 0)
-                detail.push(`On-demand: ${onDemand}/${onDemandCap}`);
-            const prepaid = cfg.prepaidBalance?.val ?? 0;
-            if (prepaid > 0)
-                detail.push(`Prepaid balance: ${prepaid}`);
+    }
+    else if (hasWeeklyUnits) {
+        // Ledger reports weekly included units without a credits percent.
+        const usedPct = (used / weeklyLimit) * 100;
+        const remain = Math.round(clampPercent(100 - usedPct));
+        const resetAt = creditsCfg?.currentPeriod?.end ??
+            creditsCfg?.weeklyResetAt ??
+            creditsCfg?.billingPeriodEnd ??
+            ledgerCfg?.billingPeriodEnd;
+        const resetDate = formatGrokResetDate(resetAt);
+        const detail = [
+            `Weekly included units: ${used.toLocaleString()} / ${weeklyLimit.toLocaleString()} (${usedPct.toFixed(2)}% used)${resetDate ? ` \u00b7 Resets ${resetDate}` : ""}`,
+        ];
+        appendGrokProductDetail(detail, creditsCfg);
+        appendGrokExtraUsageDetail(detail, creditsCfg);
+        if (hasMonthlyDollars) {
+            detail.push(`Separate monthly billing: ${formatGrokBillingCents(used)} / ${formatGrokBillingCents(monthlyLimit)} (reference only)`);
+            const monthlyReset = formatGrokResetDate(ledgerCfg?.billingPeriodEnd);
+            if (monthlyReset)
+                detail.push(`Monthly ledger resets: ${monthlyReset}`);
+        }
+        windows.push({
+            label: `Weekly ${planName} limit`,
+            remaining: remain,
+            resetAt,
+            detail,
+        });
+    }
+    else if (hasMonthlyDollars) {
+        // Credits omitted the usage percent (common for isUnifiedBillingUser).
+        // The dollar ledger still has used/limit; period metadata on the credits
+        // view remains the SuperGrok window (usually weekly). Label + reset follow
+        // that window so the card doesn't say "Monthly" while counting down ~5 days.
+        const usedPct = (used / monthlyLimit) * 100;
+        const remain = Math.round(clampPercent(100 - usedPct));
+        const periodResetAt = creditsCfg?.currentPeriod?.end ??
+            creditsCfg?.weeklyResetAt ??
+            creditsCfg?.billingPeriodEnd;
+        const ledgerResetAt = ledgerCfg?.billingPeriodEnd;
+        const resetAt = periodResetAt ?? ledgerResetAt;
+        const labelPeriod = periodResetAt ? periodLabel : "Monthly";
+        const resetDate = formatGrokResetDate(resetAt);
+        const detail = [
+            `Usage: ${formatGrokBillingCents(used)} / ${formatGrokBillingCents(monthlyLimit)} (${usedPct.toFixed(2)}% used)${resetDate ? ` \u00b7 Resets ${resetDate}` : ""}`,
+        ];
+        appendGrokProductDetail(detail, creditsCfg);
+        appendGrokExtraUsageDetail(detail, creditsCfg);
+        windows.push({
+            label: `${labelPeriod} ${planName} limit`,
+            remaining: remain,
+            resetAt,
+            detail,
+        });
+    }
+    else if (creditsCfg) {
+        // Auth + period metadata only — keep the card informative even when xAI
+        // returns no quantitative usage fields on either endpoint.
+        const resetAt = creditsCfg.currentPeriod?.end ?? creditsCfg.weeklyResetAt ?? creditsCfg.billingPeriodEnd;
+        const resetDate = formatGrokResetDate(resetAt);
+        const detail = [
+            creditsCfg.isUnifiedBillingUser
+                ? "Unified billing active; no usage percent or ledger amounts returned"
+                : "No usage percent or ledger amounts returned",
+        ];
+        if (resetDate)
+            detail.push(`${periodLabel} period ends: ${resetDate}`);
+        appendGrokProductDetail(detail, creditsCfg);
+        appendGrokExtraUsageDetail(detail, creditsCfg);
+        header.push(`Billing:        ${periodLabel.toLowerCase()} period (usage unavailable)`);
+        if (detail.length || resetAt) {
             windows.push({
-                label: hasConsumer ? "SuperGrok credits" : "Grok credits",
-                remaining: remain,
-                resetAt: cfg.billingPeriodEnd,
+                label: `${periodLabel} ${planName} limit`,
+                remaining: 100,
+                resetAt,
                 detail,
+                suffix: "usage unavailable",
             });
         }
     }
-    catch {
-        // non-fatal — keep rendering the rest of the card
-    }
-    // Absolute credit count from default /v1/billing view, appended as a detail
-    // line on the SAME window above (same ledger as ?format=credits — just a
-    // different format of the same data, NOT a separate quota).
-    try {
-        const billRes = await fetchTimeout(GROK_BILLING_BASE, {
-            headers: { Authorization: `Bearer ${creditsToken}`, Accept: "application/json" },
-        });
-        if (billRes.ok && windows.length > 0) {
-            const cfg = (await billRes.json()).config ?? {};
-            const limit = cfg.monthlyLimit?.val;
-            const used = cfg.used?.val;
-            if (typeof limit === "number" && limit > 0 && typeof used === "number") {
-                windows[0].detail?.push(`Used: ${used.toLocaleString()} / ${limit.toLocaleString()} credits`);
-            }
-        }
-    }
-    catch { }
     if (!hasConsumer) {
-        header.push("SuperGrok:      run `grok login` to show credits");
+        header.push("SuperGrok:      run `grok login` for weekly details");
     }
     // Liveness check: confirm at least one of the two tokens still works against
     // the xAI API. Prefer the consumer token (auto-refreshes via refresh_token)
@@ -1644,46 +2606,55 @@ async function queryXai(auth) {
 //
 //   Quota source:    GET https://api.minimax.io/v1/token_plan/remains
 //   Auth:            Bearer sk-cp-…  (Token Plan Subscription Key)
-//   Response shape:  model_remains[]  with 5h + 7-day windows per bucket
-//   Buckets:         "general" (text/M3), "video", "image", "speech", "audio"
-//   Scope:           chat/agent text usage only — the "video" bucket is
-//                    filtered out below as it is out of scope for this
-//                    plugin. Image/speech/audio buckets are kept for now
-//                    because they typically aren't returned by the account.
-const MINIMAX_BASE_URL = "https://api.minimax.io";
+//   Response shape:  model_remains[] with 5h + weekly windows. Current plans
+//                    use one unified pool across supported capabilities; older
+//                    responses may still name separate capability buckets.
+const MINIMAX_BASE_URLS = ["https://www.minimax.io", "https://api.minimax.io"];
 const MINIMAX_PLAN_LABELS = {
     general: "General (text/M3)",
     image: "Image",
     speech: "Speech",
     audio: "Audio",
+    video: "Video",
 };
-const MINIMAX_EXCLUDED_BUCKETS = new Set(["video"]);
 function minimaxWindowLabel(bucketName, kind) {
     const label = MINIMAX_PLAN_LABELS[bucketName] ?? bucketName;
     return kind === "interval" ? `${label} — 5h` : `${label} — 7-day`;
 }
-function minimaxResetSeconds(raw) {
-    if (typeof raw !== "number" || raw <= 0)
+function minimaxResetSeconds(raw, kind) {
+    if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0)
         return undefined;
-    if (raw > 86_400)
-        return Math.floor(raw / 1000);
-    return Math.floor(raw);
+    const expected = kind === "interval" ? 5 * 3600 : 7 * 86_400;
+    const candidates = [raw, raw / 1000].filter((value) => value > 0);
+    const best = candidates.sort((a, b) => Math.abs(Math.log(a / expected)) - Math.abs(Math.log(b / expected)))[0];
+    return Math.max(1, Math.floor(best));
 }
-function minimaxWindow(bucketName, kind, pct, used, total, resetRaw, status) {
+function minimaxResetAt(raw) {
+    const ms = epochToMs(raw);
+    if (ms === undefined || ms < Date.now() - 86_400_000)
+        return undefined;
+    return epochToIso(ms);
+}
+function minimaxWindow(bucketName, kind, pct, used, total, resetRaw, status, endTime) {
     const remain = Math.max(0, Math.min(100, Math.round(pct ?? 100)));
     const throttled = status !== undefined && status !== 1;
     const detail = [];
     if (typeof total === "number" && total > 0 && typeof used === "number") {
         detail.push(`Used: ${used} / ${total}`);
     }
-    const resetSec = minimaxResetSeconds(resetRaw);
+    const resetAt = minimaxResetAt(endTime);
+    const resetSec = resetAt ? undefined : minimaxResetSeconds(resetRaw, kind);
     return {
         label: minimaxWindowLabel(bucketName, kind),
         remaining: remain,
         warn: throttled ? `\u26a0\ufe0f throttled (status=${status})` : undefined,
         detail,
+        resetAt,
         resetInSec: resetSec !== undefined && resetSec > 0 ? resetSec : undefined,
     };
+}
+function minimaxHasWindow(pct, used, total, reset, endTime) {
+    return [pct, used, total, reset, endTime].some((value) => typeof value === "number" && Number.isFinite(value));
 }
 function minimaxBucketSortKey(name) {
     if (name === "general")
@@ -1701,14 +2672,20 @@ async function queryMiniMax(auth, ansi = false) {
         };
     }
     try {
-        const res = await fetchTimeout(`${MINIMAX_BASE_URL}/v1/token_plan/remains`, {
-            headers: {
-                Authorization: `Bearer ${auth.key}`,
-                Accept: "application/json",
-                "Content-Type": "application/json",
-                "User-Agent": "OpenCode-AllStatus/1.0",
-            },
-        });
+        const headers = {
+            Authorization: `Bearer ${auth.key}`,
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "OpenCode-AllStatus/1.0",
+        };
+        let res;
+        for (const baseUrl of MINIMAX_BASE_URLS) {
+            res = await fetchTimeout(`${baseUrl}/v1/token_plan/remains`, { headers });
+            if (res.ok)
+                break;
+        }
+        if (!res)
+            throw new Error("MiniMax API did not return a response");
         if (!res.ok) {
             const body = await res.text().catch(() => "");
             throw new Error(`MiniMax API error (${res.status}): ${body.slice(0, 200)}`);
@@ -1719,7 +2696,6 @@ async function queryMiniMax(auth, ansi = false) {
         }
         const buckets = (data.model_remains ?? [])
             .filter((b) => typeof b.model_name === "string")
-            .filter((b) => !MINIMAX_EXCLUDED_BUCKETS.has(b.model_name))
             .sort((a, b) => {
             const ka = minimaxBucketSortKey(a.model_name);
             const kb = minimaxBucketSortKey(b.model_name);
@@ -1737,12 +2713,16 @@ async function queryMiniMax(auth, ansi = false) {
         const cards = [];
         for (const b of buckets) {
             const name = b.model_name;
+            const windows = [];
+            if (minimaxHasWindow(b.current_interval_remaining_percent, b.current_interval_usage_count, b.current_interval_total_count, b.remains_time, b.end_time)) {
+                windows.push(minimaxWindow(name, "interval", b.current_interval_remaining_percent, b.current_interval_usage_count, b.current_interval_total_count, b.remains_time, b.current_interval_status, b.end_time));
+            }
+            if (minimaxHasWindow(b.current_weekly_remaining_percent, b.current_weekly_usage_count, b.current_weekly_total_count, b.weekly_remains_time, b.weekly_end_time)) {
+                windows.push(minimaxWindow(name, "weekly", b.current_weekly_remaining_percent, b.current_weekly_usage_count, b.current_weekly_total_count, b.weekly_remains_time, b.current_weekly_status, b.weekly_end_time));
+            }
             cards.push({
                 subtitle: multi ? name : undefined,
-                windows: [
-                    minimaxWindow(name, "interval", b.current_interval_remaining_percent, b.current_interval_usage_count, b.current_interval_total_count, b.remains_time, b.current_interval_status),
-                    minimaxWindow(name, "weekly", b.current_weekly_remaining_percent, b.current_weekly_usage_count, b.current_weekly_total_count, b.weekly_remains_time, b.current_weekly_status),
-                ],
+                windows: windows.length ? windows : undefined,
             });
         }
         return { success: true, cards };
@@ -1821,13 +2801,7 @@ function stepfunDashboardHeaders(cookies) {
     };
 }
 function stepfunResetAt(epochSec) {
-    if (!epochSec)
-        return undefined;
-    const s = Number(epochSec);
-    if (!Number.isFinite(s) || s <= 0)
-        return undefined;
-    const d = new Date(s * 1000);
-    return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+    return epochToIso(epochSec);
 }
 async function queryStepFun(ansi = false) {
     const cookies = loadStepFunCookies();
@@ -1893,18 +2867,22 @@ async function queryStepFun(ansi = false) {
         }
         const windows = [];
         if (rateLimit) {
-            const fiveHourRemain = Math.round(rateLimit.five_hour_usage_left_rate * 100);
-            windows.push({
-                label: "5-hour rolling",
-                remaining: fiveHourRemain,
-                resetAt: stepfunResetAt(rateLimit.five_hour_usage_reset_time),
-            });
-            const weeklyRemain = Math.round(rateLimit.weekly_usage_left_rate * 100);
-            windows.push({
-                label: "Weekly",
-                remaining: weeklyRemain,
-                resetAt: stepfunResetAt(rateLimit.weekly_usage_reset_time),
-            });
+            if (typeof rateLimit.five_hour_usage_left_rate === "number" &&
+                Number.isFinite(rateLimit.five_hour_usage_left_rate)) {
+                windows.push({
+                    label: "5-hour rolling",
+                    remaining: Math.round(clampPercent(rateLimit.five_hour_usage_left_rate * 100)),
+                    resetAt: stepfunResetAt(rateLimit.five_hour_usage_reset_time),
+                });
+            }
+            if (typeof rateLimit.weekly_usage_left_rate === "number" &&
+                Number.isFinite(rateLimit.weekly_usage_left_rate)) {
+                windows.push({
+                    label: "Weekly",
+                    remaining: Math.round(clampPercent(rateLimit.weekly_usage_left_rate * 100)),
+                    resetAt: stepfunResetAt(rateLimit.weekly_usage_reset_time),
+                });
+            }
         }
         const footer = [];
         if (def?.support_models?.length) {
@@ -2080,19 +3058,21 @@ async function queryQwenCloud(ansi = false) {
             const total = Number(equity.TotalValue);
             const surplus = Number(equity.SurplusValue);
             const used = total - surplus;
-            const remainPct = total > 0 ? Math.round((surplus / total) * 100) : 100;
+            const remainPct = total > 0 ? Math.round(clampPercent((surplus / total) * 100)) : 100;
             windows.push({
                 label: `Credits (${detail.RemainingDays ?? "?"}d remaining)`,
                 remaining: remainPct,
                 detail: [`Used: ${used.toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${total.toLocaleString(undefined, { maximumFractionDigits: 0 })}`],
-                resetAt: group?.NextCycleFlushTime
-                    ? new Date(group.NextCycleFlushTime).toISOString()
-                    : undefined,
+                resetAt: epochToIso(group?.NextCycleFlushTime),
             });
         }
         const footer = [];
         if (detail.EndTime) {
-            footer.push(`Cycle:          ${new Date(detail.StartTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })} — ${new Date(detail.EndTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`);
+            const start = epochToMs(detail.StartTime);
+            const end = epochToMs(detail.EndTime);
+            if (start !== undefined && end !== undefined) {
+                footer.push(`Cycle:          ${new Date(start).toLocaleDateString("en-US", { month: "short", day: "numeric" })} — ${new Date(end).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`);
+            }
         }
         return {
             success: true,
@@ -2228,7 +3208,7 @@ async function queryMistralAccount(account, fallbackLabel) {
         if (usagePercentage === null) {
             return { error: `${fallbackLabel}: failed to parse usage_percentage from response.` };
         }
-        const remainPct = Math.round(100 - usagePercentage);
+        const remainPct = Math.round(clampPercent(100 - usagePercentage));
         const identity = email ?? account.alias ?? fallbackLabel;
         const sectionHeader = account.alias && email && account.alias !== email
             ? `${email} (${account.alias})`
@@ -2236,8 +3216,8 @@ async function queryMistralAccount(account, fallbackLabel) {
         return {
             windows: [
                 {
-                    label: "Vibe Usage",
-                    trendKey: `Vibe Usage · ${identity}`,
+                    label: "Monthly Vibe budget",
+                    trendKey: `Monthly Vibe budget · ${identity}`,
                     sectionHeader,
                     remaining: remainPct,
                     resetAt: resetAt ?? undefined,
@@ -2374,9 +3354,8 @@ async function queryBytePlus(_a, ansi = false) {
                 continue; // skip malformed entries
             }
             const label = level.charAt(0).toUpperCase() + level.slice(1);
-            const remaining = Math.round(100 - percent);
-            const resetDate = new Date(resetTs * 1000);
-            const resetAt = Number.isFinite(resetDate.getTime()) ? resetDate.toISOString() : undefined;
+            const remaining = Math.round(clampPercent(100 - percent));
+            const resetAt = epochToIso(resetTs);
             windows.push({ label, remaining, resetAt });
         }
         return {
@@ -2506,13 +3485,109 @@ async function fetchAtlasRecentCosts(cookie, accountUuid, windowMs = 86_400_000,
     }
 }
 function formatAtlasExpiry(expiredAt) {
-    if (!expiredAt || !Number.isFinite(expiredAt))
-        return { text: "-" };
-    const ms = expiredAt > 1e12 ? expiredAt : expiredAt * 1000;
-    const date = new Date(ms);
-    if (Number.isNaN(date.getTime()))
-        return { text: "-" };
-    return { iso: date.toISOString(), text: formatResetAt(date.toISOString()) };
+    const iso = epochToIso(expiredAt);
+    return iso ? { iso, text: formatResetAt(iso) } : { text: "-" };
+}
+function atlasNumber(value) {
+    if (value === null || value === undefined)
+        return undefined;
+    if (typeof value === "string" && !value.trim())
+        return undefined;
+    const parsed = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+function atlasCredits(value) {
+    return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+function atlasQuotaWindows(subscription, expiry) {
+    const planType = subscription.PlanType.trim().toLowerCase();
+    const isPackage = planType === "package";
+    const balance = atlasNumber(subscription.balance);
+    const dailyQuota = atlasNumber(subscription.DailyQuota);
+    const packageQuota = atlasNumber(subscription.PackageQuota);
+    const totalQuota = isPackage
+        ? packageQuota
+        : atlasNumber(subscription.total_quota) ?? dailyQuota;
+    const usedQuota = atlasNumber(subscription.used_quota);
+    const weeklyQuota = atlasNumber(subscription.weekly_quota);
+    const weeklyCap = atlasNumber(subscription.weekly_cap) ?? 0;
+    const weeklyRemaining = atlasNumber(subscription.weekly_remaining) ?? balance;
+    const weeklyUsed = atlasNumber(subscription.weekly_used) ?? (weeklyQuota !== undefined && weeklyRemaining !== undefined
+        ? Math.max(0, weeklyQuota - weeklyRemaining)
+        : undefined);
+    const trendPrefix = `${subscription.PlanName} · ${subscription.PlanID}`;
+    const windows = [];
+    if (isPackage && totalQuota !== undefined && totalQuota > 0 && balance !== undefined) {
+        windows.push({
+            label: "Pay-as-you-go pack",
+            trendKey: `${trendPrefix} · Package`,
+            remaining: Math.round(clampPercent((balance / totalQuota) * 100)),
+            resetAt: expiry.iso,
+            detail: [`Used: ${atlasCredits(Math.max(0, totalQuota - balance))} / ${atlasCredits(totalQuota)} credits`],
+        });
+        return windows;
+    }
+    // Current monthly subscriptions use a dual cap. weekly_cap is the backend's
+    // explicit signal that the weekly pool is enforced; total_quota/used_quota
+    // is the independent full-cycle pool.
+    if (weeklyCap > 0 &&
+        weeklyQuota !== undefined && weeklyQuota > 0 &&
+        weeklyRemaining !== undefined) {
+        const detail = weeklyUsed !== undefined
+            ? [`Used this week: ${atlasCredits(weeklyUsed)} / ${atlasCredits(weeklyQuota)} credits`]
+            : undefined;
+        windows.push({
+            label: "Weekly plan cap",
+            trendKey: `${trendPrefix} · Weekly`,
+            remaining: Math.round(clampPercent((weeklyRemaining / weeklyQuota) * 100)),
+            resetAt: nextWeeklyResetIso(),
+            detail,
+        });
+    }
+    if (totalQuota !== undefined && totalQuota > 0) {
+        const totalRemaining = usedQuota !== undefined
+            ? Math.max(0, totalQuota - usedQuota)
+            : weeklyCap <= 0 && balance !== undefined
+                ? balance
+                : undefined;
+        if (totalRemaining !== undefined) {
+            windows.push({
+                label: weeklyCap > 0 ? "Monthly plan total" : "Plan total",
+                trendKey: `${trendPrefix} · Total`,
+                remaining: Math.round(clampPercent((totalRemaining / totalQuota) * 100)),
+                resetAt: expiry.iso,
+                detail: [`Used: ${atlasCredits(Math.max(0, totalQuota - totalRemaining))} / ${atlasCredits(totalQuota)} credits`],
+            });
+        }
+    }
+    // Backward compatibility for AtlasCloud's former daily-reset response.
+    if (!windows.length && dailyQuota !== undefined && dailyQuota > 0 && balance !== undefined) {
+        windows.push({
+            label: "Daily quota (legacy plan)",
+            trendKey: `${trendPrefix} · Daily`,
+            remaining: Math.round(clampPercent((balance / dailyQuota) * 100)),
+            resetAt: nextDailyResetIso(),
+            detail: [`Used today: ${atlasCredits(Math.max(0, dailyQuota - balance))} / ${atlasCredits(dailyQuota)} credits`],
+        });
+    }
+    return windows;
+}
+function atlasRecentCostLines(recent) {
+    if (!recent?.items.length)
+        return [];
+    const lines = ["", `Recent calls (last 24h, ${recent.total} total, top 5):`];
+    const top = recent.items.slice(0, 5);
+    for (const item of top) {
+        const time = epochToIso(item.finishTime)?.slice(11, 16) ?? "--:--";
+        const cost = Math.round(Number(item.amount ?? 0)).toLocaleString();
+        const input = item.usage?.input ?? 0;
+        const output = item.usage?.output ?? 0;
+        lines.push(`  ${time}  ${item.model.padEnd(30)} ${String(input).padStart(6)}in/${String(output).padStart(4)}out  -${cost}`);
+    }
+    const used = top.reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
+    if (Number.isFinite(used))
+        lines.push(`  (top-5 24h burn: -${Math.round(used).toLocaleString()})`);
+    return lines;
 }
 async function queryAtlasCloud(_a, ansi = false) {
     const cookies = loadAtlasCookies();
@@ -2556,8 +3631,10 @@ async function queryAtlasCloud(_a, ansi = false) {
     }
     try {
         const subs = await fetchAtlasCodePlan(cookies.cookie, accountUuid);
-        const active = subs.find((s) => /active/i.test(s.Status)) ?? subs[0];
-        if (!active) {
+        const activeSubs = subs.filter((subscription) => /active/i.test(subscription.Status));
+        if (!activeSubs.length && subs[0])
+            activeSubs.push(subs[0]);
+        if (!activeSubs.length) {
             return {
                 success: true,
                 cards: [
@@ -2570,55 +3647,42 @@ async function queryAtlasCloud(_a, ansi = false) {
                 ],
             };
         }
-        const dailyQuota = Number(active.DailyQuota);
-        const balance = Number(active.balance);
-        const remainingPct = Number.isFinite(dailyQuota) && dailyQuota > 0
-            ? Math.max(0, Math.min(100, Math.round((balance / dailyQuota) * 100)))
-            : 0;
-        const expiry = formatAtlasExpiry(active.ExpiredAt);
-        const header = [];
-        if (accountEmail)
-            header.push(`Account:        ${accountEmail}`);
-        header.push(`Plan:           AtlasCloud ${active.PlanName} ($${active.Price}/${active.PlanType})`);
-        header.push(`Status:         ${active.Status}${active.AutoRenewal ? " · auto-renew" : ""}`);
-        const detail = [];
-        if (Number.isFinite(balance) && Number.isFinite(dailyQuota)) {
-            detail.push(`Used today:     ${Math.round(dailyQuota - balance).toLocaleString()} / ${dailyQuota.toLocaleString()}`);
-        }
-        const windows = [
-            {
-                label: "Daily quota",
-                remaining: remainingPct,
-                detail: detail.length ? detail : undefined,
-                resetAt: nextDailyResetIso(),
-            },
-        ];
-        const footer = [];
-        if (expiry.iso)
-            footer.push(`Subscription expires: ${expiry.text} (${expiry.iso.slice(0, 10)})`);
-        if (jwtExp) {
-            const cookieExp = new Date(jwtExp * 1000).toISOString();
-            footer.push(`Cookie expires:       ${formatResetAt(cookieExp)} (${cookieExp.slice(0, 10)})`);
-        }
         const recent = await fetchAtlasRecentCosts(cookies.cookie, accountUuid, 86_400_000, 5);
-        if (recent && recent.items.length) {
-            const usedToday = recent.items.reduce((s, it) => s + Number(it.amount ?? 0), 0);
-            footer.push("");
-            footer.push(`Recent calls (last 24h, ${recent.total} total, top 5):`);
-            for (const it of recent.items.slice(0, 5)) {
-                const time = new Date(it.finishTime).toISOString().slice(11, 16);
-                const cost = Math.round(Number(it.amount ?? 0)).toLocaleString();
-                const inT = it.usage?.input ?? 0;
-                const outT = it.usage?.output ?? 0;
-                footer.push(`  ${time}  ${it.model.padEnd(30)} ${String(inT).padStart(6)}in/${String(outT).padStart(4)}out  -${cost}`);
+        const multi = activeSubs.length > 1;
+        const cards = activeSubs.map((active, index) => {
+            const expiry = formatAtlasExpiry(active.ExpiredAt);
+            const header = [];
+            if (accountEmail || accountName) {
+                header.push(`Account:        ${accountEmail ?? accountName}`);
             }
-            if (Number.isFinite(usedToday)) {
-                footer.push(`  (top-5 24h burn: -${Math.round(usedToday).toLocaleString()})`);
+            const price = active.Price ? ` ($${active.Price}/${active.PlanType})` : ` (${active.PlanType})`;
+            header.push(`Plan:           AtlasCloud ${active.PlanName}${price}`);
+            header.push(`Status:         ${active.Status}${active.AutoRenewal ? " · auto-renew" : ""}`);
+            const footer = [];
+            if (expiry.iso) {
+                footer.push(`Plan expires:   ${expiry.text} (${expiry.iso.slice(0, 10)})`);
             }
-        }
+            if (index === 0 && jwtExp) {
+                const cookieExp = epochToIso(jwtExp);
+                if (cookieExp) {
+                    footer.push(`Cookie expires: ${formatResetAt(cookieExp)} (${cookieExp.slice(0, 10)})`);
+                }
+            }
+            if (index === 0)
+                footer.push(...atlasRecentCostLines(recent));
+            const windows = atlasQuotaWindows(active, expiry);
+            if (!windows.length)
+                footer.push("No recognized quota counters were returned for this plan.");
+            return {
+                subtitle: multi ? `${active.PlanName} · ${active.PlanType}` : undefined,
+                header,
+                windows: windows.length ? windows : undefined,
+                footer: footer.length ? footer : undefined,
+            };
+        });
         return {
             success: true,
-            cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+            cards,
         };
     }
     catch (err) {
@@ -2633,6 +3697,14 @@ function nextDailyResetIso() {
     const now = new Date();
     const reset = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
     return reset.toISOString();
+}
+// Current AtlasCloud subscriptions reset the weekly cap every Monday at
+// 00:00 UTC, independently of the plan-expiry/monthly total.
+function nextWeeklyResetIso() {
+    const now = new Date();
+    const day = now.getUTCDay();
+    const daysUntilMonday = day === 1 ? 7 : (8 - day) % 7;
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntilMonday)).toISOString();
 }
 // ============================================================
 // Ollama Cloud (ollama.com/settings)
@@ -3027,11 +4099,8 @@ async function queryLongCat(_ansi = false) {
 //   per-window resetAt (epoch ms); pay-as-you-go accounts only show balance.
 const NANOGPT_BASE_URL = "https://nano-gpt.com";
 const NANOGPT_MULTI_AUTH_DUMMY_KEY = "opencode-nanogpt-multi-key";
-function nanoGptResetAt(ms) {
-    if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0)
-        return undefined;
-    const d = new Date(ms);
-    return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+function nanoGptResetAt(value) {
+    return epochToIso(value);
 }
 function isRealNanoGptKey(key) {
     return typeof key === "string" && key.trim() !== "" && key.trim() !== NANOGPT_MULTI_AUTH_DUMMY_KEY;
@@ -3098,17 +4167,24 @@ function humanCount(n) {
 function nanoGptWindow(label, w, limit, unit) {
     if (!w)
         return null;
-    const used = w.used ?? 0;
-    const remaining = w.remaining ?? 0;
-    const total = typeof limit === "number" && limit > 0 ? limit : used + remaining;
+    const used = typeof w.used === "number" && Number.isFinite(w.used) ? w.used : 0;
+    const explicitRemaining = typeof w.remaining === "number" && Number.isFinite(w.remaining) ? w.remaining : undefined;
+    const total = typeof limit === "number" && Number.isFinite(limit) && limit > 0
+        ? limit
+        : explicitRemaining !== undefined
+            ? used + explicitRemaining
+            : 0;
+    const remaining = explicitRemaining ?? (total > 0 ? Math.max(0, total - used) : 0);
     let remainPct;
     if (total > 0)
-        remainPct = Math.round((remaining / total) * 100);
-    else if (typeof w.percentUsed === "number")
-        remainPct = Math.round(100 - w.percentUsed * 100);
+        remainPct = Math.round(clampPercent((remaining / total) * 100));
+    else if (typeof w.percentUsed === "number" && Number.isFinite(w.percentUsed)) {
+        const usedPercent = w.percentUsed <= 1 ? w.percentUsed * 100 : w.percentUsed;
+        remainPct = Math.round(clampPercent(100 - usedPercent));
+    }
     else
         remainPct = 100;
-    const fmt = unit === "tokens" ? humanCount : (x) => String(x);
+    const fmt = unit === "tokens" ? humanCount : (x) => x.toLocaleString();
     return {
         label,
         remaining: remainPct,
@@ -3151,9 +4227,12 @@ async function queryNanoGptCredential(credential, subtitle) {
     if (credential.cooldownUntil && credential.cooldownUntil > Date.now()) {
         footer.push(`Pool cooldown:  ${formatDuration(Math.ceil((credential.cooldownUntil - Date.now()) / 1000))}`);
     }
-    if (sub?.active) {
-        header.push(`Plan:           Subscription${sub.provider ? ` (${sub.provider})` : ""}`);
+    if (sub?.active || sub?.state === "grace") {
+        const state = sub.state && sub.state !== "active" ? ` · ${sub.state}` : "";
+        header.push(`Plan:           Subscription${sub.provider ? ` (${sub.provider})` : ""}${state}`);
         const built = [
+            nanoGptWindow("Daily subscription operations", sub.daily, sub.limits?.daily, "operations"),
+            nanoGptWindow("Monthly subscription operations", sub.monthly, sub.limits?.monthly, "operations"),
             nanoGptWindow("Weekly input tokens", sub.weeklyInputTokens, sub.limits?.weeklyInputTokens, "tokens"),
             nanoGptWindow("Daily input tokens", sub.dailyInputTokens, sub.limits?.dailyInputTokens, "tokens"),
             nanoGptWindow("Daily images", sub.dailyImages, sub.limits?.dailyImages, "images"),
@@ -3164,9 +4243,12 @@ async function queryNanoGptCredential(credential, subtitle) {
         const end = sub.period?.currentPeriodEnd;
         if (end)
             footer.push(`${sub.cancelAtPeriodEnd ? "Ends" : "Renews"}:         ${formatResetAt(end)}`);
+        if (sub.state === "grace" && sub.graceUntil) {
+            footer.push(`Grace access ends: ${formatResetAt(sub.graceUntil)}`);
+        }
     }
     else {
-        header.push("Plan:           Pay-as-you-go");
+        header.push(`Plan:           Pay-as-you-go${sub?.state ? ` (subscription ${sub.state})` : ""}`);
     }
     return { subtitle, header, windows, footer: footer.length ? footer : undefined };
 }
@@ -4045,18 +5127,22 @@ export async function queryMyStatus(args) {
     const cacheTtlMs = Math.max(0, cfg.cacheTtlSec ?? 0) * 1000;
     const fresh = args.fresh === true;
     const auth = await loadAuthMerged();
-    if (Object.keys(auth).length === 0) {
-        const tried = candidateDirs("data").map((d) => join(d, "auth.json"));
-        return {
-            ran: [],
-            fetchedAt: Date.now(),
-            authError: `\u274c No auth.json found in any opencode profile.\nLooked at: ${tried.join(", ")}`,
-        };
-    }
+    const authMissing = Object.keys(auth).length === 0;
     const providers = selectProviders(cfg, args.only, args.exclude);
     const cache = loadCache();
     const ran = await Promise.all(providers.map((p) => runProvider(p, auth, useAnsi, cache, cacheTtlMs, fresh, 15_000)));
     saveCache(cache);
+    // Local/dashboard providers (including Antigravity Tools) do not require an
+    // OpenCode auth.json. Preserve the old guidance only when every selected
+    // provider was skipped specifically because no native auth was available.
+    if (authMissing && ran.every(({ result }) => result === null)) {
+        const tried = candidateDirs("data").map((d) => join(d, "auth.json"));
+        return {
+            ran,
+            fetchedAt: Date.now(),
+            authError: `\u274c No auth.json found in any opencode profile.\nLooked at: ${tried.join(", ")}`,
+        };
+    }
     return { ran, fetchedAt: Date.now() };
 }
 export function formatMyStatus(snapshot, args, opts = {}) {
@@ -4105,7 +5191,7 @@ async function runMyStatus(args) {
 export const MyStatusPlugin = async () => ({
     tool: {
         mystatus: tool({
-            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity), GitHub Copilot, OpenCode Go+Zen, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,longcat,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
+            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,longcat,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
             args: {
                 format: tool.schema.string().optional(),
                 threshold: tool.schema.number().optional(),

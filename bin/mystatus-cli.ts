@@ -74,7 +74,8 @@ Options:
 
 Watch mode keys: j/k or arrows scroll, g/G top/bottom, r refresh, q quit
 
-Providers: openai,anthropic,google,copilot,opencode-go,poe,zai,xai,minimax,nanogpt`);
+Providers: anthropic,atlascloud,byteplus,copilot,google,longcat,minimax,mistral,
+           nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai`);
 }
 
 const rawArgv = process.argv.slice(2).filter((a) => a !== "--");
