@@ -150,6 +150,12 @@ export function reloadConfig(): void {
   if (api) refreshConfig(api);
 }
 
+/** Re-read desktop prefs from main (e.g. after a settings save). */
+export function reloadPrefs(): void {
+  const api = getBridge();
+  if (api) refreshPrefs(api);
+}
+
 export function setSortMode(mode: SortMode): void {
   patch({ controls: { ...state.controls, sortMode: mode }, controlsNotice: null });
 }

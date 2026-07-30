@@ -33,6 +33,11 @@ const {
   onExternalChange,
   verifyConfig,
   ConfigVerifyError,
+  readConfigStatus,
+  saveSettingsSections,
+  resetConfigFile,
+  ConfigCorruptError,
+  ConfigGuardError,
 } = await import("./config-io.js");
 
 function configFile(): string {
@@ -337,6 +342,72 @@ describe("saveConfigSections failure: read-only file", () => {
 describe("configPath", () => {
   it("resolves under the redirected HOME", () => {
     expect(configPath()).toBe(join(TMP_HOME, ".config", "opencode", "mystatus.json"));
+  });
+});
+
+describe("readConfigStatus", () => {
+  it("reports ok with the parsed config", () => {
+    seedConfig(JSON.stringify({ sort: "name" }));
+    const status = readConfigStatus();
+    expect(status.status).toBe("ok");
+    if (status.status === "ok") expect(status.config.sort).toBe("name");
+    expect(status.path).toBe(configFile());
+  });
+
+  it("reports missing when the file does not exist", () => {
+    expect(readConfigStatus()).toMatchObject({ status: "missing", path: configFile() });
+  });
+
+  it("reports corrupt with the parse error for invalid JSON", () => {
+    seedConfig("{ not json");
+    const status = readConfigStatus();
+    expect(status.status).toBe("corrupt");
+    if (status.status === "corrupt") expect(status.error.length).toBeGreaterThan(0);
+  });
+});
+
+describe("saveSettingsSections policy", () => {
+  it("refuses to overwrite a corrupt file and leaves the bytes untouched", async () => {
+    seedConfig("{ not json");
+    await expect(saveSettingsSections({ sort: "name" })).rejects.toThrow(ConfigCorruptError);
+    expect(readFileSync(configFile(), "utf8")).toBe("{ not json");
+  });
+
+  it("refuses a providers payload missing hidden when hidden exists on disk", async () => {
+    seedConfig(JSON.stringify({ providers: { hidden: ["poe"], disabled: ["xai"] } }));
+    await expect(
+      saveSettingsSections({ providers: { disabled: ["xai", "ollama"], order: [] } }),
+    ).rejects.toThrow(ConfigGuardError);
+    expect(readConfigRaw().providers?.disabled).toEqual(["xai"]);
+  });
+
+  it("accepts a fully-formed providers payload and writes the exact disabled array", async () => {
+    seedConfig(JSON.stringify({ providers: { hidden: ["poe"], disabled: ["xai"] } }));
+    const merged = await saveSettingsSections({
+      providers: { disabled: ["xai", "ollama"], order: [], hidden: ["poe"] },
+    });
+    expect(merged.providers?.disabled).toEqual(["xai", "ollama"]);
+    expect(merged.providers?.hidden).toEqual(["poe"]);
+    expect(readConfigRaw().providers?.disabled).toEqual(["xai", "ollama"]);
+  });
+
+  it("creates the file on a missing config", async () => {
+    await expect(saveSettingsSections({ sort: "name" })).resolves.toMatchObject({ sort: "name" });
+  });
+});
+
+describe("resetConfigFile", () => {
+  it("replaces a corrupt file with an empty config", async () => {
+    seedConfig("{ not json");
+    await expect(resetConfigFile()).resolves.toEqual({});
+    expect(readConfigRaw()).toEqual({});
+    expect(readConfigStatus().status).toBe("ok");
+  });
+
+  it("refuses to reset a file that parses cleanly", async () => {
+    seedConfig(JSON.stringify({ sort: "name" }));
+    await expect(resetConfigFile()).rejects.toThrow(ConfigGuardError);
+    expect(readConfigRaw().sort).toBe("name");
   });
 });
 

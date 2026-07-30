@@ -37,7 +37,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { MyStatusConfig } from "../shared/ipc.js";
+import type { ConfigStatus, MyStatusConfig } from "../shared/ipc.js";
 
 const CONFIG_FILE = "mystatus.json";
 const CONFIG_DIR = join(homedir(), ".config", "opencode");
@@ -114,6 +114,29 @@ export function readConfigRaw(): MyStatusConfig {
     return JSON.parse(stripJsonComments(raw)) as MyStatusConfig;
   } catch {
     return {};
+  }
+}
+
+/**
+ * Strict read for the Settings page: unlike readConfigRaw, a file that exists
+ * but is unparseable reports `corrupt` (with the parse error) instead of
+ * silently resolving to `{}` — the GUI must refuse to overwrite a corrupt
+ * file until the user fixes it or explicitly resets.
+ */
+export function readConfigStatus(): ConfigStatus {
+  const path = configPath();
+  if (!existsSync(path)) return { status: "missing", path };
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (err) {
+    return { status: "corrupt", path, error: err instanceof Error ? err.message : String(err) };
+  }
+  try {
+    const config = JSON.parse(stripJsonComments(raw)) as MyStatusConfig;
+    return { status: "ok", path, config };
+  } catch (err) {
+    return { status: "corrupt", path, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -271,6 +294,86 @@ export function saveConfigSections(sections: Partial<MyStatusConfig>): Promise<M
     () => ({} as MyStatusConfig),
   );
   return next;
+}
+
+// ---------------------------------------------------------------------------
+// Settings-page save policy (todo 14)
+// ---------------------------------------------------------------------------
+// The Settings UI always sends FULLY FORMED nested sections (it spreads the
+// on-disk object before mutating), so a payload omitting a key the file
+// already has means the caller saved against stale state. Refusing loudly is
+// safer than relying on the deep merge to paper over the staleness. And a
+// corrupt file must never be overwritten by a merge that parsed it as {}.
+
+/** Thrown when mystatus.json exists but is unparseable — saves are refused. */
+export class ConfigCorruptError extends Error {
+  constructor(
+    message: string,
+    readonly path: string,
+  ) {
+    super(message);
+    this.name = "ConfigCorruptError";
+  }
+}
+
+/** Thrown when a settings payload is partially formed against the on-disk state. */
+export class ConfigGuardError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConfigGuardError";
+  }
+}
+
+const PROVIDER_SECTION_KEYS = ["disabled", "hidden", "order"] as const;
+
+function assertFullyFormedProviders(
+  sections: Partial<MyStatusConfig>,
+  onDisk: MyStatusConfig,
+): void {
+  const payload = sections.providers;
+  if (payload === undefined) return;
+  const disk = onDisk.providers ?? {};
+  const missing = PROVIDER_SECTION_KEYS.filter(
+    (key) => disk[key] !== undefined && payload[key] === undefined,
+  );
+  if (missing.length > 0) {
+    throw new ConfigGuardError(
+      `providers payload is missing ${missing.join(", ")} present on disk — re-read the config before saving`,
+    );
+  }
+}
+
+/**
+ * Save path for Settings-page sections: refuses while mystatus.json is
+ * corrupt (no overwrite until the user fixes or resets it), enforces
+ * fully-formed `providers` payloads, then delegates to the atomic
+ * read-modify-write of saveConfigSections.
+ */
+export async function saveSettingsSections(
+  sections: Partial<MyStatusConfig>,
+): Promise<MyStatusConfig> {
+  const status = readConfigStatus();
+  if (status.status === "corrupt") {
+    throw new ConfigCorruptError(
+      "mystatus.json is not parseable — fix or reset the file before saving",
+      status.path,
+    );
+  }
+  if (status.status === "ok") assertFullyFormedProviders(sections, status.config);
+  return saveConfigSections(sections);
+}
+
+/**
+ * Explicit recovery for a corrupt (or unreadable) mystatus.json: atomically
+ * replaces it with `{}`. Refused when the file parses — a reset must never
+ * destroy a valid config.
+ */
+export async function resetConfigFile(): Promise<MyStatusConfig> {
+  const status = readConfigStatus();
+  if (status.status === "ok") {
+    throw new ConfigGuardError("mystatus.json parses cleanly — reset is only allowed for a corrupt file");
+  }
+  return saveConfigSections({});
 }
 
 // ---------------------------------------------------------------------------
