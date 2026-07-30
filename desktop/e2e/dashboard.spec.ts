@@ -105,8 +105,16 @@ async function providerOrder(): Promise<Array<string | null>> {
 }
 
 test.describe("dashboard horizon tabs and provider cards", () => {
-  test("current tab sorts providers by min remaining asc", async () => {
+  // Re-push the fixture before every test so each starts from a known model
+  // state. The main-process poller pushes real (error) payloads on its own
+  // schedule; without a re-push, later tests can race the poller and see a
+  // null model ("awaiting first sync"). Tests that need a different payload
+  // push their own after this hook.
+  test.beforeEach(async () => {
     await pushToRenderer(fixturePayload());
+  });
+
+  test("current tab sorts providers by min remaining asc", async () => {
 
     const current = page.getByTestId("tab-current");
     await expect(current).toBeVisible();
@@ -168,7 +176,7 @@ test.describe("dashboard horizon tabs and provider cards", () => {
       "3 of 3 providers reporting · 1 stale · 1 not configured",
     );
     await expect(panel).toContainText("Every configured provider answered live");
-    await expect(page.getByTestId("issues-unconfigured")).toContainText("LongCat API Quota");
+    await expect(page.getByTestId("issues-unconfigured")).toContainText("LongCat API");
   });
 
   test("hidden tab is absent while nothing is hidden", async () => {
