@@ -1,0 +1,26 @@
+task-7 desktop-app — malformed history failure path
+===================================================
+Vitest (src/main/history.test.ts):
+✓ src/main/history.test.ts > parseHistory > parses a well-formed history file 1ms
+✓ src/main/history.test.ts > parseHistory > returns an empty series for malformed JSON instead of throwing 0ms
+✓ src/main/history.test.ts > parseHistory > returns an empty series for an unknown shape (version drift) 0ms
+✓ src/main/history.test.ts > parseHistory > tolerates a future version number with extra fields 0ms
+✓ src/main/history.test.ts > parseHistory > drops malformed snapshots and non-numeric values but keeps the rest 0ms
+✓ src/main/history.test.ts > coreApi.readHistory (tmp HOME) > reads a seeded history file 93ms
+✓ src/main/history.test.ts > coreApi.readHistory (tmp HOME) > returns an empty series when the file does not exist 0ms
+✓ src/main/history.test.ts > coreApi.readHistory (tmp HOME) > returns an empty series for a corrupt file 0ms
+✓ src/main/history.test.ts > coreApi.readHistory (tmp HOME) > is strictly read-only: never creates or mutates the file 1ms
+✓ src/main/history.test.ts > mystatus:history IPC wiring > registers the history channel and serves coreApi.readHistory 9ms
+Test Files  1 passed (1)
+Tests  10 passed (10)
+Malformed-history contract: parseHistory never throws — invalid JSON,
+unknown shapes (version drift), and per-snapshot corruption all degrade to
+an empty series ({version:1, snapshots:[]}); well-formed entries alongside
+garbage are preserved. coreApi.readHistory is asserted strictly read-only
+(no file creation, no mtime/content change).
+
+Playwright (e2e/trends.spec.ts test 2): history file overwritten with
+"{{{{ definitely not json" then a fresh view model pushed — the renderer
+shows the empty-state hint ("Trends appear after the second sync"), zero
+sparklines, and the shell + dashboard keep rendering (no white screen).
+Screenshot: task-7-desktop-app-fail.png.

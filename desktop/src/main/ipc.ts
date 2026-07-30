@@ -25,4 +25,5 @@ export function registerIpc(ipc: IpcMain): void {
   ipc.handle(CHANNELS.prefsGet, () => loadPrefs());
   ipc.handle(CHANNELS.prefsPatch, (_event, patch) => patchPrefs((patch ?? {}) as PrefsPatch));
   ipc.handle(CHANNELS.refresh, () => getPoller().forceRefresh());
+  ipc.handle(CHANNELS.history, () => coreApi.readHistory());
 }

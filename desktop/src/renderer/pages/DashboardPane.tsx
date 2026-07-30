@@ -3,6 +3,7 @@ import { ControlsBar } from "../components/ControlsBar";
 import { Dashboard } from "../components/Dashboard";
 import { PaneShell } from "../components/PaneShell";
 import { SummaryHeader } from "../components/SummaryHeader";
+import { TrendPanel } from "../components/TrendPanel";
 import { useStatusState } from "../lib/store";
 
 export function DashboardPane(): JSX.Element {
@@ -87,6 +88,8 @@ export function DashboardPane(): JSX.Element {
       </div>
 
       <Dashboard />
+
+      <TrendPanel />
     </PaneShell>
   );
 }

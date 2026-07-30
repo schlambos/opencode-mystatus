@@ -14,6 +14,7 @@ const api: Bridge = {
   getPrefs: () => ipcRenderer.invoke(CHANNELS.prefsGet),
   patchPrefs: (patch) => ipcRenderer.invoke(CHANNELS.prefsPatch, patch ?? {}),
   refresh: () => ipcRenderer.invoke(CHANNELS.refresh),
+  getHistory: () => ipcRenderer.invoke(CHANNELS.history),
   onViewModel: (cb) => {
     const handler = (_event: unknown, payload: unknown): void => {
       cb(payload as Parameters<typeof cb>[0]);

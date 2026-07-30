@@ -20,6 +20,7 @@ export const CHANNELS = {
   prefsPatch: "mystatus:prefs:patch",
   push: "mystatus:push",
   refresh: "mystatus:refresh",
+  history: "mystatus:history",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -175,6 +176,20 @@ export interface DesktopPrefs {
 /** Prefs patch: read-modify-write merged into mystatus-desktop.json. */
 export type PrefsPatch = Partial<DesktopPrefs>;
 
+// Trend history mirrors the core's internal HistoryFile shape
+// (plugin/mystatus.ts:6936-6943). Values are keyed "<cellTitle>::<label>"
+// (plugin/mystatus.ts:7046). Read-only to the desktop app — it never writes
+// this file.
+export interface HistorySnapshot {
+  ts: number;
+  values: Record<string, number>;
+}
+
+export interface HistoryResponse {
+  version: number;
+  snapshots: HistorySnapshot[];
+}
+
 // ---------------------------------------------------------------------------
 // Preload bridge surface
 // ---------------------------------------------------------------------------
@@ -193,6 +208,8 @@ export interface Bridge {
   onViewModel: (cb: (payload: PushPayload) => void) => () => void;
   /** Force an out-of-schedule refresh from the poller (todo 3). */
   refresh: () => Promise<void>;
+  /** Read the core's trend history file (todo 7). Read-only; empty on any failure. */
+  getHistory: () => Promise<HistoryResponse>;
 }
 
 declare global {

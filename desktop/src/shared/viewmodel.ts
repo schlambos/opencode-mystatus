@@ -3,7 +3,7 @@
 // whether an `unknown` push payload actually satisfies it, so the renderer
 // parses at the boundary and never trusts IPC input blindly.
 
-import type { MyStatusViewModel, PushPayload } from "./ipc.js";
+import type { HistoryResponse, MyStatusViewModel, PushPayload } from "./ipc.js";
 
 function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null && !Array.isArray(x);
@@ -24,6 +24,12 @@ export function isPushPayload(x: unknown): x is PushPayload {
   if (!isRecord(x)) return false;
   if (!isViewModelResult(x["model"])) return false;
   return typeof x["fetchedAt"] === "number" && typeof x["nextFetchAt"] === "number";
+}
+
+/** Shape check for the mystatus:history response (todo 7). */
+export function isHistoryResponse(x: unknown): x is HistoryResponse {
+  if (!isRecord(x)) return false;
+  return Array.isArray(x["snapshots"]);
 }
 
 /** Human-readable reason for a rejected payload, for the recoverable error panel. */

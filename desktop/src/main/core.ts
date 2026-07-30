@@ -23,7 +23,9 @@ import type {
   MyStatusConfig,
   ViewModelResult,
   ExportResponse,
+  HistoryResponse,
 } from "../shared/ipc.js";
+import { readHistory } from "./history.js";
 
 function isViewModel(value: ViewModelResult): value is MyStatusViewModel {
   return !("error" in value);
@@ -77,6 +79,15 @@ export const coreApi = {
   patchConfig(patch: Partial<MyStatusConfig>): MyStatusConfig {
     saveConfig(patch);
     return loadConfig();
+  },
+
+  /**
+   * Read the core's trend history (plugin/mystatus.ts:6940-6960). Read-only:
+   * never writes the file. Version-tolerant — unknown/malformed shapes
+   * resolve to an empty series rather than throwing.
+   */
+  readHistory(): HistoryResponse {
+    return readHistory();
   },
 } as const;
 

@@ -31,6 +31,20 @@ export const toneTextClass: Record<StatusTone, string> = {
   dead: "text-status-dead",
 };
 
+export const toneFillClass: Record<StatusTone, string> = {
+  ok: "fill-status-ok",
+  warn: "fill-status-warn",
+  low: "fill-status-low",
+  dead: "fill-status-dead",
+};
+
+export const toneStrokeClass: Record<StatusTone, string> = {
+  ok: "stroke-status-ok",
+  warn: "stroke-status-warn",
+  low: "stroke-status-low",
+  dead: "stroke-status-dead",
+};
+
 // PARITY: plugin/tui.ts:180-187 (fmtDur) — "1d 2h", "3h 12m", "45m".
 export function formatDuration(sec: number): string {
   const d = Math.floor(sec / 86400);

@@ -1,0 +1,60 @@
+task-7 desktop-app — trend sparklines + live countdowns (happy path)
+====================================================================
+Series key derivation (cited from plugin core, working tree):
+  recordSnapshot keys history values as `${m.cellTitle}::${m.label}`
+    — plugin/mystatus.ts:7046
+  makeTrendFn looks up series.get(`${cellTitle}::${label}`)
+    — plugin/mystatus.ts:6998
+  View model carries both halves verbatim:
+    provider.name === cell.title === WindowMetric.cellTitle
+      — plugin/mystatus.ts:7370 (name: cell.title), 6291 (cellTitle: title), 6254 (title)
+    window.label === WindowMetric.label === (w.trendKey ?? w.label)
+      — plugin/mystatus.ts:7374 (label: m.label), 6280 (metricLabel)
+  => renderer key = `${provider.name}::${window.label}` — exact match, no guessing.
+  History file: ~/.config/opencode/mystatus-history.json, shape
+  {version, snapshots:[{ts, values}]} (plugin/mystatus.ts:6940-6943), read-only.
+
+Vitest — src/main/history.test.ts + src/renderer/components/Sparkline.test.tsx:
+✓ src/renderer/components/Sparkline.test.tsx > seriesKey > joins provider name and window label exactly like the core 1ms
+✓ src/renderer/components/Sparkline.test.tsx > buildSeriesMap > groups snapshot values per key in snapshot order 0ms
+✓ src/renderer/components/Sparkline.test.tsx > formatCoreDuration (parity with plugin/mystatus.ts:246-257) > keeps every non-zero unit and falls back to minutes 0ms
+✓ src/renderer/components/Sparkline.test.tsx > formatCoreDuration (parity with plugin/mystatus.ts:246-257) > clamps negatives and rejects non-finite input 0ms
+✓ src/renderer/components/Sparkline.test.tsx > sparkTone (parity with plugin/mystatus.ts:6971) > colors at the core's fixed 50/25 thresholds 0ms
+✓ src/renderer/components/Sparkline.test.tsx > computeTrend (parity with plugin/mystatus.ts:6989-7033) > renders the core's compact drain delta 0ms
+✓ src/renderer/components/Sparkline.test.tsx > computeTrend (parity with plugin/mystatus.ts:6989-7033) > adds the age suffix and time-to-empty projection in full mode 0ms
+✓ src/renderer/components/Sparkline.test.tsx > computeTrend (parity with plugin/mystatus.ts:6989-7033) > suppresses the projection when the window resets first 0ms
+✓ src/renderer/components/Sparkline.test.tsx > computeTrend (parity with plugin/mystatus.ts:6989-7033) > renders a gain delta with the full-mode age suffix 0ms
+✓ src/renderer/components/Sparkline.test.tsx > computeTrend (parity with plugin/mystatus.ts:6989-7033) > treats a jump above +5 as a reset 0ms
+✓ src/renderer/components/Sparkline.test.tsx > computeTrend (parity with plugin/mystatus.ts:6989-7033) > treats movement within ±1 as flat 0ms
+✓ src/renderer/components/Sparkline.test.tsx > computeTrend (parity with plugin/mystatus.ts:6989-7033) > keeps boundary deltas on the core's branches (+5 is a gain, -1 is a drain) 0ms
+✓ src/renderer/components/Sparkline.test.tsx > computeTrend (parity with plugin/mystatus.ts:6989-7033) > prints fractional deltas verbatim like the core 0ms
+✓ src/renderer/components/Sparkline.test.tsx > computeTrend (parity with plugin/mystatus.ts:6989-7033) > returns null with no history (first run shows no trend) 0ms
+✓ src/renderer/components/Sparkline.test.tsx > computeTrend (parity with plugin/mystatus.ts:6989-7033) > caps the sparkline at the last 10 points including the live value 0ms
+✓ src/renderer/components/Sparkline.test.tsx > <Sparkline /> > renders one colored point per value plus a live ring on the last 4ms
+✓ src/renderer/components/Sparkline.test.tsx > <Sparkline /> > renders nothing with fewer than two points 0ms
+✓ src/renderer/components/Sparkline.test.tsx > <TrendRow /> > renders delta, sparkline, and projection in the core's part order 0ms
+✓ src/renderer/components/Sparkline.test.tsx > <TrendRow /> > omits the projection in compact mode 1ms
+✓ src/main/history.test.ts > parseHistory > parses a well-formed history file 1ms
+✓ src/main/history.test.ts > parseHistory > returns an empty series for malformed JSON instead of throwing 0ms
+✓ src/main/history.test.ts > parseHistory > returns an empty series for an unknown shape (version drift) 0ms
+✓ src/main/history.test.ts > parseHistory > tolerates a future version number with extra fields 0ms
+✓ src/main/history.test.ts > parseHistory > drops malformed snapshots and non-numeric values but keeps the rest 0ms
+✓ src/main/history.test.ts > coreApi.readHistory (tmp HOME) > reads a seeded history file 85ms
+✓ src/main/history.test.ts > coreApi.readHistory (tmp HOME) > returns an empty series when the file does not exist 0ms
+✓ src/main/history.test.ts > coreApi.readHistory (tmp HOME) > returns an empty series for a corrupt file 0ms
+✓ src/main/history.test.ts > coreApi.readHistory (tmp HOME) > is strictly read-only: never creates or mutates the file 1ms
+✓ src/main/history.test.ts > mystatus:history IPC wiring > registers the history channel and serves coreApi.readHistory 9ms
+Test Files  2 passed (2)
+Tests  29 passed (29)
+Playwright — e2e/trends.spec.ts (temp-HOME seeded history, trend:full):
+Running 2 tests using 1 worker
+  ✓  1 [electron] › e2e/trends.spec.ts:122:3 › trend sparklines and live countdowns › seeded history renders sparklines with per-point colors, deltas, and projections (2.2s)
+  ✓  2 [electron] › e2e/trends.spec.ts:157:3 › trend sparklines and live countdowns › malformed history degrades to no trend rows instead of crashing (95ms)
+  2 passed (3.1s)
+
+E2E asserts: sparkline per-point fills (green/yellow/red via core 50/25
+thresholds, mystatus.ts:6971), delta strings ▼3%/2h · ▼9%/1h · ▼1%/2h,
+projections ~2d to empty / ~20m to empty (suppressed when depletion is
+slower than the reset), live countdowns (3d 23h / 1h 9m / 59m), mode badge
+from mystatus.json trend:full, snapshot count, "collecting…" for windows
+with <1 history point. Screenshot: task-7-desktop-app.png.
