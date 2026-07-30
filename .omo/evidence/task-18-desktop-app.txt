@@ -1,0 +1,185 @@
+=== task-18: electron-builder packaging + gated updater ===
+
+## typecheck
+
+> mystatus-desktop@0.0.0 typecheck
+> tsc --noEmit -p tsconfig.json
+
+
+## build (electron-vite build)
+
+> mystatus-desktop@0.0.0 build
+> electron-vite build
+
+vite v7.3.6 building ssr environment for production...
+transforming...
+✓ 247 modules transformed.
+rendering chunks...
+out/main/index.js                 203.75 kB
+out/main/chunks/main-DpUDPEDB.js  566.22 kB
+✓ built in 618ms
+vite v7.3.6 building ssr environment for production...
+transforming...
+✓ 2 modules transformed.
+rendering chunks...
+out/preload/index.js  1.37 kB
+✓ built in 6ms
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 54 modules transformed.
+rendering chunks...
+../../out/renderer/index.html                   0.63 kB
+../../out/renderer/assets/index-ChmZw1n2.css   38.86 kB
+../../out/renderer/assets/index-62_Nltm8.js   628.34 kB
+✓ built in 324ms
+
+## electron-builder --dir
+  • electron-builder  version=26.15.3 os=27.0.0
+  • loaded configuration  file=/Users/matt/Repos/mystatus/desktop/electron-builder.yml
+  • author is missed in the package.json  appPackageFile=/Users/matt/Repos/mystatus/desktop/package.json
+  • executing @electron/rebuild  electronVersion=43.2.0 arch=arm64 buildFromSource=false workspaceRoot=/Users/matt/Repos/mystatus/desktop projectDir=./ appDir=./
+  • installing native dependencies  arch=arm64
+  • preparing       moduleName=msgpackr-extract arch=arm64
+  • finished        moduleName=msgpackr-extract arch=arm64
+  • completed installing native dependencies
+  • packaging       platform=darwin arch=arm64 electron=43.2.0 appOutDir=release/mac-arm64
+  • downloaded      label=electron progress=100%
+  • downloaded electron zip extracted successfully  output=/Users/matt/Repos/mystatus/desktop/release/mac-arm64
+  • searching for node modules  pm=npm searchDir=/Users/matt/Repos/mystatus/desktop
+  • default Electron icon is used  reason=application icon is not set
+  • skipped macOS application code signing  reason=cannot find valid "Developer ID Application" identity or custom non-Apple code signing certificate, it could cause some undefined behaviour, e.g. macOS localized description not visible, see https://electron.build/code-signing allIdentities=     0 identities found
+                                                Valid identities only
+     0 valid identities found
+
+## packaged artifact layout
+total 0
+drwxr-xr-x  3 matt  staff   96 Jul 30 17:22 .
+drwxr-xr-x  4 matt  staff  128 Jul 30 17:22 ..
+drwxr-xr-x  3 matt  staff   96 Jul 30 17:22 mystatus.app
+
+## app.asar.unpacked/node_modules (externalized ESM deps)
+@msgpackr-extract
+@opencode-ai
+effect
+msgpackr-extract
+zod
+
+## main bundle ESM check (out/main/index.js)
+import { BrowserWindow, shell, session, app, nativeImage, Tray, Menu, ipcMain } from "electron";
+import { fileURLToPath } from "node:url";
+import { join as join$1, dirname } from "node:path";
+import/export lines: 12
+require() calls: 0
+
+## @opencode-ai/plugin packaged?
+plugin
+sdk
+
+## electron-builder.yml
+# electron-builder configuration for mystatus-desktop.
+# Docs: https://www.electron.build/configuration
+#
+# Build the unpacked app for smoke testing (no installer, no signing):
+#   npm --prefix desktop run build && npx electron-builder --dir
+#
+# Build distributable installers for the host platform:
+#   npm --prefix desktop run build && npx electron-builder
+#
+# Auto-update is GATED off by default (see src/main/updater.ts). Unsigned
+# macOS builds cannot auto-update (requires signing + notarization), and
+# enabling it on an unsigned build produces noisy failures. The publish
+# block below is declared so a future signed release can flip the gate on
+# without touching this file, but it does NOT enable auto-update on its own.
+
+appId: com.mystatus.desktop
+productName: mystatus
+
+# electron-vite emits to out/{main,preload,renderer}. The build/ directory
+# holds app icons and tray assets.
+directories:
+  buildResources: build
+  output: release
+
+# Ship the electron-vite build output plus the runtime node_modules needed
+# by the externalized ESM main-process deps (@opencode-ai/plugin and its
+# transitive effect/zod/@opencode-ai/sdk). electron-builder includes
+# production node_modules automatically; we only need to exclude sources,
+# tests, and maps that would otherwise bloat the asar.
+files:
+  - "out/**/*"
+  - "build/**/*"
+  - "package.json"
+  - "!**/*.map"
+  - "!**/*.ts"
+  - "!**/*.test.*"
+  - "!**/*.spec.*"
+  - "!src/**"
+  - "!e2e/**"
+  - "!test-results/**"
+  - "!playwright-report/**"
+  - "!*.local"
+
+# @opencode-ai/plugin is ESM-only and is externalized by electron-vite
+# (see electron.vite.config.ts). It must be present in the packaged
+# node_modules so the built ESM main can import it at runtime. Unpacking
+# it from the asar avoids ESM loader quirks when resolving from an archive.
+asarUnpack:
+  - "node_modules/@opencode-ai/**"
+  - "node_modules/effect/**"
+  - "node_modules/zod/**"
+
+# GitHub Releases publish target. Declared so a signed release can publish
+# update artifacts; the updater gate in src/main/updater.ts keeps it OFF
+# for unsigned builds.
+publish:
+  - provider: github
+    owner: schlambos
+    repo: opencode-mystatus
+    releaseType: release
+
+mac:
+  category: public.app-category.utilities
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  # Signing is opt-in via env vars. Leave unset for unsigned local builds.
+  # CSC_LINK / CSC_KEY_PASSWORD  -> codesign identity (p12)
+  # APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_ID -> notarytool
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  # Notarization is skipped when APPLE_API_KEY is unset; see
+  # afterSign hook docs. Unsigned builds require right-click -> Open.
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # Signing is opt-in via env vars. Leave unset for unsigned local builds.
+  # signtool: CSC_LINK / CSC_KEY_PASSWORD (p12)
+  # Azure Trusted Signing: WIN_CERTIFICATE_SUBJECT_NAME etc.
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Utility
+  maintainer: schlambos=== task-18: updater gate unit tests ===
+
+ RUN  v4.1.10 /Users/matt/Repos/mystatus/desktop
+
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  17:25:15
+   Duration  287ms (transform 44ms, setup 0ms, import 61ms, tests 5ms, environment 0ms)
+

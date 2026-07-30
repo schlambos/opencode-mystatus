@@ -5,6 +5,7 @@ import { CHANNELS } from "../shared/ipc.js";
 import { registerIpc } from "./ipc.js";
 import { getPoller } from "./poller.js";
 import { getTrayManager } from "./tray.js";
+import { createUpdater } from "./updater.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -85,6 +86,12 @@ function bootstrap(): void {
     registerShellIpc(ipcMain);
     registerIpc(ipcMain);
     poller.start();
+
+    // Auto-updater: gated off by default (see updater.ts). Only activates
+    // in a packaged build with MYSTATUS_ENABLE_UPDATES=1. No-op in dev and
+    // in unsigned packaged builds.
+    const updater = createUpdater();
+    updater.start();
 
     // Tray: keeps the app alive on darwin and drives the poller even with
     // no windows open. The tray subscribes to poll updates to refresh its

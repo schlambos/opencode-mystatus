@@ -1,0 +1,98 @@
+# electron-builder configuration for mystatus-desktop.
+# Docs: https://www.electron.build/configuration
+#
+# Build the unpacked app for smoke testing (no installer, no signing):
+#   npm --prefix desktop run build && npx electron-builder --dir
+#
+# Build distributable installers for the host platform:
+#   npm --prefix desktop run build && npx electron-builder
+#
+# Auto-update is GATED off by default (see src/main/updater.ts). Unsigned
+# macOS builds cannot auto-update (requires signing + notarization), and
+# enabling it on an unsigned build produces noisy failures. The publish
+# block below is declared so a future signed release can flip the gate on
+# without touching this file, but it does NOT enable auto-update on its own.
+
+appId: com.mystatus.desktop
+productName: mystatus
+
+# electron-vite emits to out/{main,preload,renderer}. The build/ directory
+# holds app icons and tray assets.
+directories:
+  buildResources: build
+  output: release
+
+# Ship the electron-vite build output plus the runtime node_modules needed
+# by the externalized ESM main-process deps (@opencode-ai/plugin and its
+# transitive effect/zod/@opencode-ai/sdk). electron-builder includes
+# production node_modules automatically; we only need to exclude sources,
+# tests, and maps that would otherwise bloat the asar.
+files:
+  - "out/**/*"
+  - "build/**/*"
+  - "package.json"
+  - "!**/*.map"
+  - "!**/*.ts"
+  - "!**/*.test.*"
+  - "!**/*.spec.*"
+  - "!src/**"
+  - "!e2e/**"
+  - "!test-results/**"
+  - "!playwright-report/**"
+  - "!*.local"
+
+# @opencode-ai/plugin is ESM-only and is externalized by electron-vite
+# (see electron.vite.config.ts). It must be present in the packaged
+# node_modules so the built ESM main can import it at runtime. Unpacking
+# it from the asar avoids ESM loader quirks when resolving from an archive.
+asarUnpack:
+  - "node_modules/@opencode-ai/**"
+  - "node_modules/effect/**"
+  - "node_modules/zod/**"
+
+# GitHub Releases publish target. Declared so a signed release can publish
+# update artifacts; the updater gate in src/main/updater.ts keeps it OFF
+# for unsigned builds.
+publish:
+  - provider: github
+    owner: schlambos
+    repo: opencode-mystatus
+    releaseType: release
+
+mac:
+  category: public.app-category.utilities
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  # Signing is opt-in via env vars. Leave unset for unsigned local builds.
+  # CSC_LINK / CSC_KEY_PASSWORD  -> codesign identity (p12)
+  # APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_ID -> notarytool
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  # Notarization is skipped when APPLE_API_KEY is unset; see
+  # afterSign hook docs. Unsigned builds require right-click -> Open.
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # Signing is opt-in via env vars. Leave unset for unsigned local builds.
+  # signtool: CSC_LINK / CSC_KEY_PASSWORD (p12)
+  # Azure Trusted Signing: WIN_CERTIFICATE_SUBJECT_NAME etc.
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Utility
+  maintainer: schlambos
