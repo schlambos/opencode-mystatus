@@ -11,15 +11,28 @@ import {
 import { EmailListEditor, OrderEditor, ProviderCheckboxes } from "./editors";
 import { PillSelect, SectionCard, Toggle, type SectionNotice } from "./fields";
 import { NumField, TextField } from "./inputs";
-import type { TrendMode } from "../../../shared/ipc.js";
+import type { AntigravityEnvStatus, TrendMode } from "../../../shared/ipc.js";
 
 export interface ConfigSectionsProps {
   draft: SettingsDraft;
   baseline: SettingsDraft;
   saving: string | null;
   notices: Record<string, SectionNotice | null>;
+  envStatus: AntigravityEnvStatus | null;
   onUpdate: (patch: Partial<SettingsDraft>) => void;
   onSave: (kind: SettingsSectionKind) => void;
+}
+
+function FromEnvBadge({ active, testId }: { active: boolean; testId: string }): JSX.Element | null {
+  if (!active) return null;
+  return (
+    <span
+      data-testid={testId}
+      className="rounded border border-accent/40 bg-accent/10 px-1.5 py-0.5 font-mono text-[10px] text-accent"
+    >
+      from env
+    </span>
+  );
 }
 
 export function ConfigSections({
@@ -27,6 +40,7 @@ export function ConfigSections({
   baseline,
   saving,
   notices,
+  envStatus,
   onUpdate,
   onSave,
 }: ConfigSectionsProps): JSX.Element {
@@ -173,15 +187,23 @@ export function ConfigSections({
               onChange={(agtEnabled) => onUpdate({ agtEnabled })}
               testId="settings-agt-enabled"
             />
-            <NumField
-              label="Usage window"
-              value={draft.agtUsageHours}
-              onChange={(agtUsageHours) => onUpdate({ agtUsageHours })}
-              testId="settings-agt-hours"
-              unit="hours"
-              min={1}
-              hint="Proxy stats period (168 = 7 days)"
-            />
+            <div>
+              <div className="flex items-center gap-2">
+                <NumField
+                  label="Usage window"
+                  value={draft.agtUsageHours}
+                  onChange={(agtUsageHours) => onUpdate({ agtUsageHours })}
+                  testId="settings-agt-hours"
+                  unit="hours"
+                  min={1}
+                  hint="Proxy stats period (168 = 7 days)"
+                />
+                <FromEnvBadge
+                  active={envStatus?.usageHoursFromEnv ?? false}
+                  testId="settings-agt-hours-from-env"
+                />
+              </div>
+            </div>
             <Toggle
               label="Include usage"
               description="Show proxy token/request totals alongside quota"
@@ -190,29 +212,70 @@ export function ConfigSections({
               testId="settings-agt-usage"
             />
           </div>
-          <TextField
-            label="Base URL"
-            value={draft.agtBaseUrl}
-            onChange={(agtBaseUrl) => onUpdate({ agtBaseUrl })}
-            testId="settings-agt-base-url"
-            placeholder="http://127.0.0.1:8045/v1"
-            hint="Custom/remote instances only — local installs need nothing"
-          />
+          <div>
+            <div className="flex items-center gap-2">
+              <TextField
+                label="Base URL"
+                value={draft.agtBaseUrl}
+                onChange={(agtBaseUrl) => onUpdate({ agtBaseUrl })}
+                testId="settings-agt-base-url"
+                placeholder="http://127.0.0.1:8045/v1"
+                hint="Custom/remote instances only — local installs need nothing"
+              />
+              <FromEnvBadge
+                active={envStatus?.baseUrlFromEnv ?? false}
+                testId="settings-agt-base-url-from-env"
+              />
+            </div>
+          </div>
           <div className="grid gap-4 md:grid-cols-2">
-            <TextField
-              label="API key"
-              value={draft.agtApiKey}
-              onChange={(agtApiKey) => onUpdate({ agtApiKey })}
-              testId="settings-agt-api-key"
-              masked
-            />
-            <TextField
-              label="Admin password"
-              value={draft.agtAdminPassword}
-              onChange={(agtAdminPassword) => onUpdate({ agtAdminPassword })}
-              testId="settings-agt-admin-password"
-              masked
-            />
+            <div>
+              <div className="flex items-center gap-2">
+                <TextField
+                  label="API key"
+                  value={draft.agtApiKey}
+                  onChange={(agtApiKey) => onUpdate({ agtApiKey })}
+                  testId="settings-agt-api-key"
+                  masked
+                />
+                <FromEnvBadge
+                  active={envStatus?.apiKeyFromEnv ?? false}
+                  testId="settings-agt-api-key-from-env"
+                />
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <TextField
+                  label="Admin password"
+                  value={draft.agtAdminPassword}
+                  onChange={(agtAdminPassword) => onUpdate({ agtAdminPassword })}
+                  testId="settings-agt-admin-password"
+                  masked
+                />
+                <FromEnvBadge
+                  active={envStatus?.adminPasswordFromEnv ?? false}
+                  testId="settings-agt-admin-password-from-env"
+                />
+              </div>
+            </div>
+          </div>
+          <div
+            data-testid="settings-agt-gui-config"
+            className="rounded-md border border-ink-700/70 bg-ink-950/50 px-3 py-2 text-[11px] text-fog-500"
+          >
+            {envStatus === null ? (
+              <span data-testid="settings-agt-gui-config-unknown">Checking ~/.antigravity_tools/gui_config.json…</span>
+            ) : envStatus.guiConfigFound ? (
+              <span data-testid="settings-agt-gui-config-found">
+                Auto-discovered <span className="font-mono text-fog-300">{envStatus.guiConfigPath}</span> (read-only)
+              </span>
+            ) : (
+              <span data-testid="settings-agt-gui-config-missing">
+                <span className="font-mono">~/.antigravity_tools/gui_config.json</span> not found — using the
+                antigravity-accounts.json fallback path
+              </span>
+            )}
           </div>
           <p className="text-[11px] text-fog-500">
             Environment variables (<span className="font-mono">ANTIGRAVITY_TOOLS_BASE_URL</span>,{" "}

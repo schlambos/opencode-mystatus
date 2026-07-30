@@ -20,11 +20,14 @@ const api: Bridge = {
   pasteCopilot: (payload) => ipcRenderer.invoke(CHANNELS.pasteCopilot, payload),
   pastePoe: (payload) => ipcRenderer.invoke(CHANNELS.pastePoe, payload),
   clearCredential: (name) => ipcRenderer.invoke(CHANNELS.clearCredential, name),
+  writeCredential: (name, data) => ipcRenderer.invoke(CHANNELS.writeCredential, name, data),
+  testProvider: (providerId) => ipcRenderer.invoke(CHANNELS.testProvider, providerId),
   openExternal: (url) => ipcRenderer.invoke(CHANNELS.openExternal, url),
   inspectConfig: () => ipcRenderer.invoke(CHANNELS.configInspect),
   saveConfigSections: (sections) => ipcRenderer.invoke(CHANNELS.configSave, sections ?? {}),
   resetConfig: () => ipcRenderer.invoke(CHANNELS.configReset),
   revealPath: (target) => ipcRenderer.invoke(CHANNELS.reveal, target),
+  getAntigravityEnvStatus: () => ipcRenderer.invoke(CHANNELS.envAntigravity),
   onViewModel: (cb) => {
     const handler = (_event: unknown, payload: unknown): void => {
       cb(payload as Parameters<typeof cb>[0]);

@@ -30,6 +30,8 @@ export const CHANNELS = {
   pasteCopilot: "mystatus:paste:copilot",
   pastePoe: "mystatus:paste:poe",
   clearCredential: "mystatus:cred:clear",
+  writeCredential: "mystatus:cred:write",
+  testProvider: "mystatus:cred:test",
   openExternal: "mystatus:open:external",
 } as const;
 
@@ -266,6 +268,24 @@ export type ClearResult =
   | { readonly ok: false; readonly error: string };
 
 /**
+ * Result of an atomic credential write (todo 13). The path is the resolved
+ * write target (profile-aware — overwrites the existing readable copy if one
+ * exists, else the legacy ~/.config/opencode/ dir).
+ */
+export type CredentialWriteResult =
+  | { readonly ok: true; readonly path: string }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * Result of a test-connection call (todo 13). `ok` when the fresh
+ * single-provider query produced no error/stale issue for that provider;
+ * `ok:false` with the issue detail otherwise.
+ */
+export type TestProviderResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly error: string };
+
+/**
  * auth:status response — reports which provider ids have a readable auth.json
  * entry OR a credential file present. NEVER returns token values; only the
  * provider-id presence map. The renderer regex-scans the serialized payload
@@ -283,10 +303,47 @@ export interface OpenExternalRequest {
   readonly url: string;
 }
 
-/** Credential file names the desktop app is allowed to write/clear. */
+/**
+ * Antigravity Tools env + auto-discovery status (todo 22).
+ *
+ * Reports ONLY booleans — which `ANTIGRAVITY_TOOLS_*` env vars are SET and
+ * whether `~/.antigravity_tools/gui_config.json` was found. NEVER returns env
+ * var VALUES over IPC; the renderer regex-scans the serialized payload to
+ * assert no secret prefixes leak through. The auto-discovery result is
+ * read-only: the desktop app never writes to gui_config.json.
+ */
+export interface AntigravityEnvStatus {
+  /** True when `ANTIGRAVITY_TOOLS_BASE_URL` is set in the launch env. */
+  readonly baseUrlFromEnv: boolean;
+  /** True when `ANTIGRAVITY_TOOLS_API_KEY` is set in the launch env. */
+  readonly apiKeyFromEnv: boolean;
+  /** True when `ANTIGRAVITY_TOOLS_ADMIN_PASSWORD` is set in the launch env. */
+  readonly adminPasswordFromEnv: boolean;
+  /** True when `ANTIGRAVITY_TOOLS_USAGE_HOURS` is set in the launch env. */
+  readonly usageHoursFromEnv: boolean;
+  /** True when `~/.antigravity_tools/gui_config.json` exists (read-only). */
+  readonly guiConfigFound: boolean;
+  /** Absolute path checked for gui_config.json (for the UI status line). */
+  readonly guiConfigPath: string;
+}
+
+/**
+ * Credential file names the desktop app is allowed to write/clear. Includes
+ * the paste providers (todo 12) and the cookie-capture providers (todo 11).
+ * The writer (todo 13) resolves the write path profile-aware via
+ * resolveCredentialWritePath.
+ */
 export type CredentialFileName =
   | "copilot-quota-token.json"
-  | "poe-api-key.json";
+  | "poe-api-key.json"
+  | "atlas-cookies.json"
+  | "byteplus-cookies.json"
+  | "mistral-cookies.json"
+  | "ollama-cookies.json"
+  | "longcat-cookies.json"
+  | "qwencloud-cookies.json"
+  | "stepfun-cookies.json"
+  | "opencode-go.json";
 
 // ---------------------------------------------------------------------------
 // Desktop-only prefs (mystatus-desktop.json — NOT mystatus.json)
@@ -364,6 +421,20 @@ export interface Bridge {
   pastePoe: (payload: PoePastePayload) => Promise<PasteResult>;
   /** Delete a credential file by name (todo 12). */
   clearCredential: (name: CredentialFileName) => Promise<ClearResult>;
+  /**
+   * Atomically write a credential file (todo 13). The path is resolved
+   * profile-aware (overwrites the existing readable copy if one exists, else
+   * the legacy ~/.config/opencode/ dir). Verify-after-write is mandatory.
+   */
+  writeCredential: (
+    name: CredentialFileName,
+    data: Record<string, unknown>,
+  ) => Promise<CredentialWriteResult>;
+  /**
+   * Test a single provider by running a fresh query (todo 13). Returns
+   * {ok} or {ok:false, error} from that provider's issues/errors.
+   */
+  testProvider: (providerId: string) => Promise<TestProviderResult>;
   /** Open a URL in the user's default browser via shell.openExternal (todo 12). */
   openExternal: (url: string) => Promise<void>;
   /** Strict read of mystatus.json for the Settings page (todo 14): reports corrupt vs missing. */
@@ -378,6 +449,13 @@ export interface Bridge {
   resetConfig: () => Promise<MyStatusConfig>;
   /** Show mystatus.json or mystatus-desktop.json in the OS file manager (todo 14). */
   revealPath: (target: RevealTarget) => Promise<void>;
+  /**
+   * Report which ANTIGRAVITY_TOOLS_* env vars are SET (booleans only, never
+   * values) and whether ~/.antigravity_tools/gui_config.json was found
+   * (read-only). Powers the "from env" badges and auto-discovery status line
+   * in the Antigravity Tools settings section (todo 22).
+   */
+  getAntigravityEnvStatus: () => Promise<AntigravityEnvStatus>;
 }
 
 declare global {

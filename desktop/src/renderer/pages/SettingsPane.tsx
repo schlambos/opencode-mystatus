@@ -1,5 +1,5 @@
 import { useEffect, useState, type JSX } from "react";
-import type { RevealTarget } from "../../shared/ipc.js";
+import type { AntigravityEnvStatus, RevealTarget } from "../../shared/ipc.js";
 import { PaneShell } from "../components/PaneShell";
 import { ConfigSections } from "../components/settings/ConfigSections";
 import { CorruptBanner } from "../components/settings/CorruptBanner";
@@ -34,6 +34,7 @@ export function SettingsPane(): JSX.Element {
   const [commentsAcked, setCommentsAcked] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
+  const [envStatus, setEnvStatus] = useState<AntigravityEnvStatus | null>(null);
 
   async function loadPane(): Promise<void> {
     const bridge = getBridge();
@@ -51,6 +52,14 @@ export function SettingsPane(): JSX.Element {
       const config = status.status === "ok" ? status.config : {};
       setDraft(draftFromConfig(config));
       setBaseline(draftFromConfig(config));
+      // Env status is independent of mystatus.json — fetch in parallel with the
+      // config read so the from-env badges and gui_config discovery line render
+      // on first paint. Failures (e.g. bridge missing the handler on older
+      // builds) leave envStatus null and the UI shows the "checking…" state.
+      bridge
+        .getAntigravityEnvStatus()
+        .then(setEnvStatus)
+        .catch(() => setEnvStatus(null));
     } catch (err) {
       setPane({
         phase: "corrupt",
@@ -207,6 +216,7 @@ export function SettingsPane(): JSX.Element {
               baseline={baseline}
               saving={saving}
               notices={notices}
+              envStatus={envStatus}
               onUpdate={updateDraft}
               onSave={(kind) => {
                 void saveSection(kind);

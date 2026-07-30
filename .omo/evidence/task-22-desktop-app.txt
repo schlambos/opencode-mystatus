@@ -1,0 +1,79 @@
+=== Task 22: Antigravity Tools + Google settings section ===
+
+## Acceptance criteria evidence
+
+### typecheck (desktop)
+
+> mystatus-desktop@0.0.0 typecheck
+> tsc --noEmit -p tsconfig.json
+
+exit: 0
+
+### typecheck (repo root)
+
+> opencode-mystatus@3.0.0 typecheck
+> tsc --noEmit
+
+exit: 0
+
+### vitest: antigravity-settings + SettingsPane
+
+> mystatus-desktop@0.0.0 test
+> vitest run --run antigravity-settings SettingsPane
+
+
+ RUN  v4.1.10 /Users/matt/Repos/mystatus/desktop
+
+
+ Test Files  2 passed (2)
+      Tests  17 passed (17)
+   Start at  17:57:51
+   Duration  609ms (transform 90ms, setup 0ms, import 80ms, tests 316ms, environment 148ms)
+
+
+### full vitest suite
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 26 passed (27)
+      Tests  411 passed (411)
+   Start at  17:57:52
+   Duration  4.16s (transform 1.60s, setup 0ms, import 2.44s, tests 9.13s, environment 1.60s)
+
+
+### build
+✓ 2 modules transformed.
+rendering chunks...
+out/preload/index.js  2.93 kB
+✓ built in 10ms
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 63 modules transformed.
+rendering chunks...
+../../out/renderer/index.html                   0.63 kB
+../../out/renderer/assets/index-kgp7GZUC.css   46.07 kB
+../../out/renderer/assets/index-B46QbqR5.js   690.68 kB
+✓ built in 524ms
+
+## What was implemented
+
+Already present from todo 14 (verified complete):
+- Antigravity section in ConfigSections.tsx: enabled, usageHours, includeUsage, baseUrl, masked apiKey, masked adminPassword
+- google.excludeEmails editor (EmailListEditor)
+- Writes via config-io (saveSettingsSections) with deep-merge + verify-after-write
+- Masked fields with reveal-on-hold (TextField masked + peek button)
+- Env precedence hint text
+
+Added by todo 22:
+- shared/ipc.ts: AntigravityEnvStatus type + envAntigravity channel + Bridge.getAntigravityEnvStatus
+- main/antigravity-settings.ts: getAntigravityEnvStatus() — env booleans (never values) + gui_config.json existence (read-only)
+- main/ipc.ts + preload/index.ts: wired mystatus:env:antigravity channel
+- ConfigSections.tsx: from-env badges per field (baseUrl/apiKey/adminPassword/usageHours) + gui_config discovery status line (found/not found/checking)
+- SettingsPane.tsx: fetches env status in parallel with config read, graceful null on failure
+- main/antigravity-settings.test.ts: 5 tests — env-set booleans reported without values (regex-scan for sk-/ghp_/github_pat_/eyJ + literal values → zero hits), empty-string treated as unset, gui_config found/missing, never reads file contents
+- SettingsPane.test.tsx: 3 new tests — from-env badge rendering, missing-gui_config state, checking state on IPC rejection
+
+## Security invariants
+- NEVER returns env var VALUES over IPC (booleans only)
+- NEVER writes to gui_config.json or antigravity-accounts.json (existence check only)
+- gui_config.json contents never read or returned

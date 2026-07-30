@@ -32,6 +32,14 @@ interface BridgeState {
   resetCalls: number;
   revealCalls: string[];
   rejectSave: string | null;
+  envStatusFixture: {
+    baseUrlFromEnv: boolean;
+    apiKeyFromEnv: boolean;
+    adminPasswordFromEnv: boolean;
+    usageHoursFromEnv: boolean;
+    guiConfigFound: boolean;
+    guiConfigPath: string;
+  } | null;
 }
 
 function makeBridge(state: BridgeState) {
@@ -84,6 +92,7 @@ function makeBridge(state: BridgeState) {
       state.revealCalls.push(target);
       return Promise.resolve();
     },
+    getAntigravityEnvStatus: () => Promise.resolve(state.envStatusFixture),
     getViewModel: () => Promise.resolve({ error: "not used" }),
     getExport: () => Promise.resolve({ format: "json" as const, text: "" }),
     refresh: () => Promise.resolve(),
@@ -113,6 +122,14 @@ describe("SettingsPane", () => {
       resetCalls: 0,
       revealCalls: [],
       rejectSave: null,
+      envStatusFixture: {
+        baseUrlFromEnv: false,
+        apiKeyFromEnv: true,
+        adminPasswordFromEnv: false,
+        usageHoursFromEnv: false,
+        guiConfigFound: true,
+        guiConfigPath: "/tmp/mystatus-ipc-fixture/.antigravity_tools/gui_config.json",
+      },
     };
     vi.stubGlobal("window", { mystatus: makeBridge(bridgeState) });
     vi.resetModules();
@@ -283,5 +300,44 @@ describe("SettingsPane", () => {
     });
     expect(screen.getByTestId("section-output-notice").textContent).toBe("Saved");
     expect(bridgeState.saveCalls.at(-1)).toEqual({ sort: "name", summary: false, trend: "full" });
+  });
+
+  it("renders from-env badges and gui_config discovery status from the env IPC", async () => {
+    await renderPane();
+
+    // apiKey is set in the fixture → badge present; adminPassword/baseUrl/usageHours unset → absent.
+    expect(screen.getByTestId("settings-agt-api-key-from-env")).toBeDefined();
+    expect(screen.queryByTestId("settings-agt-admin-password-from-env")).toBeNull();
+    expect(screen.queryByTestId("settings-agt-base-url-from-env")).toBeNull();
+    expect(screen.queryByTestId("settings-agt-hours-from-env")).toBeNull();
+    // gui_config.json found in the fixture → found state.
+    expect(screen.getByTestId("settings-agt-gui-config-found")).toBeDefined();
+  });
+
+  it("shows the missing-gui_config state when discovery reports not found", async () => {
+    bridgeState.envStatusFixture = {
+      baseUrlFromEnv: false,
+      apiKeyFromEnv: false,
+      adminPasswordFromEnv: false,
+      usageHoursFromEnv: false,
+      guiConfigFound: false,
+      guiConfigPath: "/tmp/mystatus-ipc-fixture/.antigravity_tools/gui_config.json",
+    };
+    await renderPane();
+
+    expect(screen.getByTestId("settings-agt-gui-config-missing")).toBeDefined();
+    expect(screen.queryByTestId("settings-agt-api-key-from-env")).toBeNull();
+  });
+
+  it("shows the checking state when the env IPC rejects", async () => {
+    bridgeState.envStatusFixture = null;
+    const failingBridge = makeBridge(bridgeState);
+    failingBridge.getAntigravityEnvStatus = () => Promise.reject(new Error("no handler"));
+    vi.stubGlobal("window", { mystatus: failingBridge });
+    vi.resetModules();
+
+    await renderPane();
+
+    expect(screen.getByTestId("settings-agt-gui-config-unknown")).toBeDefined();
   });
 });

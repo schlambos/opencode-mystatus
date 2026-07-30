@@ -33,6 +33,12 @@ import {
   writeCopilotPAT,
   writePoeApiKey,
 } from "./paste-creds.js";
+import {
+  deleteCredentialFile,
+  testProvider,
+  writeCredentialFile,
+} from "./cred-files.js";
+import { getAntigravityEnvStatus } from "./antigravity-settings.js";
 
 export function registerIpc(ipc: IpcMain): void {
   ipc.handle(CHANNELS.viewmodel, (_event, args) => coreApi.getViewModel(args ?? {}));
@@ -60,6 +66,12 @@ export function registerIpc(ipc: IpcMain): void {
   ipc.handle(CHANNELS.clearCredential, (_event, name: CredentialFileName) =>
     clearCredentialFile(name ?? ""),
   );
+  ipc.handle(CHANNELS.writeCredential, (_event, name: CredentialFileName, data: Record<string, unknown>) =>
+    writeCredentialFile(name ?? ("" as CredentialFileName), data ?? {}),
+  );
+  ipc.handle(CHANNELS.testProvider, (_event, providerId: string) =>
+    testProvider(providerId ?? ""),
+  );
   ipc.handle(CHANNELS.openExternal, (_event, url: string) => shell.openExternal(url));
   ipc.handle(CHANNELS.configInspect, () => readConfigStatus());
   ipc.handle(CHANNELS.configSave, (_event, sections: ConfigPatch) =>
@@ -72,4 +84,5 @@ export function registerIpc(ipc: IpcMain): void {
     if (path === null) throw new Error(`unknown reveal target: ${String(target)}`);
     shell.showItemInFolder(path);
   });
+  ipc.handle(CHANNELS.envAntigravity, () => getAntigravityEnvStatus());
 }
