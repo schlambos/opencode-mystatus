@@ -81,6 +81,12 @@ function refreshConfig(api: RendererBridge): void {
     .catch(() => undefined);
 }
 
+/** Re-read the config snapshot from main (e.g. after a dashboard mutation). */
+export function reloadConfig(): void {
+  const api = getBridge();
+  if (api) refreshConfig(api);
+}
+
 /**
  * Attach to the window.mystatus bridge: subscribe to pushed view models,
  * probe liveness with ping, and snapshot the config. Returns the teardown.

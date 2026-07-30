@@ -1,4 +1,5 @@
 import type { JSX } from "react";
+import { Dashboard } from "../components/Dashboard";
 import { PaneShell } from "../components/PaneShell";
 import { SummaryHeader } from "../components/SummaryHeader";
 import { useStatusState } from "../lib/store";
@@ -80,13 +81,7 @@ export function DashboardPane(): JSX.Element {
       )}
       <SummaryHeader model={model} fetchedAt={fetchedAt} nextFetchAt={nextFetchAt} now={now} />
 
-      <p
-        className="animate-rise mt-8 border-l-2 border-ink-700 pl-4 text-sm text-fog-500"
-        style={{ animationDelay: "120ms" }}
-      >
-        Summary header is live — horizon tabs, provider cards, meters, and trends land next. Data
-        below arrives live from the main-process poller.
-      </p>
+      <Dashboard />
     </PaneShell>
   );
 }
