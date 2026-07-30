@@ -15,6 +15,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -256,6 +257,16 @@ describe("saveConfigSections concurrent serialization", () => {
 });
 
 describe("onExternalChange", () => {
+  // fs.watchFile compares stat snapshots; on filesystems with 1s mtime
+  // resolution, two writes in the same second look identical and the
+  // callback never fires. bumpMtime advances mtime by a fixed amount so the
+  // watcher always sees a change regardless of the wall clock.
+  function bumpMtime(path: string, secondsAhead: number): void {
+    const future = new Date(Date.now() + secondsAhead * 1000);
+    const t = future.getTime() / 1000;
+    utimesSync(path, t, t);
+  }
+
   it("fires the callback when the config file is rewritten externally", async () => {
     seedConfig(JSON.stringify({ sort: "urgency" }));
     let calls = 0;
@@ -264,8 +275,9 @@ describe("onExternalChange", () => {
     });
     try {
       writeFileSync(configFile(), JSON.stringify({ sort: "name" }), "utf8");
-      // watchFile polls at 1s; wait up to 3s for the event.
-      await waitFor(() => expect(calls).toBeGreaterThan(0), 3000);
+      bumpMtime(configFile(), 10);
+      // watchFile polls at 1s; wait up to 5s for the event.
+      await waitFor(() => expect(calls).toBeGreaterThan(0), 5000);
     } finally {
       unsub();
     }
@@ -283,6 +295,7 @@ describe("onExternalChange", () => {
     calls = 0;
     unsub();
     writeFileSync(configFile(), JSON.stringify({ sort: "name" }), "utf8");
+    bumpMtime(configFile(), 10);
     await new Promise((resolve) => setTimeout(resolve, 1500));
     expect(calls).toBe(0);
   });
@@ -295,6 +308,7 @@ describe("onExternalChange", () => {
     try {
       mkdirSync(configDir(), { recursive: true });
       writeFileSync(configFile(), JSON.stringify({ sort: "name" }), "utf8");
+      bumpMtime(configFile(), 10);
       // watchFile polls at 1s; allow up to 5s for the create detection.
       await waitFor(() => expect(calls).toBeGreaterThan(0), 5000);
     } finally {
