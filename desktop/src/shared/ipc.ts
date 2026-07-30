@@ -32,7 +32,10 @@ export const CHANNELS = {
   clearCredential: "mystatus:cred:clear",
   writeCredential: "mystatus:cred:write",
   testProvider: "mystatus:cred:test",
+  processCapture: "mystatus:cred:process-capture",
   openExternal: "mystatus:open:external",
+  exportSave: "mystatus:export:save",
+  loginItem: "mystatus:login-item",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -286,6 +289,19 @@ export type TestProviderResult =
   | { readonly ok: false; readonly error: string };
 
 /**
+ * Result of the capture → extract → write → test flow (todo 13). `ok` with
+ * the write path and test result on success; `ok:false` with the failing
+ * stage and error on failure.
+ */
+export type CaptureWriteFlowResult =
+  | {
+      readonly ok: true;
+      readonly writePath: string;
+      readonly test: TestProviderResult;
+    }
+  | { readonly ok: false; readonly error: string; readonly stage: "extract" | "write" | "test" };
+
+/**
  * auth:status response — reports which provider ids have a readable auth.json
  * entry OR a credential file present. NEVER returns token values; only the
  * provider-id presence map. The renderer regex-scans the serialized payload
@@ -344,6 +360,53 @@ export type CredentialFileName =
   | "qwencloud-cookies.json"
   | "stepfun-cookies.json"
   | "opencode-go.json";
+
+// ---------------------------------------------------------------------------
+// Export-to-file (todo 15)
+// ---------------------------------------------------------------------------
+// The dashboard overflow menu offers "Copy JSON" / "Save JSON…" / "Copy card
+// text" / "Save text…". Copy paths go through the renderer's clipboard; save
+// paths go through this IPC so the main process owns the native save dialog
+// (dialog.showSaveDialog) and the filesystem write. The export payload itself
+// comes from coreApi.getJsonExport / getAnsiExport (todo 2) — the main process
+// never spawns bin/mystatus.
+
+/** Request to save an export to a file chosen via the native save dialog. */
+export interface SaveExportRequest {
+  /** "json" or "ansi" — selects coreApi.getJsonExport / getAnsiExport. */
+  readonly format: "json" | "ansi";
+  /** Per-call args forwarded to the core (threshold, sort, trend, …). */
+  readonly args?: MyStatusArgs;
+}
+
+/**
+ * Result of a save-export call. `ok` with the chosen path on success;
+ * `ok:false` with `cancelled: true` when the user dismissed the save dialog
+ * (no error toast); `ok:false` with `error` when the export or write failed.
+ */
+export type SaveExportResult =
+  | { readonly ok: true; readonly path: string }
+  | { readonly ok: false; readonly cancelled: true }
+  | { readonly ok: false; readonly error: string };
+
+// ---------------------------------------------------------------------------
+// Launch-at-login (todo 15)
+// ---------------------------------------------------------------------------
+// macOS/Windows use app.setLoginItemSettings; Linux has no equivalent so the
+// call is a documented no-op that still reports ok so the UI toggle stays in
+// sync with the persisted prefs value.
+
+/** Request to set the launch-at-login state. */
+export interface SetLoginItemRequest {
+  readonly openAtLogin: boolean;
+}
+
+/** Result of a setLoginItem call. `supported` is false on Linux. */
+export interface LoginItemResult {
+  readonly ok: true;
+  readonly supported: boolean;
+  readonly openAtLogin: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // Desktop-only prefs (mystatus-desktop.json — NOT mystatus.json)
@@ -435,6 +498,15 @@ export interface Bridge {
    * {ok} or {ok:false, error} from that provider's issues/errors.
    */
   testProvider: (providerId: string) => Promise<TestProviderResult>;
+  /**
+   * Run extract → write → test for a captured cookie session (todo 13).
+   * The renderer calls capture(spec) first, then this with the result.
+   * Returns the combined flow result; the renderer then calls refresh().
+   */
+  processCapture: (
+    providerId: string,
+    capture: CaptureResult,
+  ) => Promise<CaptureWriteFlowResult>;
   /** Open a URL in the user's default browser via shell.openExternal (todo 12). */
   openExternal: (url: string) => Promise<void>;
   /** Strict read of mystatus.json for the Settings page (todo 14): reports corrupt vs missing. */
@@ -456,6 +528,18 @@ export interface Bridge {
    * in the Antigravity Tools settings section (todo 22).
    */
   getAntigravityEnvStatus: () => Promise<AntigravityEnvStatus>;
+  /**
+   * Save an export to a file via the native save dialog (todo 15). The main
+   * process runs coreApi.getJsonExport / getAnsiExport, prompts with
+   * dialog.showSaveDialog, and writes the file. Cancelled is not an error.
+   */
+  saveExport: (req: SaveExportRequest) => Promise<SaveExportResult>;
+  /**
+   * Set the OS launch-at-login state (todo 15). macOS/Windows use
+   * app.setLoginItemSettings; Linux is a documented no-op that still reports
+   * ok so the persisted prefs toggle stays in sync.
+   */
+  setLoginItem: (req: SetLoginItemRequest) => Promise<LoginItemResult>;
 }
 
 declare global {

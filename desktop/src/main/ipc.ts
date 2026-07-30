@@ -5,8 +5,8 @@
 // assert every channel is wired without booting Electron. The push channel
 // is main→renderer only (webContents.send) and has no handler here.
 
-import type { IpcMain } from "electron";
-import { shell } from "electron";
+import type { BrowserWindow, IpcMain } from "electron";
+import { app, shell } from "electron";
 import {
   CHANNELS,
   type CaptureRequest,
@@ -16,6 +16,8 @@ import {
   type PoePastePayload,
   type PrefsPatch,
   type RevealTarget,
+  type SaveExportRequest,
+  type SetLoginItemRequest,
 } from "../shared/ipc.js";
 import { coreApi } from "./core.js";
 import { getPoller } from "./poller.js";
@@ -39,6 +41,8 @@ import {
   writeCredentialFile,
 } from "./cred-files.js";
 import { getAntigravityEnvStatus } from "./antigravity-settings.js";
+import { saveExport } from "./export.js";
+import { getLoginItemDeps, setLoginItem } from "./login-item.js";
 
 export function registerIpc(ipc: IpcMain): void {
   ipc.handle(CHANNELS.viewmodel, (_event, args) => coreApi.getViewModel(args ?? {}));
@@ -72,6 +76,9 @@ export function registerIpc(ipc: IpcMain): void {
   ipc.handle(CHANNELS.testProvider, (_event, providerId: string) =>
     testProvider(providerId ?? ""),
   );
+  ipc.handle(CHANNELS.processCapture, (_event, providerId: string, capture: unknown) =>
+    processCaptureResult(providerId ?? "", capture as never),
+  );
   ipc.handle(CHANNELS.openExternal, (_event, url: string) => shell.openExternal(url));
   ipc.handle(CHANNELS.configInspect, () => readConfigStatus());
   ipc.handle(CHANNELS.configSave, (_event, sections: ConfigPatch) =>
@@ -85,4 +92,16 @@ export function registerIpc(ipc: IpcMain): void {
     shell.showItemInFolder(path);
   });
   ipc.handle(CHANNELS.envAntigravity, () => getAntigravityEnvStatus());
+  ipc.handle(CHANNELS.exportSave, (event, req: SaveExportRequest) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win === null) {
+      return Promise.resolve({ ok: false, error: "no window available for the save dialog" });
+    }
+    return saveExport(win, req ?? { format: "json" }, {
+      showSaveDialog: (w, options) => w.showSaveDialog(options),
+    });
+  });
+  ipc.handle(CHANNELS.loginItem, (_event, req: SetLoginItemRequest) =>
+    setLoginItem(req ?? { openAtLogin: false }, getLoginItemDeps(app)),
+  );
 }

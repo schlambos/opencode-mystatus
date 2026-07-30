@@ -22,12 +22,16 @@ const api: Bridge = {
   clearCredential: (name) => ipcRenderer.invoke(CHANNELS.clearCredential, name),
   writeCredential: (name, data) => ipcRenderer.invoke(CHANNELS.writeCredential, name, data),
   testProvider: (providerId) => ipcRenderer.invoke(CHANNELS.testProvider, providerId),
+  processCapture: (providerId, capture) =>
+    ipcRenderer.invoke(CHANNELS.processCapture, providerId, capture),
   openExternal: (url) => ipcRenderer.invoke(CHANNELS.openExternal, url),
   inspectConfig: () => ipcRenderer.invoke(CHANNELS.configInspect),
   saveConfigSections: (sections) => ipcRenderer.invoke(CHANNELS.configSave, sections ?? {}),
   resetConfig: () => ipcRenderer.invoke(CHANNELS.configReset),
   revealPath: (target) => ipcRenderer.invoke(CHANNELS.reveal, target),
   getAntigravityEnvStatus: () => ipcRenderer.invoke(CHANNELS.envAntigravity),
+  saveExport: (req) => ipcRenderer.invoke(CHANNELS.exportSave, req),
+  setLoginItem: (req) => ipcRenderer.invoke(CHANNELS.loginItem, req),
   onViewModel: (cb) => {
     const handler = (_event: unknown, payload: unknown): void => {
       cb(payload as Parameters<typeof cb>[0]);

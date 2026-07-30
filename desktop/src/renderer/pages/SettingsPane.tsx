@@ -126,6 +126,16 @@ export function SettingsPane(): JSX.Element {
     setNotice("prefs", null);
     try {
       const merged = await bridge.patchPrefs({ ...prefsDraft });
+      // Launch-at-login is an OS setting, not just a prefs boolean: mirror the
+      // saved value into app.setLoginItemSettings (no-op on Linux). Best-effort
+      // — a failure here does not invalidate the prefs save.
+      if (prefsDraft.launchAtLogin !== prefsBaseline?.launchAtLogin) {
+        try {
+          await bridge.setLoginItem({ openAtLogin: prefsDraft.launchAtLogin });
+        } catch {
+          // The prefs file is the source of truth; the OS flag is best-effort.
+        }
+      }
       setPrefsBaseline(prefsDraftFrom(merged));
       setNotice("prefs", { kind: "saved", text: "Saved" });
       reloadPrefs();

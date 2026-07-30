@@ -58,9 +58,14 @@ describe("registerIpc", () => {
     const ipc = makeFakeIpc();
     registerIpc(ipc as unknown as Parameters<typeof registerIpc>[0]);
 
+    // Channels registered by other modules (not registerIpc).
+    const skip = new Set<string>([
+      CHANNELS.push, // main→renderer only
+      CHANNELS.ping, // registered by registerShellIpc
+    ]);
+
     for (const channel of Object.values(CHANNELS)) {
-      if (channel === CHANNELS.push) continue; // main→renderer only
-      if (channel === CHANNELS.ping) continue; // registered by registerShellIpc
+      if (skip.has(channel)) continue;
       expect(ipc.handlers.has(channel)).toBe(true);
     }
   });

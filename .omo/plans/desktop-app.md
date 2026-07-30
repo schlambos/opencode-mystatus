@@ -223,7 +223,7 @@ Your next move: either start work, or have me run the high-accuracy adversarial 
   QA scenarios: happy — `npx vitest run desktop/src/main/config-io.test.ts` + Playwright settings round-trip screenshot; Evidence .omo/evidence/task-14-desktop-app.txt / .png. failure — hand-corrupt mystatus.json (invalid JSON) while app runs: settings page shows a recoverable error state and does NOT overwrite the file until the user fixes or explicitly resets; Evidence .omo/evidence/task-14-desktop-app-fail.txt
   Commit: Y | feat(desktop): settings UI with atomic config IO
 
-- [ ] 15. Export (JSON / ANSI) + launch-at-login
+- [x] 15. Export (JSON / ANSI) + launch-at-login
   What to do / Must NOT do: Dashboard overflow menu: "Copy JSON" and "Save JSON…" via `mystatus:export` → `coreApi.getJsonExport({})` (core `formatMyStatus` with `format:'json'`); "Copy card text" / "Save text…" via `getAnsiExport({})` — strip ANSI for clipboard, keep ANSI for .txt save (note in save dialog). Uses Electron `dialog.showSaveDialog`. Launch-at-login toggle in Settings: `app.setLoginItemSettings({openAtLogin})` (macOS/Windows); on Linux persist the preference and document no-op. MUST NOT spawn `bin/mystatus` for export — use the in-process core.
   Parallelization: Wave 4 | Blocked by: 14 | Blocks: —
   References: plugin/mystatus.ts:7441-7485 (formatMyStatus), 6394-6417 (cellsToJson schema), 6753-6765 (resolveWidth — pass explicit width 100 for text export); https://www.electronjs.org/docs/latest/api/app#appsetloginitemsettingssettings-macos-windows

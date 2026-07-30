@@ -1,0 +1,17 @@
+Task 15 failure scenario: export while zero providers configured.
+
+The core's getJsonExport returns an error string in the text field when no
+providers are configured (coreApi never throws). saveExport detects this by
+attempting JSON.parse on the JSON export and refuses to write a malformed
+file, returning {ok:false, error: <core error string>} without invoking the
+save dialog.
+
+Test: "refuses to write when the JSON export does not parse (core error string)"
+in src/main/export.test.ts asserts:
+  - result.ok === false
+  - result.error contains the core error string ("no providers configured")
+  - the target file is NOT created
+  - showSaveDialog is NOT called
+
+This matches the plan's failure scenario: "export while zero providers
+configured: core error string surfaces as a toast, no file written."

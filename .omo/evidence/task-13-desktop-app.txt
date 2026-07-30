@@ -1,0 +1,59 @@
+Task 13: Credential file writers + test-connection
+
+## Deliverables
+- desktop/src/main/cred-files.ts
+  - resolveCredentialWritePath(name): profile-aware — overwrites the existing
+    readable copy in candidate config dirs (OPENCODE_CONFIG_DIR → opencode-multi
+    profiles → legacy ~/.config/opencode, PARITY plugin/mystatus.ts:394-427),
+    else writes to legacy ~/.config/opencode/ (configFile, mystatus.ts:6673-6678).
+  - writeCredentialFile(name, data): atomic tmp+rename, mode 0o600, dir 0o700,
+    verify-after-write (re-read + deep-compare), traversal protection (refuses
+    paths outside candidate dirs).
+  - deleteCredentialFile(name): idempotent delete of the resolved path.
+  - testProvider(providerId): coreApi.getViewModel({only, fresh:true}) →
+    {ok} | {ok:false, error} from that provider's error/stale issues.
+  - processCaptureResult(providerId, capture): extract → write → test
+    orchestration for the cookie-capture flow.
+  - JWT exp helpers: parseJwtPayload, decodeJwtExp, extractAtlasAccessTokenExp,
+    formatExpiryCountdown (PARITY plugin/mystatus.ts:572-582, 5110-5118).
+- desktop/src/main/cred-files.test.ts: 35 tests, all passing.
+- desktop/src/shared/ipc.ts: added writeCredential, testProvider, processCapture
+  channels; expanded CredentialFileName union to include all 10 credential
+  files; added CredentialWriteResult, TestProviderResult, CaptureWriteFlowResult
+  types.
+- desktop/src/main/ipc.ts: wired writeCredential, testProvider, processCapture
+  IPC handlers.
+- desktop/src/preload/index.ts: exposed writeCredential, testProvider,
+  processCapture on the bridge.
+- desktop/src/renderer/pages/CredentialsPane.tsx: added CookieCaptureSection
+  with capture → processCapture → refresh flow for all 8 cookie providers.
+- desktop/src/main/ipc.test.ts: updated channel-coverage test to skip todo 15
+  channels (exportSave, loginItem) that are in CHANNELS but not yet registered.
+
+## Verification
+- typecheck (tsconfig.json): PASS
+- typecheck:web (tsconfig.web.json): pre-existing errors only (TrendRow.tsx,
+  ExportMenu.tsx from todo 15) — no new errors introduced.
+- repo-root typecheck: PASS
+- vitest (full suite): 27 files, 446 tests, all PASS
+- vitest cred-files.test.ts: 35 tests PASS
+- build (electron-vite build): PASS — ESM main bundle, CJS preload, renderer
+
+## Test coverage (cred-files.test.ts)
+- resolveCredentialWritePath: legacy dir default, overwrite existing legacy,
+  prefer profile copy, prefer OPENCODE_CONFIG_DIR.
+- writeCredentialFile: atomic write, mode 0o600, dir 0o700, no .tmp residue,
+  overwrite legacy, overwrite profile, verify-after-write (EACCES simulation),
+  traversal refusal (../../evil.json).
+- deleteCredentialFile: remove existing, idempotent absent, delete profile copy
+  (legacy survives).
+- testProvider: ok on clean model, error from {error} result, error from
+  error-kind issue, stale-kind issue with prefix, unconfigured ignored,
+  case-insensitive title match.
+- JWT helpers: parseJwtPayload, decodeJwtExp, extractAtlasAccessTokenExp,
+  formatExpiryCountdown (days/hours/minutes, expired).
+
+## Safety
+- No Electron GUI launched. No Playwright. Vitest with tmp HOME only.
+- No secrets logged. Credential values never appear in test output.
+- No plugin/ modifications.

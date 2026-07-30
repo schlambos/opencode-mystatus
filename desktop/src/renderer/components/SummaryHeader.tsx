@@ -10,6 +10,7 @@
 
 import { useState, type JSX } from "react";
 import type { MyStatusViewModel } from "../../shared/ipc";
+import { ExportMenu } from "./ExportMenu";
 import { getBridge } from "../lib/bridge";
 import {
   formatAge,
@@ -153,6 +154,7 @@ export function SummaryHeader({ model, fetchedAt, nextFetchAt, now }: SummaryHea
             <br />
             next sync in {nextSec}s
           </p>
+          <ExportMenu args={() => ({ threshold: model.threshold })} />
           <button
             type="button"
             data-testid="summary-refresh"
