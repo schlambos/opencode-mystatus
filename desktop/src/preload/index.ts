@@ -15,6 +15,16 @@ const api: Bridge = {
   patchPrefs: (patch) => ipcRenderer.invoke(CHANNELS.prefsPatch, patch ?? {}),
   refresh: () => ipcRenderer.invoke(CHANNELS.refresh),
   getHistory: () => ipcRenderer.invoke(CHANNELS.history),
+  capture: (spec) => ipcRenderer.invoke(CHANNELS.capture, spec),
+  getAuthStatus: () => ipcRenderer.invoke(CHANNELS.authStatus),
+  pasteCopilot: (payload) => ipcRenderer.invoke(CHANNELS.pasteCopilot, payload),
+  pastePoe: (payload) => ipcRenderer.invoke(CHANNELS.pastePoe, payload),
+  clearCredential: (name) => ipcRenderer.invoke(CHANNELS.clearCredential, name),
+  openExternal: (url) => ipcRenderer.invoke(CHANNELS.openExternal, url),
+  inspectConfig: () => ipcRenderer.invoke(CHANNELS.configInspect),
+  saveConfigSections: (sections) => ipcRenderer.invoke(CHANNELS.configSave, sections ?? {}),
+  resetConfig: () => ipcRenderer.invoke(CHANNELS.configReset),
+  revealPath: (target) => ipcRenderer.invoke(CHANNELS.reveal, target),
   onViewModel: (cb) => {
     const handler = (_event: unknown, payload: unknown): void => {
       cb(payload as Parameters<typeof cb>[0]);

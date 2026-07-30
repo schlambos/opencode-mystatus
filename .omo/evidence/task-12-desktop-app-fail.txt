@@ -1,0 +1,9 @@
+
+ RUN  v4.1.10 /Users/matt/Repos/mystatus/desktop
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 20 skipped (21)
+   Start at  17:31:10
+   Duration  134ms (transform 25ms, setup 0ms, import 32ms, tests 3ms, environment 0ms)
+

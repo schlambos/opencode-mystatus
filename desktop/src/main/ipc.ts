@@ -6,11 +6,33 @@
 // is main→renderer only (webContents.send) and has no handler here.
 
 import type { IpcMain } from "electron";
-import { CHANNELS, type PrefsPatch, type CaptureRequest } from "../shared/ipc.js";
+import { shell } from "electron";
+import {
+  CHANNELS,
+  type CaptureRequest,
+  type ConfigPatch,
+  type CopilotPastePayload,
+  type CredentialFileName,
+  type PoePastePayload,
+  type PrefsPatch,
+  type RevealTarget,
+} from "../shared/ipc.js";
 import { coreApi } from "./core.js";
 import { getPoller } from "./poller.js";
-import { loadPrefs, patchPrefs } from "./prefs.js";
+import { loadPrefs, patchPrefs, prefsPath } from "./prefs.js";
 import { handleCapture } from "./capture.js";
+import {
+  configPath,
+  readConfigStatus,
+  resetConfigFile,
+  saveSettingsSections,
+} from "./config-io.js";
+import {
+  clearCredentialFile,
+  getAuthStatus,
+  writeCopilotPAT,
+  writePoeApiKey,
+} from "./paste-creds.js";
 
 export function registerIpc(ipc: IpcMain): void {
   ipc.handle(CHANNELS.viewmodel, (_event, args) => coreApi.getViewModel(args ?? {}));
@@ -28,4 +50,26 @@ export function registerIpc(ipc: IpcMain): void {
   ipc.handle(CHANNELS.refresh, () => getPoller().forceRefresh());
   ipc.handle(CHANNELS.history, () => coreApi.readHistory());
   ipc.handle(CHANNELS.capture, (_event, spec: CaptureRequest) => handleCapture(spec ?? ({} as CaptureRequest)));
+  ipc.handle(CHANNELS.authStatus, () => getAuthStatus());
+  ipc.handle(CHANNELS.pasteCopilot, (_event, payload: CopilotPastePayload) =>
+    writeCopilotPAT(payload ?? ({} as CopilotPastePayload)),
+  );
+  ipc.handle(CHANNELS.pastePoe, (_event, payload: PoePastePayload) =>
+    writePoeApiKey(payload ?? ({} as PoePastePayload)),
+  );
+  ipc.handle(CHANNELS.clearCredential, (_event, name: CredentialFileName) =>
+    clearCredentialFile(name ?? ""),
+  );
+  ipc.handle(CHANNELS.openExternal, (_event, url: string) => shell.openExternal(url));
+  ipc.handle(CHANNELS.configInspect, () => readConfigStatus());
+  ipc.handle(CHANNELS.configSave, (_event, sections: ConfigPatch) =>
+    saveSettingsSections((sections ?? {}) as ConfigPatch),
+  );
+  ipc.handle(CHANNELS.configReset, () => resetConfigFile());
+  ipc.handle(CHANNELS.reveal, (_event, target: RevealTarget) => {
+    const path =
+      target === "config" ? configPath() : target === "prefs" ? prefsPath() : null;
+    if (path === null) throw new Error(`unknown reveal target: ${String(target)}`);
+    shell.showItemInFolder(path);
+  });
 }

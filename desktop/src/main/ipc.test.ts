@@ -28,6 +28,10 @@ vi.mock("./poller.js", () => ({
   getPoller: () => ({ forceRefresh: vi.fn() }),
 }));
 
+vi.mock("electron", () => ({
+  shell: { openExternal: vi.fn(async () => undefined) },
+}));
+
 const { registerIpc } = await import("./ipc.js");
 
 type Handler = (...args: unknown[]) => unknown;

@@ -197,7 +197,7 @@ Your next move: either start work, or have me run the high-accuracy adversarial 
   QA scenarios: happy — `npx vitest run desktop/src/main/capture-specs.test.ts`; Evidence .omo/evidence/task-11-desktop-app.txt. failure — capture missing `isg` for qwencloud (sentinel present, required field absent): write is REFUSED with a per-field error listing the missing cookie; no partial file created; Evidence .omo/evidence/task-11-desktop-app-fail.txt
   Commit: Y | feat(desktop): per-provider cookie capture configs
 
-- [ ] 12. Guided paste for Copilot PAT + Poe API key
+- [x] 12. Guided paste for Copilot PAT + Poe API key
   What to do / Must NOT do: Credentials page sections for **copilot**: token field (masked), username field, tier select (pro/pro+/max) → write `copilot-quota-token.json` `{token, username, tier}`; deep-link button `shell.openExternal('https://github.com/settings/tokens?type=beta')` + one-line scope guidance ("Plan → Read-only"). **poe**: apiKey field (masked) → write `poe-api-key.json` `{apiKey}`; deep-link `https://poe.com/api_key`. Both with save + clear-file actions. Also surface read-only auth.json presence per OAuth provider (name only, from a `mystatus:auth:status` IPC that reports which provider ids exist in the readable auth.json — NEVER return token values). MUST NOT attempt browser automation of PAT creation; MUST NOT display or transmit the pasted secrets beyond the file write.
   Parallelization: Wave 3 | Blocked by: 10 | Blocks: 13
   References: README.md Copilot section (PAT scopes + tiers, allowances 1,500/7,000/20,000) and Poe section (key resolution order); plugin/mystatus.ts:442+ (loadAuthMerged — auth.json read paths; cite exact lines found when implementing auth:status)

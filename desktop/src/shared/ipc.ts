@@ -16,12 +16,21 @@ export const CHANNELS = {
   export: "mystatus:export",
   configGet: "mystatus:config:get",
   configPatch: "mystatus:config:patch",
+  configInspect: "mystatus:config:inspect",
+  configSave: "mystatus:config:save",
+  configReset: "mystatus:config:reset",
+  reveal: "mystatus:reveal",
   prefsGet: "mystatus:prefs:get",
   prefsPatch: "mystatus:prefs:patch",
   push: "mystatus:push",
   refresh: "mystatus:refresh",
   history: "mystatus:history",
   capture: "mystatus:capture",
+  authStatus: "mystatus:auth:status",
+  pasteCopilot: "mystatus:paste:copilot",
+  pastePoe: "mystatus:paste:poe",
+  clearCredential: "mystatus:cred:clear",
+  openExternal: "mystatus:open:external",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -146,6 +155,29 @@ export interface ExportResponse {
 export type ConfigPatch = Partial<MyStatusConfig>;
 
 // ---------------------------------------------------------------------------
+// Settings page config IO (todo 14)
+// ---------------------------------------------------------------------------
+// Whole-section saves from the Settings page go through mystatus:config:save,
+// which performs an atomic read-modify-write with verify-after-write (main's
+// config-io.ts) instead of the core's shallow-merge saveConfig. inspect
+// distinguishes a corrupt mystatus.json from a missing one so the page can
+// show a recoverable error state and REFUSE to overwrite until the user fixes
+// the file or explicitly resets it.
+
+/**
+ * Strict read result for mystatus.json. `missing` = file absent (first run);
+ * `corrupt` = file exists but is unparseable even after JSONC comment
+ * stripping — saves must be refused until fixed or explicitly reset.
+ */
+export type ConfigStatus =
+  | { readonly status: "missing"; readonly path: string }
+  | { readonly status: "corrupt"; readonly path: string; readonly error: string }
+  | { readonly status: "ok"; readonly path: string; readonly config: MyStatusConfig };
+
+/** Files the reveal IPC may show in the OS file manager (strict allowlist). */
+export type RevealTarget = "config" | "prefs";
+
+// ---------------------------------------------------------------------------
 // Capture-window service (todo 10)
 // ---------------------------------------------------------------------------
 // `captureSession` opens an isolated in-memory BrowserWindow, lets the user
@@ -198,6 +230,63 @@ export interface CaptureResult {
 
 /** IPC request for mystatus:capture. */
 export type CaptureRequest = CaptureSpec;
+
+// ---------------------------------------------------------------------------
+// Guided paste (todo 12) — Copilot PAT + Poe API key
+// ---------------------------------------------------------------------------
+// These providers do NOT use browser cookie capture. The user pastes a token
+// (Copilot fine-grained PAT) or an API key (Poe) into a masked field and the
+// main process writes the exact plugin JSON schema to ~/.config/opencode/.
+// Deep links to the provider's token-management page are opened via
+// shell.openExternal through a dedicated IPC so the renderer never imports
+// the Electron shell directly.
+
+/** Copilot PAT payload — writes copilot-quota-token.json {token, username, tier}. */
+export interface CopilotPastePayload {
+  readonly token: string;
+  readonly username: string;
+  readonly tier: CopilotTier;
+}
+
+/** Poe API key payload — writes poe-api-key.json {apiKey}. */
+export interface PoePastePayload {
+  readonly apiKey: string;
+}
+
+export type CopilotTier = "pro" | "pro+" | "max";
+
+/** Result of a paste write: {ok} on success, {ok:false, error} on validation/write failure. */
+export type PasteResult =
+  | { readonly ok: true; readonly path: string }
+  | { readonly ok: false; readonly error: string };
+
+/** Result of clearing a credential file. */
+export type ClearResult =
+  | { readonly ok: true; readonly path: string }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * auth:status response — reports which provider ids have a readable auth.json
+ * entry OR a credential file present. NEVER returns token values; only the
+ * provider-id presence map. The renderer regex-scans the serialized payload
+ * to assert no secret prefixes leak through.
+ */
+export interface AuthStatus {
+  /** Provider ids with a readable auth.json entry (OAuth providers). */
+  readonly authJson: readonly string[];
+  /** Provider ids with a readable credential file under ~/.config/opencode/. */
+  readonly credentialFiles: readonly string[];
+}
+
+/** Open-external request: opens a URL in the user's default browser. */
+export interface OpenExternalRequest {
+  readonly url: string;
+}
+
+/** Credential file names the desktop app is allowed to write/clear. */
+export type CredentialFileName =
+  | "copilot-quota-token.json"
+  | "poe-api-key.json";
 
 // ---------------------------------------------------------------------------
 // Desktop-only prefs (mystatus-desktop.json — NOT mystatus.json)
@@ -267,6 +356,28 @@ export interface Bridge {
   getHistory: () => Promise<HistoryResponse>;
   /** Open an isolated capture window for a provider portal (todo 10). */
   capture: (spec: CaptureRequest) => Promise<CaptureResult>;
+  /** Report provider-id presence in auth.json + credential files (todo 12). No secrets. */
+  getAuthStatus: () => Promise<AuthStatus>;
+  /** Write Copilot PAT to copilot-quota-token.json (todo 12). */
+  pasteCopilot: (payload: CopilotPastePayload) => Promise<PasteResult>;
+  /** Write Poe API key to poe-api-key.json (todo 12). */
+  pastePoe: (payload: PoePastePayload) => Promise<PasteResult>;
+  /** Delete a credential file by name (todo 12). */
+  clearCredential: (name: CredentialFileName) => Promise<ClearResult>;
+  /** Open a URL in the user's default browser via shell.openExternal (todo 12). */
+  openExternal: (url: string) => Promise<void>;
+  /** Strict read of mystatus.json for the Settings page (todo 14): reports corrupt vs missing. */
+  inspectConfig: () => Promise<ConfigStatus>;
+  /**
+   * Atomic read-modify-write of mystatus.json for whole-section saves
+   * (todo 14). Refuses while the file is corrupt and rejects partially-formed
+   * `providers` payloads. Returns the merged config.
+   */
+  saveConfigSections: (sections: ConfigPatch) => Promise<MyStatusConfig>;
+  /** Overwrite a corrupt/missing mystatus.json with `{}` (todo 14). Refused when the file parses. */
+  resetConfig: () => Promise<MyStatusConfig>;
+  /** Show mystatus.json or mystatus-desktop.json in the OS file manager (todo 14). */
+  revealPath: (target: RevealTarget) => Promise<void>;
 }
 
 declare global {
