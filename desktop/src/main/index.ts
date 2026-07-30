@@ -2,7 +2,9 @@ import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { CHANNELS } from "../shared/ipc.js";
+import { coreApi } from "./core.js";
 import { registerIpc } from "./ipc.js";
+import { getNotifier } from "./notifier.js";
 import { getPoller } from "./poller.js";
 import { getTrayManager } from "./tray.js";
 import { createUpdater } from "./updater.js";
@@ -103,6 +105,24 @@ function bootstrap(): void {
     });
     tray.start((cb) => poller.onPoll(cb));
     poller.setTrayAlive(true);
+
+    // Notifications: subscribe to poll updates and fire on threshold crossings.
+    // Clicking a notification focuses the dashboard.
+    const notifier = getNotifier({
+      loadConfig: () => coreApi.getConfig(),
+      onClick: () => {
+        const wins = BrowserWindow.getAllWindows();
+        if (wins.length > 0) {
+          const [win] = wins;
+          if (win.isMinimized()) win.restore();
+          if (!win.isVisible()) win.show();
+          win.focus();
+        } else {
+          createWindow();
+        }
+      },
+    });
+    notifier.start((cb) => poller.onPoll(cb));
 
     createWindow();
   });

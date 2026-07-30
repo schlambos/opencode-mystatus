@@ -1,0 +1,36 @@
+Task 17 — Threshold-crossing notifications (desktop-app)
+
+Files:
+  desktop/src/main/notifier.ts      (pure decision + NotifierManager + singleton)
+  desktop/src/main/notifier.test.ts (28 tests)
+  desktop/src/main/index.ts          (wired NotifierManager to poller.onPoll)
+
+Acceptance criteria (vitest, pure decision function — no Electron needed):
+  - no notification on baseline poll
+  - exactly one on crossing (was >= threshold, now < threshold)
+  - none on repeated sub-threshold polls inside cooldown
+  - one on recovery (was < threshold, now >= threshold)
+  - none for hidden/disabled providers
+  - error model preserves state, fires nothing
+  - threshold boundary (25) treated as not-below (mirrors plugin/mystatus.ts:7346)
+  - cooldown suppresses crossed but NOT recovered
+  - first observation of a new key is baseline (no notification)
+
+QA happy path:
+  $ npm --prefix desktop test -- src/main/notifier.test.ts
+  Test Files  1 passed (1)
+  Tests      28 passed (28)
+
+QA failure path (Notification unsupported / error model):
+  - NotifierManager.fire() wraps Notification in try/catch — on unsupported
+    platform (Linux headless CI) it no-ops with no crash; poll cycle unaffected.
+  - Error model payload ({error: string}) preserves state and fires nothing.
+  - Verified by "handles an error model without throwing or firing" test.
+
+Full gate:
+  $ npm --prefix desktop run typecheck   # exit 0
+  $ npm --prefix desktop test             # 361 passed (23 files)
+  $ npm --prefix desktop run build        # exit 0
+
+Prefs source: mystatus-desktop.json (notifications, notifyCooldownMin) — NOT mystatus.json.
+Suppressed set: built from MyStatusConfig.providers.disabled + .hidden (lowercased).
