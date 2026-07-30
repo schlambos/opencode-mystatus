@@ -1,0 +1,13 @@
+
+> mystatus-desktop@0.0.0 test
+> vitest run src/main/config-io.test.ts
+
+
+ RUN  v4.1.10 /Users/matt/Repos/mystatus/desktop
+
+
+ Test Files  1 passed (1)
+      Tests  24 passed (24)
+   Start at  17:05:32
+   Duration  3.93s (transform 23ms, setup 0ms, import 31ms, tests 3.81s, environment 0ms)
+
