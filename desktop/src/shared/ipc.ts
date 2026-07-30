@@ -21,6 +21,7 @@ export const CHANNELS = {
   push: "mystatus:push",
   refresh: "mystatus:refresh",
   history: "mystatus:history",
+  capture: "mystatus:capture",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -145,6 +146,60 @@ export interface ExportResponse {
 export type ConfigPatch = Partial<MyStatusConfig>;
 
 // ---------------------------------------------------------------------------
+// Capture-window service (todo 10)
+// ---------------------------------------------------------------------------
+// `captureSession` opens an isolated in-memory BrowserWindow, lets the user
+// sign in to a provider portal, detects completion via sentinel cookies
+// (and optionally a URL pattern), extracts cookies BEFORE close, then ALWAYS
+// wipes the partition. The spec is declarative so per-provider configs
+// (todo 11) can be authored without touching the capture engine.
+
+export interface CaptureSpec {
+  /** In-memory partition id (NO `persist:` prefix). */
+  readonly partitionId: string;
+  /** Portal URL to load first. */
+  readonly startUrl: string;
+  /** Origins the portal may navigate to (the portal itself + its assets). */
+  readonly allowedOrigins: readonly string[];
+  /** Federated IdP origins (accounts.google.com, github.com, …) for SSO. */
+  readonly idpOrigins: readonly string[];
+  /** Cookie names whose presence signals a successful sign-in. */
+  readonly sentinelCookies: readonly string[];
+  /** Optional URL pattern for completion detection (e.g. opencode-go /workspace/<uuid>). */
+  readonly urlPattern?: RegExp;
+  /** Hard timeout in ms; resolves with status 'timeout' when reached. */
+  readonly timeoutMs: number;
+}
+
+export interface CapturedCookie {
+  name: string;
+  value: string;
+  domain?: string;
+  hostOnly?: boolean;
+  httpOnly?: boolean;
+  secure?: boolean;
+  path?: string;
+  expirationDate?: number;
+}
+
+export type CaptureStatus = "ok" | "timeout" | "cancelled" | "fallback";
+
+export interface CaptureResult {
+  readonly status: CaptureStatus;
+  /** Cookies extracted for the spec URL (present on 'ok'; empty otherwise). */
+  readonly cookies: readonly CapturedCookie[];
+  /** Last navigated URL (for urlPattern-derived fields like workspaceId). */
+  readonly finalUrl?: string;
+  /** When status === 'fallback': the portal URL to open externally. */
+  readonly fallbackUrl?: string;
+  /** Human-readable detail (timeout reason, cancel reason, etc.). */
+  readonly detail?: string;
+}
+
+/** IPC request for mystatus:capture. */
+export type CaptureRequest = CaptureSpec;
+
+// ---------------------------------------------------------------------------
 // Desktop-only prefs (mystatus-desktop.json — NOT mystatus.json)
 // ---------------------------------------------------------------------------
 // `threshold` is NOT a MyStatusConfig key — the core reads it only from
@@ -210,6 +265,8 @@ export interface Bridge {
   refresh: () => Promise<void>;
   /** Read the core's trend history file (todo 7). Read-only; empty on any failure. */
   getHistory: () => Promise<HistoryResponse>;
+  /** Open an isolated capture window for a provider portal (todo 10). */
+  capture: (spec: CaptureRequest) => Promise<CaptureResult>;
 }
 
 declare global {

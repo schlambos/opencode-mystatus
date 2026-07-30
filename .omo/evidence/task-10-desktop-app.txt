@@ -1,0 +1,113 @@
+Task 10 — Capture-window service (main process)
+==============================================
+
+Plan: .omo/plans/desktop-app.md todo 10
+Commit: feat(desktop): isolated session capture-window service
+
+Files changed (desktop/ only):
+  - desktop/src/shared/ipc.ts   (modified) — added CHANNELS.capture, CaptureSpec, CaptureResult, CapturedCookie, CaptureStatus, CaptureRequest; added capture() to Bridge
+  - desktop/src/main/capture.ts  (new)      — captureSession(spec, deps), fallbackResult(), handleCapture() IPC queue
+  - desktop/src/main/ipc.ts      (modified) — wired CHANNELS.capture → handleCapture in registerIpc
+  - desktop/src/main/capture.test.ts (new)  — 17 vitest tests, vi.mock('electron')
+
+Implementation summary
+----------------------
+captureSession(spec, deps):
+  (a) session.fromPartition(partitionId) — NO persist: prefix (in-memory).
+  (b) ses.setUserAgent(CHROME_UA) — Chrome 131 UA, no Electron token.
+  (c) ses.setPermissionRequestHandler((_,__,cb)=>cb(false)) — deny all.
+  (d) BrowserWindow 1100x800, webPreferences explicitly asserts:
+        sandbox: true, contextIsolation: true, nodeIntegration: false,
+        partition: partitionId, NO preload key.
+  (e) will-navigate + will-frame-navigate guards: allowedOrigins ∪ idpOrigins;
+        disallowed navigations cancelled via details.preventDefault().
+  (f) setWindowOpenHandler: allow with SAME partition for allowed origins
+        (OAuth popups), deny otherwise.
+  (g) completion detection: 2s-interval poll of ses.cookies.get for ANY
+        sentinel cookie, PLUS did-navigate / did-redirect-navigation hook
+        matching spec.urlPattern (for opencode-go /workspace/<uuid>).
+  (h) extract cookies BEFORE close via ses.cookies.get({url: startUrl}).
+  (i) ALWAYS on settle (ok/timeout/cancelled): await Promise.all([
+        ses.clearStorageData(), ses.clearCache(), ses.clearAuthCache() ]),
+        then win.close(). Idempotent settle — first caller wins.
+
+Electron 43 Session has no close() method — documented in capture.ts header.
+In-memory partitions are released on process exit / GC; the mandatory clear*
+calls empty partition data before the window closes.
+
+Embedded-login fallback: fallbackResult(portalUrl, detail?) returns
+{status:'fallback', fallbackUrl} for the renderer to offer shell.openExternal
++ manual paste path (todo 12). Pure function, no window opened.
+
+IPC queue: handleCapture(spec) serializes capture requests — ONE capture
+window at a time. Concurrent requests queue in arrival order and run after
+the in-flight capture settles. Never rejects.
+
+Verification (headless only — no Electron GUI, no Playwright)
+-------------------------------------------------------------
+# typecheck (desktop)
+$ npm --prefix desktop run typecheck
+> tsc --noEmit -p tsconfig.json
+(exit 0)
+
+# typecheck (repo root — unchanged)
+$ npm run typecheck
+> tsc --noEmit
+(exit 0)
+
+# vitest — capture + ipc
+$ npx vitest run desktop/src/main/capture.test.ts desktop/src/main/ipc.test.ts
+Test Files  2 passed (2)
+Tests      21 passed (21)
+
+# vitest — capture only (17 tests)
+$ npx vitest run desktop/src/main/capture.test.ts
+Tests  17 passed (17)
+
+# build (ESM main bundle confirmed)
+$ npm --prefix desktop run build
+out/main/index.js  203.00 kB  (ESM — contains import/export, no require())
+
+Test coverage (17 tests)
+------------------------
+captureSession:
+  1. prevents navigation outside the allowlist via preventDefault
+  2. allows navigation to allowedOrigins (not prevented)
+  3. allows navigation to idpOrigins (SSO — accounts.google.com, github.com)
+  4. will-frame-navigate guards subframes too
+  5. resolves with cookies when a sentinel cookie appears
+  6. always calls clearStorageData, clearCache, clearAuthCache exactly once on success
+  7. closes the window on settle
+  8. sets a Chrome UA with no Electron token
+  9. installs a permission handler that denies all (cb(false))
+  10. asserts sandbox/contextIsolation/no-nodeIntegration defaults in webPreferences
+  11. NO preload key in webPreferences (capture window does not attach app IPC)
+  12. setWindowOpenHandler allows allowed origins with same partition, denies others
+  13. timeout path: resolves {status:'timeout'}, partition still wiped, window closed
+  14. cancelled path: user closes window → {status:'cancelled'}, still wiped
+  15. urlPattern completion fires on did-navigate match (opencode-go workspace)
+  16. urlPattern completion fires on did-redirect-navigation match
+  17. does not log cookie names or values (console spy)
+
+fallbackResult:
+  - returns fallback result with portal URL for openExternal
+  - accepts custom detail
+
+handleCapture IPC queue (vi.mock('electron')):
+  - runs a single capture to completion via production handleCapture path
+  - queues a second concurrent capture so only one runs at a time
+    (first stays in flight with long timeout; second does NOT resolve until
+     first settles; exactly 2 windows created, never overlapping)
+
+Pre-existing unrelated failure
+-----------------------------
+config-io.test.ts > "unsubscribe stops the callback" fails in isolation —
+this is a pre-existing file-watcher timing flake in todo 21's config-io
+(untracked, not touched by this task). Not caused by this change.
+
+Constraints honored
+-------------------
+- No Electron / Playwright / electron-vite dev / GUI window launched.
+- Verified ONLY with vitest + vi.mock('electron') + typecheck + build.
+- plugin/ untouched. Per-provider specs (todo 11) NOT implemented.
+- Staged only desktop/ (+ shared/ipc.ts which is under desktop/).

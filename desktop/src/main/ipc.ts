@@ -6,10 +6,11 @@
 // is main→renderer only (webContents.send) and has no handler here.
 
 import type { IpcMain } from "electron";
-import { CHANNELS, type PrefsPatch } from "../shared/ipc.js";
+import { CHANNELS, type PrefsPatch, type CaptureRequest } from "../shared/ipc.js";
 import { coreApi } from "./core.js";
 import { getPoller } from "./poller.js";
 import { loadPrefs, patchPrefs } from "./prefs.js";
+import { handleCapture } from "./capture.js";
 
 export function registerIpc(ipc: IpcMain): void {
   ipc.handle(CHANNELS.viewmodel, (_event, args) => coreApi.getViewModel(args ?? {}));
@@ -26,4 +27,5 @@ export function registerIpc(ipc: IpcMain): void {
   ipc.handle(CHANNELS.prefsPatch, (_event, patch) => patchPrefs((patch ?? {}) as PrefsPatch));
   ipc.handle(CHANNELS.refresh, () => getPoller().forceRefresh());
   ipc.handle(CHANNELS.history, () => coreApi.readHistory());
+  ipc.handle(CHANNELS.capture, (_event, spec: CaptureRequest) => handleCapture(spec ?? ({} as CaptureRequest)));
 }
