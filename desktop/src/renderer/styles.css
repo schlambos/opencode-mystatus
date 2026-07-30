@@ -87,3 +87,73 @@ body {
   scrollbar-width: thin;
   scrollbar-color: var(--color-ink-700) transparent;
 }
+
+/* Threshold slider — track gradient mirrors the status tiers (red → green). */
+.threshold-slider {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 4px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    var(--color-status-dead),
+    var(--color-status-low) 35%,
+    var(--color-status-warn) 60%,
+    var(--color-status-ok)
+  );
+  cursor: pointer;
+}
+
+.threshold-slider::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: var(--color-fog-100);
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-accent) 22%, transparent);
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.threshold-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+.threshold-slider:active::-webkit-slider-thumb {
+  transform: scale(1.25);
+  box-shadow: 0 0 0 5px color-mix(in oklab, var(--color-accent) 28%, transparent);
+}
+
+.threshold-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: var(--color-fog-100);
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-accent) 22%, transparent);
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.threshold-slider::-moz-range-thumb:hover {
+  transform: scale(1.15);
+}
+
+.threshold-slider:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-accent) 55%, transparent);
+}
+
+/* Sparkline points grow on hover (GPU-composited transform only). */
+.spark-point {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.spark-point:hover {
+  transform: scale(1.8);
+}

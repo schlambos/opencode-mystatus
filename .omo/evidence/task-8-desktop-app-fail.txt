@@ -1,0 +1,43 @@
+Task 8 — failure scenario: patchConfig rejected (bridge save failure)
+=====================================================================
+Date: 2026-07-30
+Plan QA failure case: 'patchConfig rejected (bridge unavailable in fixture):
+assert controls stay functional in session-only mode with a non-blocking toast'
+
+Two locked regression tests cover this (both run against the staged tree):
+- ControlsBar.test.tsx: 'keeps the controls usable in session-only mode when
+  patchConfig is rejected' — error notice names mystatus.json, session values
+  survive, sort buttons keep responding, notice is role=status (non-blocking)
+- store.test.ts: 'reports a failed destination but keeps session controls active'
+  and 'keeps controls session-only with a notice when the bridge is unavailable'
+
+## npx vitest run src/renderer/components/ControlsBar.test.tsx -t 'rejected'
+
+ RUN  v4.1.10 /private/tmp/t8-staged/desktop
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 4 skipped (5)
+   Start at  16:17:49
+   Duration  365ms (transform 46ms, setup 0ms, import 61ms, tests 60ms, environment 150ms)
+
+
+## npx vitest run src/renderer/lib/store.test.ts -t 'failed destination'
+ RUN  v4.1.10 /private/tmp/t8-staged/desktop
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 18 skipped (19)
+   Start at  16:17:50
+   Duration  150ms (transform 41ms, setup 0ms, import 26ms, tests 31ms, environment 0ms)
+
+
+## npx vitest run src/renderer/lib/store.test.ts -t 'bridge is unavailable'
+ RUN  v4.1.10 /private/tmp/t8-staged/desktop
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 18 skipped (19)
+   Start at  16:17:50
+   Duration  136ms (transform 32ms, setup 0ms, import 25ms, tests 19ms, environment 0ms)
+

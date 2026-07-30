@@ -1,4 +1,5 @@
 import type { JSX } from "react";
+import { ControlsBar } from "../components/ControlsBar";
 import { Dashboard } from "../components/Dashboard";
 import { PaneShell } from "../components/PaneShell";
 import { SummaryHeader } from "../components/SummaryHeader";
@@ -80,6 +81,10 @@ export function DashboardPane(): JSX.Element {
         </div>
       )}
       <SummaryHeader model={model} fetchedAt={fetchedAt} nextFetchAt={nextFetchAt} now={now} />
+
+      <div className="mt-4">
+        <ControlsBar />
+      </div>
 
       <Dashboard />
     </PaneShell>

@@ -27,8 +27,16 @@
 // that will re-derive without polling.
 
 import { BrowserWindow } from "electron";
-import { CHANNELS, type MyStatusConfig, type PushPayload, type ViewModelResult } from "../shared/ipc.js";
+import {
+  CHANNELS,
+  type DesktopPrefs,
+  type MyStatusArgs,
+  type MyStatusConfig,
+  type PushPayload,
+  type ViewModelResult,
+} from "../shared/ipc.js";
 import { coreApi, type CoreApi } from "./core.js";
+import { loadPrefs } from "./prefs.js";
 
 const MIN_INTERVAL_SEC = 5;
 const DEFAULT_INTERVAL_SEC = 60;
@@ -36,6 +44,7 @@ const DEFAULT_INTERVAL_SEC = 60;
 export interface PollerDeps {
   readonly coreApi: CoreApi;
   readonly loadConfig: () => MyStatusConfig;
+  readonly loadPrefs: () => DesktopPrefs;
   readonly getAllWindows: () => BrowserWindow[];
   readonly now: () => number;
 }
@@ -130,7 +139,13 @@ export class StatusPoller {
       const staleConfig = this.lastConfigSig !== null && this.lastConfigSig !== sig;
       this.lastConfigSig = sig;
 
-      const args = fresh ? { fresh: true } : {};
+      // threshold is NOT a MyStatusConfig key — the core reads it only from
+      // per-call args (plugin/mystatus.ts:7273), so the persisted desktop
+      // prefs value rides along on every poll.
+      const args: MyStatusArgs = {
+        threshold: this.deps.loadPrefs().threshold,
+        ...(fresh ? { fresh: true } : {}),
+      };
       let model: ViewModelResult;
       try {
         model = await this.deps.coreApi.getViewModel(args);
@@ -183,6 +198,7 @@ export function getPoller(): StatusPoller {
     singleton = new StatusPoller({
       coreApi,
       loadConfig: () => coreApi.getConfig(),
+      loadPrefs,
       getAllWindows: () => BrowserWindow.getAllWindows(),
       now: () => Date.now(),
     });

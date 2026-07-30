@@ -14,26 +14,9 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { DesktopPrefs, TrendMode, WindowBounds } from "../shared/ipc.js";
 
-export type TrendMode = "off" | "compact" | "full";
-
-export interface WindowBounds {
-  readonly x: number | undefined;
-  readonly y: number | undefined;
-  readonly width: number;
-  readonly height: number;
-}
-
-export interface DesktopPrefs {
-  readonly threshold: number;
-  /** UI override; `undefined` defers to mystatus.json `trend`. */
-  readonly trendMode: TrendMode | undefined;
-  readonly notifications: boolean;
-  readonly notifyCooldownMin: number;
-  readonly lastTab: string | undefined;
-  readonly windowBounds: WindowBounds | undefined;
-  readonly launchAtLogin: boolean;
-}
+export type { DesktopPrefs, TrendMode, WindowBounds };
 
 export const DEFAULT_PREFS: DesktopPrefs = {
   threshold: 25,

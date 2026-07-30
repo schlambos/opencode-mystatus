@@ -16,6 +16,8 @@ export const CHANNELS = {
   export: "mystatus:export",
   configGet: "mystatus:config:get",
   configPatch: "mystatus:config:patch",
+  prefsGet: "mystatus:prefs:get",
+  prefsPatch: "mystatus:prefs:patch",
   push: "mystatus:push",
   refresh: "mystatus:refresh",
 } as const;
@@ -142,6 +144,38 @@ export interface ExportResponse {
 export type ConfigPatch = Partial<MyStatusConfig>;
 
 // ---------------------------------------------------------------------------
+// Desktop-only prefs (mystatus-desktop.json — NOT mystatus.json)
+// ---------------------------------------------------------------------------
+// `threshold` is NOT a MyStatusConfig key — the core reads it only from
+// per-call args (plugin/mystatus.ts:7273), so it persists here and is passed
+// into every getViewModel call as args.threshold. Types live in this shared
+// module so the renderer can import them without pulling node:fs from
+// main/prefs.ts into the renderer bundle.
+
+export type TrendMode = "off" | "compact" | "full";
+
+export interface WindowBounds {
+  readonly x: number | undefined;
+  readonly y: number | undefined;
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface DesktopPrefs {
+  readonly threshold: number;
+  /** UI override; `undefined` defers to mystatus.json `trend`. */
+  readonly trendMode: TrendMode | undefined;
+  readonly notifications: boolean;
+  readonly notifyCooldownMin: number;
+  readonly lastTab: string | undefined;
+  readonly windowBounds: WindowBounds | undefined;
+  readonly launchAtLogin: boolean;
+}
+
+/** Prefs patch: read-modify-write merged into mystatus-desktop.json. */
+export type PrefsPatch = Partial<DesktopPrefs>;
+
+// ---------------------------------------------------------------------------
 // Preload bridge surface
 // ---------------------------------------------------------------------------
 
@@ -151,6 +185,10 @@ export interface Bridge {
   getExport: (req: ExportRequest) => Promise<ExportResponse>;
   getConfig: () => Promise<MyStatusConfig>;
   patchConfig: (patch: ConfigPatch) => Promise<MyStatusConfig>;
+  /** Read desktop-only prefs from mystatus-desktop.json (todo 20 store). */
+  getPrefs: () => Promise<DesktopPrefs>;
+  /** Merge a patch into mystatus-desktop.json and return the result. */
+  patchPrefs: (patch: PrefsPatch) => Promise<DesktopPrefs>;
   /** Subscribe to pushed view models from the poller (todo 3). */
   onViewModel: (cb: (payload: PushPayload) => void) => () => void;
   /** Force an out-of-schedule refresh from the poller (todo 3). */

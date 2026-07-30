@@ -1,0 +1,54 @@
+Task 8 — Sort + threshold + trend controls
+===========================================
+Date: 2026-07-30
+Verified against the exact staged (committed) tree via git checkout-index
+into /tmp/t8-staged, immune to concurrent worktree edits from parallel todos.
+
+## Files changed
+- desktop/src/renderer/components/ControlsBar.tsx (NEW) — sort/trend segmented controls,
+  threshold slider 5-50 step 5 with live re-bucketed tallies, Save as defaults, inline toast
+- desktop/src/renderer/components/ControlsBar.test.tsx (NEW) — 5 jsdom+RTL cases
+- desktop/src/renderer/lib/controls.ts (NEW) — sortProviders (sortCells parity,
+  plugin/mystatus.ts:7119-7137), bucketTallies (7339-7348 parity), clampThreshold, baselines/dirty
+- desktop/src/renderer/lib/controls.test.ts (NEW) — 14 parity/boundary cases
+- desktop/src/renderer/lib/store.ts — prefs state, controls session slice, split-persist save
+  (rebased over todo 6's reloadConfig from cbcab0d)
+- desktop/src/renderer/lib/store.test.ts — +7 controls cases
+- desktop/src/shared/ipc.ts — mystatus:prefs:get/patch channels, DesktopPrefs types, Bridge methods
+- desktop/src/main/ipc.ts + preload/index.ts — prefs IPC wiring
+- desktop/src/main/poller.ts — args.threshold from prefs on every getViewModel call
+- desktop/src/main/poller.test.ts + ipc.test.ts — wiring + threshold-passthrough tests
+- desktop/src/main/prefs.ts — types now re-exported from shared/ipc.ts (single source of truth)
+- desktop/src/renderer/pages/DashboardPane.tsx — mounts ControlsBar above the card grid
+- desktop/src/renderer/styles.css — token-driven threshold slider styling
+
+## Persistence split (MUST NOT guards)
+- sort/trend -> patchConfig -> mystatus.json (real MyStatusConfig keys)
+- threshold -> patchPrefs -> mystatus-desktop.json (args-only in core, mystatus.ts:7273)
+- asserted: patchConfig payload never contains 'threshold'; zero writes on slider drag
+
+## QA happy: npx vitest run src/renderer/components/ControlsBar.test.tsx
+
+ RUN  v4.1.10 /private/tmp/t8-staged/desktop
+
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  16:17:36
+   Duration  378ms (transform 48ms, setup 0ms, import 62ms, tests 78ms, environment 144ms)
+
+
+## Task-8 suites + neighbors (staged tree)
+
+ Test Files  9 passed (9)
+      Tests  132 passed (132)
+   Start at  16:17:36
+   Duration  481ms (transform 454ms, setup 0ms, import 661ms, tests 235ms, environment 208ms)
+
+
+## typecheck:web
+Task-8 files: 0 errors. Remaining staged-tree errors are externalities:
+- Dashboard.tsx/IssuesPanel.tsx import todo 9's untracked HideButton/issues modules
+- core.test.ts patchConfig round-trip needs saveConfig, exported only by the dirty
+  working-tree plugin (plan: executor works against the working-tree core; passes
+  36/36 in the real worktree run at 16:08)

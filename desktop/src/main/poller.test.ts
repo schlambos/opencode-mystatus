@@ -7,7 +7,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StatusPoller, type PollerDeps } from "./poller.js";
 import type { CoreApi } from "./core.js";
-import type { MyStatusConfig, MyStatusViewModel, PushPayload, ViewModelResult } from "../shared/ipc.js";
+import type {
+  DesktopPrefs,
+  MyStatusConfig,
+  MyStatusViewModel,
+  PushPayload,
+  ViewModelResult,
+} from "../shared/ipc.js";
+
+const FAKE_PREFS: DesktopPrefs = {
+  threshold: 30,
+  trendMode: undefined,
+  notifications: true,
+  notifyCooldownMin: 60,
+  lastTab: undefined,
+  windowBounds: undefined,
+  launchAtLogin: false,
+};
 
 interface FakeWindow {
   isDestroyed: () => boolean;
@@ -40,7 +56,7 @@ function makeModel(): MyStatusViewModel {
 }
 
 interface StubState {
-  calls: { fresh: boolean }[];
+  calls: { fresh: boolean; threshold: number | undefined }[];
   nextModel: ViewModelResult;
   delayMs: number;
   throwOnce: boolean;
@@ -49,8 +65,8 @@ interface StubState {
 
 function makeStubCoreApi(state: StubState): CoreApi {
   const api = {
-    getViewModel: (args: { fresh?: boolean }): Promise<ViewModelResult> => {
-      state.calls.push({ fresh: args.fresh === true });
+    getViewModel: (args: { fresh?: boolean; threshold?: number }): Promise<ViewModelResult> => {
+      state.calls.push({ fresh: args.fresh === true, threshold: args.threshold });
       if (state.throwOnce && !state.thrownAlready) {
         state.thrownAlready = true;
         return Promise.reject(new Error("stub boom"));
@@ -72,6 +88,7 @@ function makeDeps(stub: StubState, windows: FakeWindow[], nowMs: () => number, c
   return {
     coreApi: makeStubCoreApi(stub),
     loadConfig: () => cfg,
+    loadPrefs: () => FAKE_PREFS,
     getAllWindows: () => windows as unknown as import("electron").BrowserWindow[],
     now: nowMs,
   };
@@ -111,6 +128,20 @@ describe("StatusPoller", () => {
     expect(stub.calls).toHaveLength(2);
     expect(win.sends).toHaveLength(2);
 
+    poller.stop();
+  });
+
+  it("passes the persisted desktop prefs threshold into every getViewModel call", async () => {
+    const stub: StubState = { calls: [], nextModel: makeModel(), delayMs: 0, throwOnce: false, thrownAlready: false };
+    const win = makeWindow();
+    const poller = new StatusPoller(makeDeps(stub, [win], () => 0));
+
+    poller.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await poller.forceRefresh();
+
+    expect(stub.calls[0]?.threshold).toBe(FAKE_PREFS.threshold);
+    expect(stub.calls[1]?.threshold).toBe(FAKE_PREFS.threshold);
     poller.stop();
   });
 
@@ -286,7 +317,8 @@ describe("StatusPoller", () => {
     const poller = new StatusPoller({
       coreApi: makeStubCoreApi(stub),
       loadConfig: () => cfg,
-      getAllWindows: () => win ? [win as unknown as import("electron").BrowserWindow[]] : [],
+      loadPrefs: () => FAKE_PREFS,
+      getAllWindows: () => win ? [win as unknown as import("electron").BrowserWindow] : [],
       now: () => 0,
     });
 
@@ -318,6 +350,7 @@ describe("StatusPoller", () => {
     const poller = new StatusPoller({
       coreApi: makeStubCoreApi(stub),
       loadConfig: () => ({}),
+      loadPrefs: () => FAKE_PREFS,
       getAllWindows: () => windows as unknown as import("electron").BrowserWindow[],
       now: () => 0,
     });
