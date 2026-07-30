@@ -9,7 +9,7 @@ export function App(): JSX.Element {
       .ping()
       .then(() => setPong("ok"))
       .catch(() => setPong("error"));
-    off = window.mystatus.onPush(() => {
+    off = window.mystatus.onViewModel(() => {
       /* placeholder: view-model push arrives in todo 3 */
     });
     return () => off?.();

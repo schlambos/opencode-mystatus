@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { CHANNELS } from "../shared/ipc.js";
+import { registerIpc } from "./ipc.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -43,7 +44,28 @@ function createWindow(): BrowserWindow {
   return win;
 }
 
+function focusExistingWindow(): void {
+  const wins = BrowserWindow.getAllWindows();
+  if (wins.length > 0) {
+    const [win] = wins;
+    if (win.isMinimized()) win.restore();
+    win.focus();
+  }
+}
+
 function bootstrap(): void {
+  // Single-instance lock — must be acquired before any window is created.
+  // On failure (another instance owns the lock) we quit immediately; the
+  // already-running instance focuses its window via the second-instance event.
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    app.quit();
+    return;
+  }
+  app.on("second-instance", () => {
+    focusExistingWindow();
+  });
+
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
   });
@@ -54,6 +76,7 @@ function bootstrap(): void {
 
   app.whenReady().then(() => {
     registerShellIpc(ipcMain);
+    registerIpc(ipcMain);
     createWindow();
   });
 }
