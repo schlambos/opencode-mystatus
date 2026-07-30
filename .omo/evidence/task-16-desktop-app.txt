@@ -1,0 +1,40 @@
+Task 16: Tray icon with status color
+
+What shipped:
+- desktop/src/main/tray.ts — TrayManager class + pure helpers
+  - statusForModel: derives worst status (green/yellow/red/gray) from a
+    ViewModelResult, mirroring plugin/mystatus.ts:48-60 thresholds
+    (red ≤0 or <threshold, yellow <50, green ≥50, gray on error/no providers)
+  - trayIconPath: maps status → desktop/build/icons/tray-{status}.png
+  - buildMenuTemplate: Show/Hide Dashboard, Refresh Now, Issues (N), Quit
+  - TrayManager.start: creates Tray with gray icon, wires click→toggleWindow,
+    subscribes to poll updates; dedup on (status, issueCount)
+  - TrayManager.destroy: unsubscribes + tray.destroy()
+  - getTrayManager singleton: icon dir = build/icons (dev) | resourcesPath/icons (prod)
+- desktop/build/icons/tray-{green,yellow,red,gray}.png — 16x16 solid PNG placeholders
+- desktop/src/main/poller.ts — added onPoll(listener) + PollListener type;
+  broadcast() now invokes listeners best-effort (throw caught+ignored)
+- desktop/src/main/index.ts — wired TrayManager into bootstrap:
+  - tray created after poller.start
+  - tray.start((cb) => poller.onPoll(cb))
+  - poller.setTrayAlive(true) so polling continues with no windows
+  - window-all-closed: darwin does NOT quit (tray keeps app alive);
+    other platforms still quit
+- desktop/src/main/tray.test.ts — 22 tests with vi.mock('electron'):
+  - statusForModel: 7 cases (error, empty, red≤0, red<threshold, yellow<50,
+    green≥50, threshold boundary)
+  - trayIconPath: 4 status→file mappings
+  - buildMenuTemplate: 6 cases (show/hide label, issue count, disabled when 0,
+    quit click, refresh click)
+  - TrayManager: 8 cases (create+subscribe, left-click hide/show/create,
+    icon+menu update on poll, dedup, destroy, idempotent start, error payload)
+
+Verification:
+- npm --prefix desktop run typecheck → exit 0
+- npm --prefix desktop test (tray+poller+index suites) → 37/37 pass
+- npm --prefix desktop run build → exit 0, ESM main bundle (import/export),
+  Tray/Menu/nativeImage present in bundle
+- Pre-existing flaky fs-watcher tests in config-io.test.ts (2 failures) are
+  unrelated to this todo — they fail independently of these changes.
+
+Commit: feat(desktop): system tray with status indicator

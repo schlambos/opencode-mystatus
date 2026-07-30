@@ -49,6 +49,14 @@ export interface PollerDeps {
   readonly now: () => number;
 }
 
+/**
+ * Listener invoked once per completed fetch with the broadcast payload.
+ * Used by the tray (todo 16) to refresh its icon/menu without coupling the
+ * poller to Electron's Tray API. Listeners are best-effort: a throw is
+ * caught and ignored so a buggy listener cannot stall the poll cycle.
+ */
+export type PollListener = (payload: PushPayload) => void;
+
 function intervalMs(cfg: MyStatusConfig): number {
   const sec = Math.max(MIN_INTERVAL_SEC, cfg.watchIntervalSec ?? DEFAULT_INTERVAL_SEC);
   return sec * 1000;
@@ -66,6 +74,7 @@ export class StatusPoller {
   private forceResolver: (() => void) | null = null;
   private trayAlive = false;
   private lastConfigSig: string | null = null;
+  private listeners: PollListener[] = [];
 
   constructor(deps: PollerDeps) {
     this.deps = deps;
@@ -74,6 +83,18 @@ export class StatusPoller {
   /** Tray liveness gate for todo 16. When true, polling continues with no windows. */
   setTrayAlive(alive: boolean): void {
     this.trayAlive = alive;
+  }
+
+  /**
+   * Register a listener invoked once per completed fetch with the broadcast
+   * payload. Returns an unsubscribe function. Used by the tray to refresh its
+   * icon/menu. A throwing listener is caught and ignored.
+   */
+  onPoll(listener: PollListener): () => void {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== listener);
+    };
   }
 
   /** Begin polling. The first fetch is scheduled immediately (0ms delay). */
@@ -184,6 +205,13 @@ export class StatusPoller {
       // Skip destroyed windows — getAllWindows can include windows mid-close.
       if (!win.isDestroyed()) {
         win.webContents.send(CHANNELS.push, payload);
+      }
+    }
+    for (const listener of this.listeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Best-effort: a buggy listener must not stall the poll cycle.
       }
     }
   }

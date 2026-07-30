@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { CHANNELS } from "../shared/ipc.js";
 import { registerIpc } from "./ipc.js";
 import { getPoller } from "./poller.js";
+import { getTrayManager } from "./tray.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -67,7 +68,12 @@ function bootstrap(): void {
     focusExistingWindow();
   });
 
+  const poller = getPoller();
+
   app.on("window-all-closed", () => {
+    // On darwin the app stays alive in the tray when the tray exists; on
+    // other platforms a tray-only app is unusual, so we still quit. The
+    // tray keeps the poller alive via setTrayAlive(true).
     if (process.platform !== "darwin") app.quit();
   });
 
@@ -78,12 +84,24 @@ function bootstrap(): void {
   app.whenReady().then(() => {
     registerShellIpc(ipcMain);
     registerIpc(ipcMain);
-    getPoller().start();
+    poller.start();
+
+    // Tray: keeps the app alive on darwin and drives the poller even with
+    // no windows open. The tray subscribes to poll updates to refresh its
+    // icon/menu on each completed fetch.
+    const tray = getTrayManager({
+      getWindows: () => BrowserWindow.getAllWindows(),
+      createWindow,
+      refresh: () => poller.forceRefresh(),
+    });
+    tray.start((cb) => poller.onPoll(cb));
+    poller.setTrayAlive(true);
+
     createWindow();
   });
 
   app.on("before-quit", () => {
-    getPoller().stop();
+    poller.stop();
   });
 }
 
