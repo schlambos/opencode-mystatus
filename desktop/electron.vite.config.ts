@@ -38,12 +38,21 @@ export default defineConfig({
     },
     resolve: { alias: coreAlias },
   },
+  // Sandboxed renderers (webPreferences.sandbox: true) can only execute
+  // CommonJS preload scripts — ESM preloads require sandbox: false
+  // (https://www.electronjs.org/docs/latest/tutorial/esm). We keep the
+  // sandbox, so the preload is the one target built as CJS.
   preload: {
     build: {
       rollupOptions: {
         input: { index: resolve(here, "src/preload/index.ts") },
         external: externalized,
-        output: esmOutput,
+        output: {
+          format: "cjs",
+          entryFileNames: "[name].js",
+          chunkFileNames: "chunks/[name]-[hash].js",
+          assetFileNames: "assets/[name][extname]",
+        },
       },
     },
     resolve: { alias: coreAlias },

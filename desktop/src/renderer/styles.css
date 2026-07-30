@@ -1,8 +1,89 @@
 @import "tailwindcss";
 
+/* ── mystatus desktop design tokens ───────────────────────────────
+   Ops-console palette: layered near-black "ink" surfaces, "fog" text
+   scale, and the four plugin status tiers (🟩🟨🟧🟥) as first-class
+   tokens. Every color used by components lives here. */
+@theme {
+  --font-sans: system-ui, "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  /* surfaces, darkest → lightest */
+  --color-ink-950: #07090d;
+  --color-ink-900: #0c0f15;
+  --color-ink-850: #11151d;
+  --color-ink-800: #161c26;
+  --color-ink-750: #1d2430;
+  --color-ink-700: #273040;
+  --color-ink-600: #364357;
+
+  /* text */
+  --color-fog-100: #e9edf3;
+  --color-fog-200: #c9d2de;
+  --color-fog-400: #8b98ab;
+  --color-fog-500: #677386;
+  --color-fog-600: #4d5869;
+
+  /* status tiers — parity with plugin/mystatus.ts:48-60 */
+  --color-status-ok: #3ecf7a; /*   ≥50            */
+  --color-status-warn: #e8c33f; /* ≥threshold     */
+  --color-status-low: #ee8b4a; /*  <threshold     */
+  --color-status-dead: #ef5350; /* ≤0             */
+
+  /* interactive accent — deliberately cool, distinct from all status tiers */
+  --color-accent: #61a8ff;
+
+  --animate-rise: rise 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-blink: blink 1.6s ease-in-out infinite;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
 html,
 body,
 #root {
   height: 100%;
   margin: 0;
+}
+
+body {
+  @apply bg-ink-950 font-sans text-fog-100 antialiased;
+}
+
+/* Layered console backdrop: faint status-green glow over a fine grid. */
+.console-bg {
+  background-image:
+    radial-gradient(900px 480px at 18% -10%, color-mix(in oklab, var(--color-status-ok) 5%, transparent), transparent 70%),
+    radial-gradient(720px 420px at 92% 112%, color-mix(in oklab, var(--color-accent) 4%, transparent), transparent 70%),
+    linear-gradient(to right, color-mix(in oklab, var(--color-ink-700) 22%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--color-ink-700) 22%, transparent) 1px, transparent 1px);
+  background-size:
+    auto,
+    auto,
+    32px 32px,
+    32px 32px;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-ink-700) transparent;
 }

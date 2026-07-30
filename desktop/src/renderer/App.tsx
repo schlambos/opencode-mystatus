@@ -1,29 +1,38 @@
 import { useEffect, useState, type JSX } from "react";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { Sidebar, type Route } from "./components/Sidebar";
+import { connectStatusStore } from "./lib/store";
+import { CredentialsPane } from "./pages/CredentialsPane";
+import { DashboardPane } from "./pages/DashboardPane";
+import { SettingsPane } from "./pages/SettingsPane";
+
+function paneFor(route: Route): JSX.Element {
+  switch (route) {
+    case "dashboard":
+      return <DashboardPane />;
+    case "credentials":
+      return <CredentialsPane />;
+    case "settings":
+      return <SettingsPane />;
+    default: {
+      const unreachable: never = route;
+      throw new Error(`unknown route: ${String(unreachable)}`);
+    }
+  }
+}
 
 export function App(): JSX.Element {
-  const [pong, setPong] = useState<string>("…");
+  // Simple state routing — react-router is deliberately not a dependency.
+  const [route, setRoute] = useState<Route>("dashboard");
 
-  useEffect(() => {
-    let off: (() => void) | undefined;
-    void window.mystatus
-      .ping()
-      .then(() => setPong("ok"))
-      .catch(() => setPong("error"));
-    off = window.mystatus.onViewModel(() => {
-      /* placeholder: view-model push arrives in todo 3 */
-    });
-    return () => off?.();
-  }, []);
+  useEffect(() => connectStatusStore(), []);
 
   return (
-    <main className="flex h-screen w-screen flex-col items-center justify-center gap-4">
-      <h1 className="text-2xl font-semibold tracking-tight">mystatus desktop</h1>
-      <p className="text-sm text-zinc-400">
-        Shell scaffolded. Bridge ping: <span className="font-mono">{pong}</span>
-      </p>
-      <p className="text-xs text-zinc-500">
-        Dashboard, credentials, and settings arrive in later waves.
-      </p>
-    </main>
+    <div className="flex h-screen w-screen overflow-hidden bg-ink-950 text-fog-100">
+      <Sidebar route={route} onNavigate={setRoute} />
+      <main className="console-bg flex-1 overflow-y-auto">
+        <ErrorBoundary>{paneFor(route)}</ErrorBoundary>
+      </main>
+    </div>
   );
 }
