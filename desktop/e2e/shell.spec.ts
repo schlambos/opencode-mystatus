@@ -115,16 +115,21 @@ test.describe("desktop shell", () => {
     await expect(page.getByTestId("nav-dashboard")).toHaveAttribute("aria-current", "page");
   });
 
-  test("store consumes a pushed view model and renders provider count", async () => {
+  test("store consumes a pushed view model and renders the summary header", async () => {
     await pushToRenderer(fixturePayload());
 
-    await expect(page.getByTestId("provider-count")).toHaveText("3 providers");
-    await expect(page.getByTestId("dashboard-overview")).toContainText("5"); // accounts chip
+    await expect(page.getByTestId("summary-header")).toBeVisible();
+    await expect(page.getByTestId("summary-accounts")).toHaveText("5");
+    await expect(page.getByTestId("summary-lowest")).toContainText("MiniMax Token Plan · 5-hour");
+    await expect(page.getByTestId("summary-lowest")).toContainText("3%");
     await expect(page.getByTestId("soonest-countdown")).toBeVisible();
+    await expect(page.getByTestId("summary-health")).toContainText("3/3 reporting");
+    await expect(page.getByTestId("summary-health")).toContainText("1 stale");
+    await expect(page.getByTestId("summary-health")).toContainText("1 not configured");
     await expect(page.getByTestId("connection-status")).toContainText("live");
 
     // Let the staggered entrance animation finish so the evidence shows the
-    // fully-revealed chip grid rather than a mid-fade frame.
+    // fully-revealed header rather than a mid-fade frame.
     await page.waitForTimeout(800);
     await page.screenshot({ path: join(evidenceDir, "task-4-desktop-app.png") });
   });
@@ -138,7 +143,7 @@ test.describe("desktop shell", () => {
 
     await expect(page.getByTestId("model-error-strip")).toContainText("all providers timed out");
     // Previous view model stays on screen, TUI-style stale fallback.
-    await expect(page.getByTestId("provider-count")).toHaveText("3 providers");
+    await expect(page.getByTestId("summary-accounts")).toHaveText("5");
   });
 
   test("malformed push shows a recoverable panel instead of a white screen", async () => {

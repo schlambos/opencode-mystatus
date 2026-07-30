@@ -1,27 +1,7 @@
-import type { JSX, ReactNode } from "react";
+import type { JSX } from "react";
 import { PaneShell } from "../components/PaneShell";
-import { formatAge, formatDuration, resetCountdown, toneDotClass } from "../lib/status";
+import { SummaryHeader } from "../components/SummaryHeader";
 import { useStatusState } from "../lib/store";
-
-interface StatChipProps {
-  label: string;
-  delay: number;
-  children: ReactNode;
-}
-
-function StatChip({ label, delay, children }: StatChipProps): JSX.Element {
-  return (
-    <div
-      className="animate-rise rounded-lg border border-ink-700 bg-gradient-to-b from-ink-850 to-ink-900 px-4 py-3"
-      style={{ animationDelay: `${delay}ms` }}
-    >
-      <p className="text-[10px] font-semibold tracking-[0.18em] text-fog-500 uppercase">{label}</p>
-      <div className="mt-1.5 font-mono text-lg font-semibold text-fog-100 tabular-nums">
-        {children}
-      </div>
-    </div>
-  );
-}
 
 export function DashboardPane(): JSX.Element {
   const { model, fetchedAt, nextFetchAt, now, payloadError, modelError } = useStatusState();
@@ -86,14 +66,6 @@ export function DashboardPane(): JSX.Element {
     );
   }
 
-  const { summary } = model;
-  const ageText = formatAge(Math.max(0, Math.floor((now - fetchedAt) / 1000)));
-  const nextText = formatDuration(Math.max(0, Math.floor((nextFetchAt - now) / 1000)));
-  const soonest =
-    summary.soonest !== undefined
-      ? resetCountdown(summary.soonest.resetMs, fetchedAt, now)
-      : null;
-
   return (
     <PaneShell testId="pane-dashboard" kicker="Overview" title="Dashboard">
       {modelError !== null && (
@@ -106,68 +78,14 @@ export function DashboardPane(): JSX.Element {
           <span className="font-mono text-xs text-status-low">{modelError}</span>
         </div>
       )}
-      <div data-testid="dashboard-overview" className="grid grid-cols-2 gap-3 md:grid-cols-3">
-        <StatChip label="Providers" delay={0}>
-          <span data-testid="provider-count">{model.providers.length} providers</span>
-        </StatChip>
-        <StatChip label="Accounts" delay={40}>
-          {summary.accounts}
-        </StatChip>
-        <StatChip label="Reporting" delay={80}>
-          {model.health.rendered}/{model.health.queried}
-        </StatChip>
-        <StatChip label="Tally" delay={120}>
-          <span className="flex items-center gap-3 text-sm">
-            <span className="flex items-center gap-1.5">
-              <span className={`h-2 w-2 rounded-full ${toneDotClass["ok"]}`} />
-              {summary.green}
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className={`h-2 w-2 rounded-full ${toneDotClass["warn"]}`} />
-              {summary.yellow}
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className={`h-2 w-2 rounded-full ${toneDotClass["dead"]}`} />
-              {summary.red}
-            </span>
-          </span>
-        </StatChip>
-        <StatChip label="Synced" delay={160}>
-          {ageText} ago
-        </StatChip>
-        <StatChip label="Next sync" delay={200}>
-          in {nextText}
-        </StatChip>
-      </div>
-
-      <div
-        className="animate-rise mt-4 flex items-center gap-2.5 rounded-lg border border-ink-700 bg-ink-900 px-4 py-3"
-        style={{ animationDelay: "240ms" }}
-      >
-        <span className="text-fog-500" aria-hidden>
-          ↻
-        </span>
-        {summary.soonest !== undefined && soonest !== null ? (
-          <p className="text-sm text-fog-200">
-            Soonest reset{" "}
-            <span className="text-fog-400">
-              {summary.soonest.provider} · {summary.soonest.label}
-            </span>{" "}
-            <span data-testid="soonest-countdown" className="font-mono text-fog-100 tabular-nums">
-              {soonest.text}
-            </span>
-          </p>
-        ) : (
-          <p className="text-sm text-fog-400">No upcoming resets reported.</p>
-        )}
-      </div>
+      <SummaryHeader model={model} fetchedAt={fetchedAt} nextFetchAt={nextFetchAt} now={now} />
 
       <p
         className="animate-rise mt-8 border-l-2 border-ink-700 pl-4 text-sm text-fog-500"
-        style={{ animationDelay: "300ms" }}
+        style={{ animationDelay: "120ms" }}
       >
-        Shell view — the full card grid (summary header, horizon tabs, meters, trends) lands in
-        wave 2. Data below arrives live from the main-process poller.
+        Summary header is live — horizon tabs, provider cards, meters, and trends land next. Data
+        below arrives live from the main-process poller.
       </p>
     </PaneShell>
   );
