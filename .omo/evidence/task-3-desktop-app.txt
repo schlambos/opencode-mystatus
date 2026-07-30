@@ -1,0 +1,75 @@
+Task 3 — Polling service in the main process
+=============================================
+Date: 2026-07-30
+
+## Files created
+desktop/src/main/poller.ts          — StatusPoller singleton (single-flight, fake-clock testable)
+desktop/src/main/poller.test.ts    — 12 vitest tests with fake clock + stub coreApi
+
+## Files modified
+desktop/src/shared/ipc.ts          — added CHANNELS.refresh + refresh() to Bridge interface
+desktop/src/preload/index.ts       — exposed refresh() bound to CHANNELS.refresh
+desktop/src/main/ipc.ts            — registered refresh handler → getPoller().forceRefresh()
+desktop/src/main/index.ts          — start poller after registerIpc, stop on before-quit
+desktop/src/renderer/lib/bridge.ts — refresh now required (not optional) on RendererBridge
+
+## Design
+- StatusPoller is a class with injected deps (coreApi, loadConfig, getAllWindows, now)
+  so tests construct it directly without touching Electron or the real core.
+- Singleton getPoller() wires the real Electron + core facade; lazily constructed
+  so importing under VITEST does not touch Electron.
+- Single-flight: inFlight boolean guard prevents overlapping queryMyStatus calls
+  (core gives 15s deadline per provider; overlapping calls would lose cache/history
+  entries due to read-modify-write on mystatus-cache.json + mystatus-history.json).
+- forceRefresh() with {fresh:true}: when in-flight, sets forcePending + returns a
+  promise that resolves after the deferred force fetch broadcasts. The finally
+  block of the current fetch chains fetch(true).then(resolver).
+- Polling gate: shouldPoll() = windows ≥ 1 OR trayAlive. setTrayAlive(bool)
+  exposed for todo 16 (tray). When no audience, ticks reschedule but skip fetch.
+- Config re-read every tick via loadConfig() (cheap). staleConfig flagged when
+  the config signature (JSON.stringify) changes between ticks.
+- Interval: max(5, cfg.watchIntervalSec ?? 60)s — matches TUI clamping
+  (plugin/tui.ts:764). cacheTtlSec honored by core only (not re-implemented).
+- Non-poll rebuilds pass { recordHistory: false } — the poller only does real
+  polls (coreApi.getViewModel records history by default), so this is satisfied
+  vacuously; documented for future non-poll rebuild code paths.
+- broadcast() skips destroyed windows (getAllWindows can include mid-close).
+
+## Test coverage (12 tests, all pass)
+1. ticks at configured interval, pushes once per completed fetch
+2. clamps interval to minimum 5 seconds
+3. defaults to 60s when watchIntervalSec absent
+4. does not overlap fetches when a cycle is slow (single-flight) — 90s fetch
+   vs 60s interval, asserts only 1 call during overlap
+5. forceRefresh bypasses schedule and runs immediately
+6. forceRefresh requested mid-flight runs after current cycle completes
+   (uses real timers — fake timers cannot drain the multi-level microtask
+   chain from the fire-and-forget force fetch in the finally block)
+7. emits error payload and keeps schedule when stub throws once
+8. does not poll when no windows and tray not alive
+9. polls when tray alive even with zero windows
+10. flags staleConfig when config signature changes between ticks
+11. skips destroyed windows when broadcasting
+12. start is idempotent and stop clears the timer
+
+## npm --prefix desktop run typecheck
+Result: EXIT 0
+
+## npm --prefix desktop run test (vitest)
+Result: 6 files, 55 tests PASS (345ms)
+  - 43 pre-existing tests still pass
+  - 12 new poller tests pass
+
+## npm --prefix desktop run build
+Result: EXIT 0
+  - out/main/index.js  188.06 kB (ESM, 6 modules)
+  - out/preload/index.js  1.04 kB (CJS)
+  - out/renderer/  (38 modules)
+
+## npm --prefix desktop run test:e2e (playwright)
+Result: 5 tests PASS (2.8s)
+  - All pre-existing e2e shell tests still pass
+
+## LOC
+  poller.ts:       139 pure LOC (healthy, < 250)
+  poller.test.ts:  262 pure LOC (test file with 12 scenarios + fixtures; acceptable)

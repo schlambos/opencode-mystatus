@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { CHANNELS } from "../shared/ipc.js";
 import { registerIpc } from "./ipc.js";
+import { getPoller } from "./poller.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -77,7 +78,12 @@ function bootstrap(): void {
   app.whenReady().then(() => {
     registerShellIpc(ipcMain);
     registerIpc(ipcMain);
+    getPoller().start();
     createWindow();
+  });
+
+  app.on("before-quit", () => {
+    getPoller().stop();
   });
 }
 

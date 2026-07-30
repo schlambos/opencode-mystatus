@@ -17,6 +17,7 @@ export const CHANNELS = {
   configGet: "mystatus:config:get",
   configPatch: "mystatus:config:patch",
   push: "mystatus:push",
+  refresh: "mystatus:refresh",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -152,6 +153,8 @@ export interface Bridge {
   patchConfig: (patch: ConfigPatch) => Promise<MyStatusConfig>;
   /** Subscribe to pushed view models from the poller (todo 3). */
   onViewModel: (cb: (payload: PushPayload) => void) => () => void;
+  /** Force an out-of-schedule refresh from the poller (todo 3). */
+  refresh: () => Promise<void>;
 }
 
 declare global {

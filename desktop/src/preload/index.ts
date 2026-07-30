@@ -11,6 +11,7 @@ const api: Bridge = {
   getExport: (req) => ipcRenderer.invoke(CHANNELS.export, req),
   getConfig: () => ipcRenderer.invoke(CHANNELS.configGet),
   patchConfig: (patch) => ipcRenderer.invoke(CHANNELS.configPatch, patch ?? {}),
+  refresh: () => ipcRenderer.invoke(CHANNELS.refresh),
   onViewModel: (cb) => {
     const handler = (_event: unknown, payload: unknown): void => {
       cb(payload as Parameters<typeof cb>[0]);

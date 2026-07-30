@@ -8,6 +8,7 @@
 import type { IpcMain } from "electron";
 import { CHANNELS } from "../shared/ipc.js";
 import { coreApi } from "./core.js";
+import { getPoller } from "./poller.js";
 
 export function registerIpc(ipc: IpcMain): void {
   ipc.handle(CHANNELS.viewmodel, (_event, args) => coreApi.getViewModel(args ?? {}));
@@ -20,4 +21,5 @@ export function registerIpc(ipc: IpcMain): void {
   });
   ipc.handle(CHANNELS.configGet, () => coreApi.getConfig());
   ipc.handle(CHANNELS.configPatch, (_event, patch) => coreApi.patchConfig(patch ?? {}));
+  ipc.handle(CHANNELS.refresh, () => getPoller().forceRefresh());
 }
