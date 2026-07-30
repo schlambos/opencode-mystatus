@@ -137,3 +137,42 @@
   ipcRenderer.invoke(CHANNELS.refresh); ipc.ts registers the handler →
   getPoller().forceRefresh(). Renderer bridge.ts: refresh is now required
   (not optional) on RendererBridge since todo 3 ships it.
+
+## 2026-07-30 Task 5 — summary header card
+- jest-dom matcher is toHaveTextContent, NOT toHaveText (that's the
+  Playwright API — "Invalid Chai property" under vitest). toBeEnabled/
+  toHaveAttribute are jest-dom. Import "@testing-library/jest-dom/vitest"
+  in the test file; tsconfig.web `types: ["vitest/globals"]` does not block
+  it (module augmentation via explicit import still applies).
+- Vitest global env is "node" — component tests opt in per file via the
+  `// @vitest-environment jsdom` docblock; do NOT switch the global env
+  (store.test.ts stubs window itself and expects node semantics).
+- Under jsdom do NOT vi.stubGlobal("window", {...}) — react-dom needs the
+  real window/document. Assign `(window as unknown as {mystatus?: unknown})
+  .mystatus = bridge` and delete in afterEach instead.
+- IS_REACT_ACT_ENVIRONMENT must be true for React 19 act(); set it in
+  beforeEach explicitly rather than trusting RTL auto-setup.
+- Sync-line parity nuance: tui statusText uses RAW seconds for the next
+  sync (`sync ${nextSec}s`) because formatDuration(48) → "0m" — useless at
+  sub-minute granularity. fmtAge stays for the age side ("12s"/"5m"/"16h").
+- Health-line parity: tui attentionFlags order is failed → stale →
+  unconfigured, each segment rendered only when > 0 (tui.ts:613-626). The
+  GUI row additionally leads with rendered/queried reporting and hides
+  entirely when all three counts are zero.
+- SummaryHeader takes props (model/fetchedAt/nextFetchAt/now); the PANE
+  wires useStatusState — keeps the component fixture-testable without
+  module-level store resets, and the 1s ticker re-render flows through the
+  pane's existing subscription. The component itself owns the bridge
+  refresh action (acceptance: "invokes the bridge exactly once").
+- forceRefresh resolves only after broadcast (poller.ts) → the button's
+  spinner (`refreshing` state) tracks the real fetch, with an in-flight
+  press guard; degrades to a no-op when getBridge() is undefined.
+- PARALLEL-WAVE COMMIT DANCE: todos 5-9 co-edit DashboardPane/deps. A
+  sibling layered its (untracked) Dashboard import into DashboardPane after
+  this task wrote it; committing the merged file would import a file absent
+  from the commit. Recipe: copy sibling WIP aside → write own version →
+  git add → restore sibling WIP to the worktree. Commit builds standalone;
+  sibling re-lands its wiring in its own commit. Also: siblings re-pin
+  shared deps (jsdom ^30 → ^26 mid-task) — re-run your suite against the
+  current lockfile before committing, and attribute shared-suite failures
+  by file owner (the failing set changing between runs = mid-edit churn).
