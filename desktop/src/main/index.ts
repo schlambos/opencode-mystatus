@@ -1,12 +1,18 @@
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { CHANNELS } from "../shared/ipc.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const isDev = !app.isPackaged;
+// Register shell IPC handlers. Extracted so a unit test can mock `ipcMain`
+// and assert the channel is wired without booting Electron.
+export function registerShellIpc(ipc: typeof ipcMain): void {
+  ipc.handle(CHANNELS.ping, () => "pong");
+}
 
 function createWindow(): BrowserWindow {
+  const isDev = !app.isPackaged;
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -47,8 +53,14 @@ function bootstrap(): void {
   });
 
   app.whenReady().then(() => {
+    registerShellIpc(ipcMain);
     createWindow();
   });
 }
 
-bootstrap();
+// Only boot the real app when running outside the test harness. Vitest sets
+// VITEST; importing this module under test would otherwise touch Electron
+// APIs that the test mock does not provide.
+if (!process.env["VITEST"]) {
+  bootstrap();
+}
