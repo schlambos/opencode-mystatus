@@ -1,0 +1,18 @@
+# task-9-desktop-app — hide/show providers + issues panel
+# 2026-07-30T20:18:55Z
+
+## Unit/component tests (vitest, node + jsdom)
+ Test Files  3 passed (3)
+      Tests  35 passed (35)
+
+## End-to-end (Playwright Electron, tmp HOME)
+hide/show: eye-slash filters card client-side -> Hidden(1) tab -> Show restores: PASS
+issues: 4 same-reason stale sub-accounts collapse to one 'Google (4 accounts) stale 16h' row: PASS
+(full run: 2 passed — npx playwright test e2e/hidden.spec.ts)
+
+## Type gate
+npm run typecheck (desktop): PASS
+typecheck:web — this task's files clean; remaining errors are pre-existing parallel-todo friction (TrendRow/trend=T7, Dashboard stale/note=T6, viewmodel).
+
+## Screenshot
+.omo/evidence/task-9-desktop-app.png (Hidden tab after eye-slash hide)
