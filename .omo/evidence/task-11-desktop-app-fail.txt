@@ -1,0 +1,47 @@
+Task 11 — Cookie-provider capture configs (8 providers) — FAILURE scenario
+=========================================================================
+
+Plan: .omo/plans/desktop-app.md todo 11 — failure QA scenario:
+  "capture missing `isg` for qwencloud (sentinel present, required field
+  absent): write is REFUSED with a per-field error listing the missing cookie;
+  no partial file created."
+
+Reproduction
+------------
+The qwencloud extraction function is pure. When the sentinel
+login_qwencloud_ticket is present but the required cookies login_aliyunid_pk
+and isg are absent, extract() returns {ok:false, error}:
+
+  const cookies = [cookie("login_qwencloud_ticket", "t-3")];  // sentinel only
+  const result = spec.extract(cookies, undefined);
+  // → { ok: false, error: "QwenCloud: missing required cookie(s): login_aliyunid_pk, isg" }
+
+The error message lists BOTH missing required cookies and does NOT list the
+present sentinel. This is verified by the test:
+
+  it("refuses with a per-field error listing ALL missing cookies when sentinel
+      present but required fields absent", () => {
+    const cookies = withNoise(cookie("login_qwencloud_ticket", "t-3"));
+    const result = spec.extract(cookies, undefined);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("login_aliyunid_pk");
+      expect(result.error).toContain("isg");
+      expect(result.error).not.toContain("login_qwencloud_ticket");
+    }
+  });
+
+Why no partial file is created
+------------------------------
+The extraction function returns {ok:false, error}. The caller (cred-files.ts,
+todo 13) checks `result.ok` BEFORE writing; on false it surfaces the error to
+the renderer and never opens the credential file. capture-specs.ts itself
+performs NO file I/O — it is pure data + pure functions. So a refused
+extraction cannot create a partial file.
+
+Test command
+------------
+  npm --prefix desktop test -- src/main/capture-specs.test.ts
+  → 37 passed (37) — includes the qwencloud refusal test above.
+
+Result: PASS (the failure scenario is correctly handled and verified).

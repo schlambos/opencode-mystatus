@@ -1,0 +1,108 @@
+Task 11 — Cookie-provider capture configs (8 providers)
+======================================================
+
+Plan: .omo/plans/desktop-app.md todo 11
+Commit: feat(desktop): per-provider cookie capture configs
+
+Files changed (desktop/ only):
+  - desktop/src/main/capture-specs.ts      (new) — 8 ProviderCaptureSpec + extraction fns
+  - desktop/src/main/capture-specs.test.ts (new) — 37 vitest tests, fixture cookie arrays
+
+Implementation summary
+----------------------
+capture-specs.ts exports a declarative spec per cookie provider, each with:
+  - id, displayName, fileName (under ~/.config/opencode/)
+  - portalUrl, startUrl, allowedOrigins, idpOrigins, sentinelCookies
+  - optional urlPattern (opencode-go /workspace/<uuid>)
+  - extract(cookies, finalUrl) → {ok, json|merge} | {ok:false, error}
+  - helpText (inline setup guidance from README provider sections)
+
+The 8 specs and their plugin file JSON (schemas mirrored from plugin/mystatus.ts):
+
+  (1) atlascloud    → atlas-cookies.json    {cookie}
+      sentinel: access-token; accountUuid omitted (plugin auto-resolves via /current-user,
+      plugin/mystatus.ts:5317-5328). Ref: 5002-5005, 5298-5305.
+  (2) byteplus      → byteplus-cookies.json {cookie}
+      sentinel: csrfToken (plugin extracts via /csrfToken=([^;]+)/). Ref: 4849-4866.
+  (3) mistral       → mistral-cookies.json  {accounts:[{alias?,cookie}]}
+      sentinel: csrftoken; MERGE path folds legacy single-account shape and
+      appends to existing accounts[] (plugin/mystatus.ts:4670-4717).
+  (4) ollama        → ollama-cookies.json   {cookie}
+      sentinel: __Secure-session (plugin/mystatus.ts:5549-5556).
+  (5) longcat       → longcat-cookies.json  {passportToken, region}
+      sentinel: passport_token_key; region defaults to "2" when
+      long_cat_region_key absent (plugin/mystatus.ts:5704-5721).
+  (6) qwencloud     → qwencloud-cookies.json {ticket, aliyunPk, isg, esmTicket?}
+      sentinel: login_qwencloud_ticket; per-field error lists ALL missing
+      required cookies (plugin/mystatus.ts:4246-4332). IdP origins are Aliyun
+      (account.aliyun.com, login.aliyun.com), NOT Google/GitHub.
+  (7) stepfun       → stepfun-cookies.json  {oasisToken, oasisWebid, sessionToken?}
+      sentinel: Oasis-Token (plugin/mystatus.ts:4025-4083).
+  (8) opencode-go   → opencode-go.json      {accounts:[{workspaceId, authCookie}]}
+      sentinel: auth; workspaceId parsed from finalUrl /workspace/<uuid> via
+      urlPattern; MERGE replaces an existing account with the same workspaceId,
+      otherwise appends (plugin/mystatus.ts:2393-2399, 2630-2667).
+
+Full-header reconstruction: cookies.map(c => `${c.name}=${c.value}`).join('; ')
+(Electron's ses.cookies.get returns individual cookies; the plugin reads a full
+Cookie header string for most providers).
+
+Extraction functions are PURE — they take a CapturedCookie[] and return a typed
+ExtractionResult. The caller (cred-files.ts, todo 13) handles the atomic write
++ verify-after-write. No partial file is created on error: a missing required
+cookie returns {ok:false, error} and the caller refuses the write.
+
+Security: cookie names+values are NEVER logged. The redaction test spies on
+console.log across all 8 extraction fns (including the merge paths) and asserts
+zero secret values appear. The spec objects themselves are scanned too.
+
+Acceptance criteria (met)
+-------------------------
+- Vitest per-provider: fixture cookie arrays (incl. HttpOnly + unrelated
+  cookies) → exact expected JSON (assert deep-equal). ✓
+- mistral + opencode-go merge paths preserve pre-existing accounts. ✓
+- redaction test: log output contains zero cookie values. ✓
+- qwencloud failure path: sentinel present, required field absent → write
+  REFUSED with a per-field error listing the missing cookie(s); no partial
+  file created (the extract fn returns {ok:false}, so the caller never writes).
+  ✓
+
+QA scenarios
+------------
+happy: `npm --prefix desktop test -- src/main/capture-specs.test.ts`
+  → 37 passed (37). Evidence: this file.
+
+failure (qwencloud missing isg): covered by
+  "refuses with a per-field error listing ALL missing cookies when sentinel
+  present but required fields absent" — sentinel login_qwencloud_ticket
+  present, aliyunPk + isg absent → {ok:false, error} listing both missing
+  cookies and NOT listing the present sentinel. The caller (todo 13) refuses
+  the write on {ok:false}, so no partial file is created.
+
+Verification commands run
+-------------------------
+- npm --prefix desktop run typecheck           → exit 0
+- npm --prefix desktop test -- src/main/capture-specs.test.ts
+                                              → 37 passed (37)
+- npm --prefix desktop run build               → exit 0 (main/preload/renderer)
+- npm run typecheck (root)                     → exit 0
+
+Pre-existing failures NOT caused by this task
+---------------------------------------------
+- src/main/ipc.test.ts "registers every channel exactly once": fails because
+  desktop/src/shared/ipc.ts was modified by pre-existing working-tree work
+  (todo 12) adding channels authStatus/pasteCopilot/pastePoe/clearCredential/
+  openExternal that ipc.ts has not registered yet. capture-specs.ts does NOT
+  touch shared/ipc.ts or ipc.ts. Confirmed: stashing all working-tree changes
+  makes ipc.test.ts pass; restoring them reproduces the failure without my
+  new files contributing.
+- src/main/notifier.test.ts: pre-existing flakiness in the cooldown timer
+  test, unrelated to capture-specs (notifier.ts is not imported by my code).
+
+Scope discipline
+-----------------
+- Only two new files added under desktop/src/main/. No modifications to
+  plugin/, bin/, command/, dist/, or any pre-existing desktop file.
+- No Electron GUI launched. No Playwright. Vitest only with fixture cookie
+  arrays. No real provider portals contacted.
+- Cookie values never logged.
