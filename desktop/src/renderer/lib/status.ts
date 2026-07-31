@@ -80,3 +80,54 @@ export function resetCountdown(
   if (left <= 0) return { leftMs: 0, text: "now" };
   return { leftMs: left, text: formatDuration(Math.floor(left / 1000)) };
 }
+
+export function viewMinRemaining(windows: ReadonlyArray<{ remaining: number }>): number | null {
+  if (windows.length === 0) return null;
+  let min = windows[0]!.remaining;
+  for (let i = 1; i < windows.length; i++) {
+    const r = windows[i]!.remaining;
+    if (r < min) min = r;
+  }
+  return min;
+}
+
+export interface OffTabWorstCue {
+  horizonLabel: string;
+  remaining: number;
+  windowLabel: string;
+}
+
+export function offTabWorstCue(
+  allWindows: ReadonlyArray<{ label: string; remaining: number; resetMs?: number }>,
+  viewWindows: ReadonlyArray<{ label: string; remaining: number }>,
+  tierOf: (label: string, resetMs?: number) => "short" | "weekly" | "monthly",
+): OffTabWorstCue | null {
+  const viewMin = viewMinRemaining(viewWindows);
+  if (viewMin === null || allWindows.length === 0) return null;
+
+  let worst = allWindows[0]!;
+  for (let i = 1; i < allWindows.length; i++) {
+    const w = allWindows[i]!;
+    if (w.remaining < worst.remaining) worst = w;
+  }
+  if (worst.remaining >= viewMin) return null;
+
+  const viewLabels = new Set(viewWindows.map((w) => w.label));
+  const candidate = viewLabels.has(worst.label)
+    ? allWindows
+        .filter((w) => !viewLabels.has(w.label))
+        .reduce<(typeof allWindows)[number] | null>((best, w) => {
+          if (best === null || w.remaining < best.remaining) return w;
+          return best;
+        }, null)
+    : worst;
+  if (candidate === null || candidate.remaining >= viewMin) return null;
+
+  const tier = tierOf(candidate.label, candidate.resetMs);
+  const horizonLabel = tier === "short" ? "Current" : tier === "weekly" ? "Weekly" : "Monthly";
+  return {
+    horizonLabel,
+    remaining: candidate.remaining,
+    windowLabel: candidate.label,
+  };
+}

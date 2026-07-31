@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { formatAge, formatDuration, resetCountdown, statusTone } from "./status";
+import {
+  formatAge,
+  formatDuration,
+  offTabWorstCue,
+  resetCountdown,
+  statusTone,
+  viewMinRemaining,
+} from "./status";
 
 // Parity anchors: plugin/mystatus.ts:48-60 (emoji tiers), plugin/tui.ts:180-197
 // (fmtDur/fmtAge/pctColor), plugin/tui.ts:293-298 + 638 (resetText + ageMs).
@@ -86,5 +93,44 @@ describe("resetCountdown — parity with tui.ts resetText", () => {
     // 4d 7h 50m left, like the README sample.
     const ms = ((4 * 24 + 7) * 60 + 50) * 60 * 1000;
     expect(resetCountdown(ms, fetchedAt, fetchedAt)?.text).toBe("4d 7h");
+  });
+});
+
+describe("viewMinRemaining", () => {
+  it("returns null for empty windows", () => {
+    expect(viewMinRemaining([])).toBeNull();
+  });
+
+  it("returns the lowest remaining among view windows", () => {
+    expect(viewMinRemaining([{ remaining: 100 }, { remaining: 0 }, { remaining: 40 }])).toBe(0);
+    expect(viewMinRemaining([{ remaining: 100 }])).toBe(100);
+  });
+});
+
+describe("offTabWorstCue — Kimi-shaped badge/pills mismatch", () => {
+  const tierOf = (label: string): "short" | "weekly" | "monthly" => {
+    const l = label.toLowerCase();
+    if (l.includes("week")) return "weekly";
+    if (l.includes("month")) return "monthly";
+    return "short";
+  };
+
+  const kimi = [
+    { label: "5-hour", remaining: 100, resetMs: 5 * 3_600_000 },
+    { label: "Weekly", remaining: 0, resetMs: 6 * 24 * 3_600_000 },
+  ];
+
+  it("cues Weekly 0% when Current only shows 5h 100%", () => {
+    const view = [kimi[0]!];
+    expect(offTabWorstCue(kimi, view, tierOf)).toEqual({
+      horizonLabel: "Weekly",
+      remaining: 0,
+      windowLabel: "Weekly",
+    });
+  });
+
+  it("returns null when the global worst is already on-tab", () => {
+    expect(offTabWorstCue(kimi, kimi, tierOf)).toBeNull();
+    expect(offTabWorstCue(kimi, [kimi[1]!], tierOf)).toBeNull();
   });
 });
