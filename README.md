@@ -1063,3 +1063,67 @@ Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/openco
 ## License
 
 [MIT](LICENSE)
+
+## Desktop app
+
+A native desktop companion — `mystatus-desktop` — lives in `desktop/`. It is an Electron + electron-vite + React + TypeScript + Tailwind app that imports the plugin core (`plugin/mystatus.ts`) in-process, so the terminal plugin and the desktop app share one source of truth for provider logic. The desktop app is purely additive: it does not modify `plugin/`, `bin/`, `command/`, or `dist/`, and the one-shot `/mystatus` command, the standalone CLI, and the `--watch` TUI keep working unchanged.
+
+### Install & build
+
+```bash
+npm --prefix desktop install          # install desktop deps (Electron, electron-vite, React, Tailwind, vitest, playwright)
+npm --prefix desktop run dev          # electron-vite dev — launches the app window with HMR
+npm --prefix desktop run build        # electron-vite build — emits out/{main,preload,renderer}
+npx electron-builder --dir            # from desktop/ — produces an unpacked app in desktop/release/ (no installer)
+```
+
+`npm --prefix desktop run typecheck` runs `tsc --noEmit` against the desktop tsconfig; the repo-root `npm run typecheck` must also stay green.
+
+### Features
+
+- **Dashboard** — three horizon tabs (**Current** / **Weekly** / **Monthly**) using the TUI's exact window-tier classification, a summary header (account tally, green/yellow/red counts, lowest window, soonest reset, reporting/failed/not-configured health line), per-window remaining-% meters, trend sparklines (off / compact / full), live reset countdowns ticking every second, hide/show providers persisted to `providers.hidden`, and an Issues panel (error / stale / unconfigured, with sub-account collapse).
+- **In-app Chromium sign-in** for the eight cookie providers — AtlasCloud, BytePlus, LongCat, Mistral, Ollama, QwenCloud, StepFun, OpenCode Go+Zen — each opens the provider's own login page in an isolated in-memory session, detects the sentinel cookie, and writes the exact JSON schema the plugin already reads to `~/.config/opencode/`. See the [cookie-provider table](#providers-that-need-a-browser-session-token) for the file each provider expects.
+- **Guided paste** for the GitHub Copilot PAT (`copilot-quota-token.json`) and the Poe API key (`poe-api-key.json`), with deep-links to the token-creation pages and per-field validation.
+- **Settings** over every `mystatus.json` knob (sort, summary, trend, `cacheTtlSec`, `historyMax`, `historyMinIntervalSec`, `watchIntervalSec`, `uiRefreshSec`, `providers.disabled`/`hidden`/`order`, `google.excludeEmails`, `antigravityTools.*`) via atomic read-modify-write with verify-after-write.
+- **Export** — copy or save the current snapshot as JSON (`format: json`) or ANSI card text.
+- **Tray** with a status-colored icon (green/yellow/red by worst window), a context menu (Show Dashboard / Refresh Now / Issues / Quit), and keep-running-on-window-close.
+- **Low-quota notifications** — native OS notification on the **edge transition** of a window crossing below threshold, with a per-`(provider, window)` cooldown (default 60 min) so a provider sitting below threshold across many polls produces one notification, not many.
+- **Launch at login** toggle (macOS / Windows; Linux persists the preference as a no-op).
+
+### Desktop-only preferences
+
+Desktop-only preferences live in `~/.config/opencode/mystatus-desktop.json` — **not** in `mystatus.json`. They are:
+
+| Key | Type | Notes |
+|---|---|---|
+| `threshold` | number | Percent below which a window is "low" — the core reads `threshold` only from per-call args, so it cannot live in `mystatus.json` |
+| `notifications` | boolean | Master switch for low-quota notifications |
+| `notifyCooldownMin` | number | Per-`(provider, window)` notification cooldown in minutes |
+| `trendMode` | `off` \| `compact` \| `full` | UI display override when the user has not saved a default in `mystatus.json` |
+| `lastTab` | `current` \| `weekly` \| `monthly` \| `issues` \| `hidden` | Restored on next launch |
+| `windowBounds` | `{ x, y, width, height }` | Restored on next launch |
+| `launchAtLogin` | boolean | Mirrors `app.setLoginItemSettings` |
+
+The file is written atomically (tmp + rename, mode `0o600`) and never holds credentials or provider data.
+
+### Unsigned builds
+
+The first builds are **unsigned**.
+
+- **macOS** — Gatekeeper blocks the app on first launch. Right-click the app in Finder → **Open** → confirm the prompt. This is required once per download.
+- **Windows** — SmartScreen shows a "Windows protected your PC" warning; click **More info** → **Run anyway**.
+- **Auto-update is disabled** on unsigned builds. `electron-updater` is wired but gated behind `app.isPackaged && updatesEnabled`; to opt into updates on a self-built, signed package set `MYSTATUS_ENABLE_UPDATES=1` in the environment **and** ship a packaged (not `--dir`) build. Signing config (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_API_KEY` / `APPLE_API_ISSUER` for macOS notarytool, Windows `signtool` / Azure Trusted Signing) is documented as a placeholder only — no signing identity is fabricated.
+
+### Drift note — tier classification
+
+`desktop/src/renderer/lib/tiers.ts` is a **vendored re-implementation** of the private tier-classification logic in `plugin/tui.ts:304-402` (`windowTier`, `splitTiers`, `windowsForView`, `groupsForView`). Those functions are module-private in the TUI and cannot be imported, and this plan forbids editing the core. Parity is locked by a golden fixture table hand-derived by reading `plugin/tui.ts:304-402` line by line. **If the TUI changes its tier classification, re-verify `tiers.ts` against the new lines.**
+
+### Concurrent writers
+
+The plugin, the CLI, the TUI, and the desktop app all write three shared files in `~/.config/opencode/`:
+
+- `mystatus.json` — config (sort, summary, trend, intervals, `providers.*`, `antigravityTools.*`, `google.excludeEmails`)
+- `mystatus-cache.json` — provider cache fallback
+- `mystatus-history.json` — trend snapshots
+
+The desktop app uses **atomic write + verify-after-write** (tmp + rename, then re-read and deep-compare) for every save path, and re-reads the config before each save so an external edit by OpenCode, the CLI, or the TUI is not silently clobbered. The core's own `saveConfig` is used only for single-key dashboard mutations and is always followed by a verify re-read.

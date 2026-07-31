@@ -1,0 +1,63 @@
+
+[36mSTEP[0m npm --prefix .. run typecheck
+
+> opencode-mystatus@3.0.0 typecheck
+> tsc --noEmit
+
+[32mPASS[0m npm --prefix .. run typecheck
+
+[36mSTEP[0m npm run typecheck
+
+> mystatus-desktop@0.0.0 typecheck
+> tsc --noEmit -p tsconfig.json
+
+[32mPASS[0m npm run typecheck
+
+[36mSTEP[0m npm test
+
+> mystatus-desktop@0.0.0 test
+> vitest run
+
+
+ RUN  v4.1.10 /Users/matt/Repos/mystatus/desktop
+
+
+ Test Files  28 passed (28)
+      Tests  458 passed (458)
+   Start at  22:34:28
+   Duration  4.00s (transform 917ms, setup 0ms, import 1.26s, tests 7.19s, environment 719ms)
+
+[32mPASS[0m npm test
+
+[36mSTEP[0m npm run build
+
+> mystatus-desktop@0.0.0 build
+> electron-vite build
+
+[36mvite v7.3.6 [32mbuilding ssr environment for production...[36m[39m
+transforming...
+[32m✓[39m 256 modules transformed.
+rendering chunks...
+[2mout/main/[22m[36mindex.js                 [39m[1m[2m239.53 kB[22m[1m[22m
+[2mout/main/[22m[2mchunks/[22m[36mmain-DpUDPEDB.js  [39m[1m[33m566.22 kB[39m[22m
+[32m✓ built in 599ms[39m
+[36mvite v7.3.6 [32mbuilding ssr environment for production...[36m[39m
+transforming...
+[32m✓[39m 2 modules transformed.
+rendering chunks...
+[2mout/preload/[22m[36mindex.js  [39m[1m[2m3.33 kB[22m[1m[22m
+[32m✓ built in 9ms[39m
+[36mvite v7.3.6 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 65 modules transformed.
+rendering chunks...
+[2m../../out/renderer/[22m[32mindex.html                 [39m[1m[2m  0.63 kB[22m[1m[22m
+[2m../../out/renderer/[22m[2massets/[22m[35mindex-DTCkadr7.css  [39m[1m[2m 46.85 kB[22m[1m[22m
+[2m../../out/renderer/[22m[2massets/[22m[36mindex-CxKam9kn.js   [39m[1m[33m707.82 kB[39m[22m
+[32m✓ built in 344ms[39m
+[32mPASS[0m npm run build
+
+[36mSTEP[0m leak scan: desktop/out + desktop/src
+[32mPASS[0m leak scan: no real-looking secrets in desktop/out or desktop/src
+
+[32mAll smoke gates passed.[0m

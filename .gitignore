@@ -24,3 +24,4 @@ npm-debug.log*
 !*cookies.example.json
 auth.json
 opencode-backup.json
+desktop/release/
