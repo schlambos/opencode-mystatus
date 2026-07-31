@@ -102,6 +102,26 @@ export function getStatusState(): StatusState {
   return state;
 }
 
+export function injectStatusSnapshot(next: {
+  model: MyStatusViewModel;
+  fetchedAt?: number;
+  now?: number;
+  config?: MyStatusConfig | null;
+}): void {
+  const t = next.now ?? Date.now();
+  patch({
+    model: next.model,
+    fetchedAt: next.fetchedAt ?? t,
+    now: t,
+    nextFetchAt: null,
+    config: next.config ?? {},
+    prefs: null,
+    connection: "live",
+    modelError: null,
+    payloadError: null,
+  });
+}
+
 /** Subscribe from a component. Re-renders on every store patch (incl. the 1s tick). */
 export function useStatusState(): StatusState {
   return useSyncExternalStore(subscribeStatusStore, getStatusState);
