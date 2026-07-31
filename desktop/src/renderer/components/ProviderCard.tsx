@@ -5,8 +5,11 @@ import { Meter } from "./Meter";
 
 interface ProviderCardProps {
   name: string;
-  stale?: { ageMs: number; reason?: string };
-  note?: string;
+  // `| undefined` because callers pass `provider.stale` straight through under
+  // exactOptionalPropertyTypes — absence and explicit undefined both mean
+  // "not stale".
+  stale?: { ageMs: number; reason?: string } | undefined;
+  note?: string | undefined;
   windows: MyStatusViewWindow[];
   threshold: number;
   fetchedAt: number | null;

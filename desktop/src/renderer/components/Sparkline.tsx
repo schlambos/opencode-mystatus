@@ -5,7 +5,8 @@ import { toneFillClass, toneStrokeClass } from "../lib/status";
 export interface SparklineProps {
   /** Percent-remaining values, oldest → newest (last = live value). */
   values: number[];
-  width?: number;
+  // `| undefined`: callers forward an optional width straight through.
+  width?: number | undefined;
   height?: number;
   ariaLabel?: string;
 }

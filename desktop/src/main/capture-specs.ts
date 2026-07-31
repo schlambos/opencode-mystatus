@@ -136,6 +136,7 @@ const DEFAULT_TIMEOUT_MS = 5 * 60_000; // 5 minutes — sign-in can be slow.
 // via /current-user (plugin/mystatus.ts:5317-5328), so we omit it.
 const atlascloud: ProviderCaptureSpec = {
   id: "atlascloud",
+  partitionId: "mystatus-atlascloud",
   displayName: "AtlasCloud",
   fileName: "atlas-cookies.json",
   portalUrl: "https://console.atlascloud.ai",
@@ -162,6 +163,7 @@ const atlascloud: ProviderCaptureSpec = {
 // (plugin/mystatus.ts:4863-4866).
 const byteplus: ProviderCaptureSpec = {
   id: "byteplus",
+  partitionId: "mystatus-byteplus",
   displayName: "BytePlus (Ark Coding Plan)",
   fileName: "byteplus-cookies.json",
   portalUrl: "https://console.byteplus.com",
@@ -188,6 +190,7 @@ const byteplus: ProviderCaptureSpec = {
 // preserving entries (plugin/mystatus.ts:4670-4717).
 const mistral: ProviderCaptureSpec = {
   id: "mistral",
+  partitionId: "mystatus-mistral",
   displayName: "Mistral (Vibe Usage)",
   fileName: "mistral-cookies.json",
   portalUrl: "https://console.mistral.ai",
@@ -233,6 +236,7 @@ const mistral: ProviderCaptureSpec = {
 // Plugin reads {cookie} with __Secure-session= (plugin/mystatus.ts:5549-5556).
 const ollama: ProviderCaptureSpec = {
   id: "ollama",
+  partitionId: "mystatus-ollama",
   displayName: "Ollama Cloud",
   fileName: "ollama-cookies.json",
   portalUrl: "https://ollama.com",
@@ -259,6 +263,7 @@ const ollama: ProviderCaptureSpec = {
 // We write the structured form; region defaults to "2" when absent.
 const longcat: ProviderCaptureSpec = {
   id: "longcat",
+  partitionId: "mystatus-longcat",
   displayName: "LongCat API",
   fileName: "longcat-cookies.json",
   portalUrl: "https://longcat.chat/platform/usage",
@@ -287,6 +292,7 @@ const longcat: ProviderCaptureSpec = {
 // login_ESM_account_ticket (plugin/mystatus.ts:4246-4332).
 const qwencloud: ProviderCaptureSpec = {
   id: "qwencloud",
+  partitionId: "mystatus-qwencloud",
   displayName: "QwenCloud (Token Plan)",
   fileName: "qwencloud-cookies.json",
   portalUrl: "https://home.qwencloud.com",
@@ -327,6 +333,7 @@ const qwencloud: ProviderCaptureSpec = {
 // (plugin/mystatus.ts:4025-4083).
 const stepfun: ProviderCaptureSpec = {
   id: "stepfun",
+  partitionId: "mystatus-stepfun",
   displayName: "StepFun (Step Plan)",
   fileName: "stepfun-cookies.json",
   portalUrl: "https://platform.stepfun.ai",
@@ -362,6 +369,7 @@ const stepfun: ProviderCaptureSpec = {
 const OPENCODE_GO_WS_PATTERN = /\/workspace\/([0-9a-fA-F-]{36})/;
 const opencodeGo: ProviderCaptureSpec = {
   id: "opencode-go",
+  partitionId: "mystatus-opencode-go",
   displayName: "OpenCode Go+Zen",
   fileName: "opencode-go.json",
   portalUrl: "https://opencode.ai",

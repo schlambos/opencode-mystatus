@@ -23,7 +23,6 @@ import { Notification } from "electron";
 import type {
   DesktopPrefs,
   MyStatusConfig,
-  MyStatusViewProvider,
   MyStatusViewModel,
   PushPayload,
   ViewModelResult,
@@ -186,7 +185,7 @@ export interface NotifierDeps {
   /** Factory so tests can inject a recording stub. Defaults to Electron's Notification. */
   readonly createNotification: (opts: Electron.NotificationConstructorOptions) => {
     show: () => void;
-    on: (event: string, cb: () => void) => void;
+    on: (event: "click", cb: () => void) => void;
   };
   /** Called when a notification is clicked — wired to focus the dashboard. */
   readonly onClick: (provider: string) => void;

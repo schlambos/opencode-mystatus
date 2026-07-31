@@ -248,7 +248,10 @@ export async function captureSession(
           const hasPattern = spec.urlPattern !== undefined && urlPatternMatched;
           if (hasSentinel || hasPattern) {
             const extracted = all.map(toCaptured);
-            resolve({ cookies: extracted, finalUrl });
+            resolve({
+              cookies: extracted,
+              ...(finalUrl !== undefined ? { finalUrl } : {}),
+            });
           }
         } catch {
           // Cookie read failure — keep polling; transient.

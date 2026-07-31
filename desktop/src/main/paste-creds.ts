@@ -20,14 +20,16 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import type {
-  AuthStatus,
-  ClearResult,
-  CopilotPastePayload,
-  CopilotTier,
-  PasteResult,
-  PoePastePayload,
+import { dirname, join, resolve } from "node:path";
+import {
+  CREDENTIAL_FILE_NAMES,
+  isCredentialFileName,
+  type AuthStatus,
+  type ClearResult,
+  type CopilotPastePayload,
+  type CopilotTier,
+  type PasteResult,
+  type PoePastePayload,
 } from "../shared/ipc.js";
 
 const CONFIG_DIR = join(homedir(), ".config", "opencode");
@@ -55,20 +57,8 @@ const AUTH_JSON_PROVIDER_IDS = [
 ] as const;
 
 // Credential files the plugin reads via findReadable(<name>, "config").
-// Reported in auth:status so the UI can show "already configured" for paste
-// providers and (in todo 11) cookie providers.
-const CREDENTIAL_FILE_NAMES = [
-  "copilot-quota-token.json",
-  "poe-api-key.json",
-  "atlas-cookies.json",
-  "byteplus-cookies.json",
-  "mistral-cookies.json",
-  "ollama-cookies.json",
-  "longcat-cookies.json",
-  "qwencloud-cookies.json",
-  "stepfun-cookies.json",
-  "opencode-go.json",
-] as const;
+// The canonical list lives in shared/ipc.ts (CREDENTIAL_FILE_NAMES) so the
+// IPC allowlist, the writers, and this auth:status report can never drift.
 
 const COPILOT_TIERS: readonly CopilotTier[] = ["pro", "pro+", "max"];
 
@@ -241,12 +231,26 @@ export function writePoeApiKey(payload: PoePastePayload): PasteResult {
   }
 }
 
+/**
+ * Delete a credential file by name. Two guards, both mandatory: the runtime
+ * allowlist (only known credential file names) and a containment check on
+ * the resolved path (must stay directly inside CONFIG_DIR). Without these a
+ * renderer-supplied name like "../../.ssh/id_ed25519" would escape via the
+ * bare join() and turn this into an arbitrary file delete.
+ */
 export function clearCredentialFile(name: string): ClearResult {
+  if (!isCredentialFileName(name)) {
+    return { ok: false, error: `refusing to clear unknown credential file: ${name}` };
+  }
   const path = resolveCredentialWritePath(name);
-  if (!existsSync(path)) return { ok: true, path };
+  const resolved = resolve(path);
+  if (dirname(resolved) !== resolve(CONFIG_DIR)) {
+    return { ok: false, error: `refusing to clear outside ${CONFIG_DIR}: ${name}` };
+  }
+  if (!existsSync(resolved)) return { ok: true, path: resolved };
   try {
-    rmSync(path);
-    return { ok: true, path };
+    rmSync(resolved);
+    return { ok: true, path: resolved };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

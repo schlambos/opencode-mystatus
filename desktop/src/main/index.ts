@@ -50,12 +50,10 @@ function createWindow(): BrowserWindow {
 }
 
 function focusExistingWindow(): void {
-  const wins = BrowserWindow.getAllWindows();
-  if (wins.length > 0) {
-    const [win] = wins;
-    if (win.isMinimized()) win.restore();
-    win.focus();
-  }
+  const win = BrowserWindow.getAllWindows()[0];
+  if (win === undefined) return;
+  if (win.isMinimized()) win.restore();
+  win.focus();
 }
 
 function bootstrap(): void {
@@ -111,9 +109,8 @@ function bootstrap(): void {
     const notifier = getNotifier({
       loadConfig: () => coreApi.getConfig(),
       onClick: () => {
-        const wins = BrowserWindow.getAllWindows();
-        if (wins.length > 0) {
-          const [win] = wins;
+        const win = BrowserWindow.getAllWindows()[0];
+        if (win !== undefined) {
           if (win.isMinimized()) win.restore();
           if (!win.isVisible()) win.show();
           win.focus();

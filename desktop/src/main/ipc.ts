@@ -5,10 +5,11 @@
 // assert every channel is wired without booting Electron. The push channel
 // is main→renderer only (webContents.send) and has no handler here.
 
-import type { BrowserWindow, IpcMain } from "electron";
-import { app, shell } from "electron";
+import type { IpcMain } from "electron";
+import { app, BrowserWindow, dialog, shell } from "electron";
 import {
   CHANNELS,
+  isCredentialFileName,
   type CaptureRequest,
   type ConfigPatch,
   type CopilotPastePayload,
@@ -36,7 +37,7 @@ import {
   writePoeApiKey,
 } from "./paste-creds.js";
 import {
-  deleteCredentialFile,
+  processCaptureResult,
   testProvider,
   writeCredentialFile,
 } from "./cred-files.js";
@@ -67,12 +68,22 @@ export function registerIpc(ipc: IpcMain): void {
   ipc.handle(CHANNELS.pastePoe, (_event, payload: PoePastePayload) =>
     writePoeApiKey(payload ?? ({} as PoePastePayload)),
   );
-  ipc.handle(CHANNELS.clearCredential, (_event, name: CredentialFileName) =>
-    clearCredentialFile(name ?? ""),
-  );
-  ipc.handle(CHANNELS.writeCredential, (_event, name: CredentialFileName, data: Record<string, unknown>) =>
-    writeCredentialFile(name ?? ("" as CredentialFileName), data ?? {}),
-  );
+  ipc.handle(CHANNELS.clearCredential, (_event, name: CredentialFileName) => {
+    // Runtime allowlist: renderer input is untrusted, so the typed parameter
+    // is only a hint. Without this check a compromised renderer could delete
+    // ANY file under ~/.config/opencode/ (e.g. opencode.json) — or worse,
+    // traverse outside it via "../" segments.
+    if (!isCredentialFileName(name)) {
+      return { ok: false, error: `refusing to clear unknown credential file: ${String(name)}` };
+    }
+    return clearCredentialFile(name);
+  });
+  ipc.handle(CHANNELS.writeCredential, (_event, name: CredentialFileName, data: Record<string, unknown>) => {
+    if (!isCredentialFileName(name)) {
+      return { ok: false, error: `refusing to write unknown credential file: ${String(name)}` };
+    }
+    return writeCredentialFile(name, data ?? {});
+  });
   ipc.handle(CHANNELS.testProvider, (_event, providerId: string) =>
     testProvider(providerId ?? ""),
   );
@@ -98,7 +109,7 @@ export function registerIpc(ipc: IpcMain): void {
       return Promise.resolve({ ok: false, error: "no window available for the save dialog" });
     }
     return saveExport(win, req ?? { format: "json" }, {
-      showSaveDialog: (w, options) => w.showSaveDialog(options),
+      showSaveDialog: (w, options) => dialog.showSaveDialog(w, options),
     });
   });
   ipc.handle(CHANNELS.loginItem, (_event, req: SetLoginItemRequest) =>

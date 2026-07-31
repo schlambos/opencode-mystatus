@@ -92,6 +92,12 @@ export function savePrefs(prefs: DesktopPrefs): void {
   writeFileSync(tmp, JSON.stringify(prefs, null, 2) + "\n", { mode: 0o600 });
   // rename is atomic on POSIX; on Windows it replaces the destination.
   renameSync(tmp, path);
+  // Verify-after-write (same contract as config-io / cred-files / paste-creds):
+  // re-read and deep-compare so the UI never reports a false "Saved".
+  const reread: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (JSON.stringify(reread) !== JSON.stringify(prefs)) {
+    throw new Error(`verify-after-write mismatch for ${path}`);
+  }
 }
 
 /** Read-modify-write. Returns the merged result. */

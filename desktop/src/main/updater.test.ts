@@ -11,6 +11,12 @@ vi.mock("electron", () => ({
 
 import { createUpdater } from "./updater.js";
 
+// `app.isPackaged` is readonly on the Electron type; the mock object is plain,
+// so assign through a typed-escape helper rather than fighting the d.ts.
+function setPackaged(value: boolean): void {
+  (app as unknown as { isPackaged: boolean }).isPackaged = value;
+}
+
 describe("createUpdater gate", () => {
   const originalEnv = process.env["MYSTATUS_ENABLE_UPDATES"];
 
@@ -27,7 +33,7 @@ describe("createUpdater gate", () => {
   });
 
   it("Given dev build (not packaged) When createUpdater Then returns disabled handle", () => {
-    vi.mocked(app).isPackaged = false;
+    setPackaged(false);
     process.env["MYSTATUS_ENABLE_UPDATES"] = "1";
 
     const updater = createUpdater();
@@ -35,7 +41,7 @@ describe("createUpdater gate", () => {
   });
 
   it("Given packaged build without opt-in env When createUpdater Then returns disabled handle", () => {
-    vi.mocked(app).isPackaged = true;
+    setPackaged(true);
     delete process.env["MYSTATUS_ENABLE_UPDATES"];
 
     const updater = createUpdater();
@@ -43,7 +49,7 @@ describe("createUpdater gate", () => {
   });
 
   it("Given packaged build with opt-in env When createUpdater Then returns enabled handle", () => {
-    vi.mocked(app).isPackaged = true;
+    setPackaged(true);
     process.env["MYSTATUS_ENABLE_UPDATES"] = "1";
 
     const updater = createUpdater();
@@ -51,7 +57,7 @@ describe("createUpdater gate", () => {
   });
 
   it("Given disabled handle When start/stop Then no-ops without throwing", () => {
-    vi.mocked(app).isPackaged = false;
+    setPackaged(false);
 
     const updater = createUpdater();
     expect(() => updater.start()).not.toThrow();

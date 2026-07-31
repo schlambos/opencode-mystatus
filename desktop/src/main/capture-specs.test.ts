@@ -14,9 +14,7 @@ import {
   cookieHeader,
   cookieProviderIds,
   getCaptureSpec,
-  type CookieProviderId,
   type ExtractionResult,
-  type ProviderCaptureSpec,
 } from "./capture-specs.js";
 import type { CapturedCookie } from "../shared/ipc.js";
 
@@ -128,7 +126,7 @@ describe("atlascloud", () => {
     const result = spec.extract(cookies, undefined);
     expect(result.ok).toBe(true);
     if (result.ok && "json" in result) {
-      const json = result.json as { cookie: string };
+      const json = result.json as { cookie: string; accountUuid?: string };
       expect(json.cookie).toContain("access-token=eyJ.jwt.payload");
       expect(json.cookie).toContain("g_state=AAAA");
       expect(json.cookie).toContain("aid=abc123");
@@ -485,7 +483,7 @@ describe("redaction", () => {
   it("extraction functions do not log cookie values when called", () => {
     for (const spec of COOKIE_PROVIDER_SPECS) {
       // Build a fixture with a sentinel for this spec.
-      const sentinel = spec.sentinelCookies[0];
+      const sentinel = spec.sentinelCookies[0] ?? "sentinel";
       const cookies: CapturedCookie[] = [
         cookie(sentinel, "SECRET-" + sentinel),
         cookie("noise", "noise-val"),
@@ -530,7 +528,7 @@ describe("redaction", () => {
 describe("extract return shape", () => {
   it("every extract returns {ok:true, json|merge} or {ok:false, error}", () => {
     for (const spec of COOKIE_PROVIDER_SPECS) {
-      const sentinel = spec.sentinelCookies[0];
+      const sentinel = spec.sentinelCookies[0] ?? "sentinel";
       const cookies: CapturedCookie[] = [cookie(sentinel, "v")];
       const finalUrl =
         spec.id === "opencode-go"

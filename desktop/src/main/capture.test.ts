@@ -9,7 +9,7 @@
 // No real BrowserWindow is ever created. No GUI. Headless only.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CaptureSpec, CaptureResult, CapturedCookie } from "../shared/ipc.js";
+import type { CaptureSpec } from "../shared/ipc.js";
 import {
   captureSession,
   fallbackResult,
@@ -322,12 +322,16 @@ describe("captureSession", () => {
     await captureSession(makeSpec(), deps);
 
     expect(capturedOpts).not.toBeNull();
-    expect(capturedOpts?.webPreferences.sandbox).toBe(true);
-    expect(capturedOpts?.webPreferences.contextIsolation).toBe(true);
-    expect(capturedOpts?.webPreferences.nodeIntegration).toBe(false);
-    expect(capturedOpts?.webPreferences.partition).toBe("capture-test");
+    // Assigned inside the createWindow closure, so TS control-flow analysis
+    // still sees the initializer. Re-bind through the declared type.
+    const opts = capturedOpts as CaptureWindowOpts | null;
+    if (opts === null) throw new Error("createWindow was never called");
+    expect(opts.webPreferences.sandbox).toBe(true);
+    expect(opts.webPreferences.contextIsolation).toBe(true);
+    expect(opts.webPreferences.nodeIntegration).toBe(false);
+    expect(opts.webPreferences.partition).toBe("capture-test");
     // NO preload key — the capture window must not attach the app's IPC.
-    expect("preload" in (capturedOpts?.webPreferences ?? {})).toBe(false);
+    expect("preload" in opts.webPreferences).toBe(false);
   });
 
   it("setWindowOpenHandler allows allowed origins with the same partition", async () => {

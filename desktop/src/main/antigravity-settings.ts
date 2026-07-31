@@ -12,7 +12,7 @@
 // these booleans to badge each field "from env" vs "from config" so the user
 // knows whether their config value is actually in effect.
 
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AntigravityEnvStatus } from "../shared/ipc.js";

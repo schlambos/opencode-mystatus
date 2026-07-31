@@ -55,7 +55,7 @@ import {
   type ExtractionResult,
   type ProviderCaptureSpec,
 } from "./capture-specs.js";
-import type { CaptureResult, CredentialFileName } from "../shared/ipc.js";
+import type { CaptureResult } from "../shared/ipc.js";
 
 const LEGACY_CONFIG_DIR = join(homedir(), ".config", "opencode");
 const OPENCODE_MULTI_PROFILES_ROOT = join(
@@ -361,6 +361,7 @@ function resolveExtractionJson(
   extraction: ExtractionResult,
   spec: ProviderCaptureSpec,
 ): Record<string, unknown> {
+  if (!extraction.ok) throw new Error(extraction.error);
   if ("json" in extraction) return extraction.json;
   // merge path: read the existing file (if any) and apply the merge fn.
   const existing = readExistingCredentialFile(spec.fileName);
@@ -425,8 +426,9 @@ function titleForProviderId(providerId: string): string {
 export function parseJwtPayload(token: string): Record<string, unknown> | null {
   try {
     const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = parts[1];
+    if (parts.length !== 3 || payload === undefined) return null;
+    const b64 = payload.replace(/-/g, "+").replace(/_/g, "/");
     const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
     return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
   } catch {
@@ -453,8 +455,9 @@ export function decodeJwtExp(token: string): number | undefined {
  */
 export function extractAtlasAccessTokenExp(cookieHeader: string): number | undefined {
   const m = cookieHeader.match(/access-token=([^;]+)/);
-  if (!m) return undefined;
-  return decodeJwtExp(m[1]);
+  const token = m?.[1];
+  if (token === undefined) return undefined;
+  return decodeJwtExp(token);
 }
 
 /** Human-readable countdown to a Unix-seconds expiry, e.g. "6d 8h 12m". */

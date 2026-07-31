@@ -350,14 +350,14 @@ describe("NotifierManager", () => {
 
   it("fires nothing on the baseline poll", () => {
     const mgr = makeManager();
-    let pollCb: ((p: PushPayload) => void) | null = null;
+    const poll: { cb: ((p: PushPayload) => void) | null } = { cb: null };
     mgr.start((cb) => {
-      pollCb = cb;
+      poll.cb = cb;
       return () => {
-        pollCb = null;
+        poll.cb = null;
       };
     });
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 10, windows: [{ label: "5h", remaining: 10 }] }],
@@ -370,15 +370,15 @@ describe("NotifierManager", () => {
 
   it("fires one notification on a crossing after baseline", () => {
     const mgr = makeManager();
-    let pollCb: ((p: PushPayload) => void) | null = null;
+    const poll: { cb: ((p: PushPayload) => void) | null } = { cb: null };
     mgr.start((cb) => {
-      pollCb = cb;
+      poll.cb = cb;
       return () => {
-        pollCb = null;
+        poll.cb = null;
       };
     });
     // Baseline: A at 30.
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 30, windows: [{ label: "5h", remaining: 30 }] }],
@@ -387,7 +387,7 @@ describe("NotifierManager", () => {
     );
     expect(created).toHaveLength(0);
     // Crossing: A drops to 20.
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 20, windows: [{ label: "5h", remaining: 20 }] }],
@@ -402,15 +402,15 @@ describe("NotifierManager", () => {
 
   it("does not fire on repeated sub-threshold polls inside cooldown", () => {
     const mgr = makeManager();
-    let pollCb: ((p: PushPayload) => void) | null = null;
+    const poll: { cb: ((p: PushPayload) => void) | null } = { cb: null };
     mgr.start((cb) => {
-      pollCb = cb;
+      poll.cb = cb;
       return () => {
-        pollCb = null;
+        poll.cb = null;
       };
     });
     // Baseline at 30.
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 30, windows: [{ label: "5h", remaining: 30 }] }],
@@ -418,7 +418,7 @@ describe("NotifierManager", () => {
       ),
     );
     // Crossing to 20 — fires.
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 20, windows: [{ label: "5h", remaining: 20 }] }],
@@ -427,7 +427,7 @@ describe("NotifierManager", () => {
     );
     expect(created).toHaveLength(1);
     // Recovery to 40 — fires recovered (not cooldown-gated).
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 40, windows: [{ label: "5h", remaining: 40 }] }],
@@ -439,7 +439,7 @@ describe("NotifierManager", () => {
     // Drop again to 20 — within cooldown (lastNotifiedAt was the first fire).
     // But now() is fixed at 1_000_000 and the first fire was also at 1_000_000,
     // so the cooldown (60min) has NOT elapsed. Suppressed.
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 20, windows: [{ label: "5h", remaining: 20 }] }],
@@ -452,15 +452,15 @@ describe("NotifierManager", () => {
 
   it("fires a recovery notification", () => {
     const mgr = makeManager();
-    let pollCb: ((p: PushPayload) => void) | null = null;
+    const poll: { cb: ((p: PushPayload) => void) | null } = { cb: null };
     mgr.start((cb) => {
-      pollCb = cb;
+      poll.cb = cb;
       return () => {
-        pollCb = null;
+        poll.cb = null;
       };
     });
     // Baseline at 20 (below threshold).
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 20, windows: [{ label: "5h", remaining: 20 }] }],
@@ -469,7 +469,7 @@ describe("NotifierManager", () => {
     );
     expect(created).toHaveLength(0);
     // Recovery to 40.
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 40, windows: [{ label: "5h", remaining: 40 }] }],
@@ -485,15 +485,15 @@ describe("NotifierManager", () => {
     const mgr = makeManager({
       config: { providers: { hidden: ["a"] } },
     });
-    let pollCb: ((p: PushPayload) => void) | null = null;
+    const poll: { cb: ((p: PushPayload) => void) | null } = { cb: null };
     mgr.start((cb) => {
-      pollCb = cb;
+      poll.cb = cb;
       return () => {
-        pollCb = null;
+        poll.cb = null;
       };
     });
     // Baseline at 30.
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 30, windows: [{ label: "5h", remaining: 30 }] }],
@@ -501,7 +501,7 @@ describe("NotifierManager", () => {
       ),
     );
     // Crossing to 20 — suppressed because A is hidden.
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 20, windows: [{ label: "5h", remaining: 20 }] }],
@@ -516,21 +516,21 @@ describe("NotifierManager", () => {
     const mgr = makeManager({
       config: { providers: { disabled: ["a"] } },
     });
-    let pollCb: ((p: PushPayload) => void) | null = null;
+    const poll: { cb: ((p: PushPayload) => void) | null } = { cb: null };
     mgr.start((cb) => {
-      pollCb = cb;
+      poll.cb = cb;
       return () => {
-        pollCb = null;
+        poll.cb = null;
       };
     });
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 30, windows: [{ label: "5h", remaining: 30 }] }],
         }),
       ),
     );
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 20, windows: [{ label: "5h", remaining: 20 }] }],
@@ -543,21 +543,21 @@ describe("NotifierManager", () => {
 
   it("does nothing when notifications pref is false", () => {
     const mgr = makeManager({ prefs: { notifications: false } });
-    let pollCb: ((p: PushPayload) => void) | null = null;
+    const poll: { cb: ((p: PushPayload) => void) | null } = { cb: null };
     mgr.start((cb) => {
-      pollCb = cb;
+      poll.cb = cb;
       return () => {
-        pollCb = null;
+        poll.cb = null;
       };
     });
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 30, windows: [{ label: "5h", remaining: 30 }] }],
         }),
       ),
     );
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 20, windows: [{ label: "5h", remaining: 20 }] }],
@@ -571,21 +571,21 @@ describe("NotifierManager", () => {
   it("click handler calls onClick with the provider name", () => {
     const onClick = vi.fn();
     const mgr = makeManager({ onClick });
-    let pollCb: ((p: PushPayload) => void) | null = null;
+    const poll: { cb: ((p: PushPayload) => void) | null } = { cb: null };
     mgr.start((cb) => {
-      pollCb = cb;
+      poll.cb = cb;
       return () => {
-        pollCb = null;
+        poll.cb = null;
       };
     });
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 30, windows: [{ label: "5h", remaining: 30 }] }],
         }),
       ),
     );
-    pollCb?.(
+    poll.cb?.(
       makePush(
         makeModel({
           providers: [{ name: "A", minRemaining: 20, windows: [{ label: "5h", remaining: 20 }] }],
@@ -600,15 +600,15 @@ describe("NotifierManager", () => {
 
   it("handles an error model without throwing or firing", () => {
     const mgr = makeManager();
-    let pollCb: ((p: PushPayload) => void) | null = null;
+    const poll: { cb: ((p: PushPayload) => void) | null } = { cb: null };
     mgr.start((cb) => {
-      pollCb = cb;
+      poll.cb = cb;
       return () => {
-        pollCb = null;
+        poll.cb = null;
       };
     });
     expect(() => {
-      pollCb?.({ model: { error: "fail" }, fetchedAt: 0, nextFetchAt: 0 });
+      poll.cb?.({ model: { error: "fail" }, fetchedAt: 0, nextFetchAt: 0 });
     }).not.toThrow();
     expect(created).toHaveLength(0);
     mgr.destroy();

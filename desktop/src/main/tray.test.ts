@@ -13,7 +13,7 @@ import {
   TrayManager,
   type TrayDeps,
 } from "./tray.js";
-import type { MyStatusViewModel, PushPayload, ViewModelResult } from "../shared/ipc.js";
+import type { MyStatusViewModel, PushPayload } from "../shared/ipc.js";
 
 interface FakeWindow {
   isVisible: () => boolean;
@@ -349,11 +349,11 @@ describe("TrayManager", () => {
   it("updates icon and menu when a poll changes status", async () => {
     const deps = makeDeps();
     const mgr = new TrayManager(deps);
-    let pollCb: ((p: PushPayload) => void) | null = null;
+    const poll: { cb: ((p: PushPayload) => void) | null } = { cb: null };
     mgr.start((cb) => {
-      pollCb = cb;
+      poll.cb = cb;
       return () => {
-        pollCb = null;
+        poll.cb = null;
       };
     });
     const electron = await import("electron") as unknown as {
@@ -364,7 +364,7 @@ describe("TrayManager", () => {
     expect(tray?.setContextMenuCalls).toBe(1);
 
     // Push a red model.
-    pollCb?.({
+    poll.cb?.({
       model: makeModel({
         threshold: 25,
         providers: [{ name: "A", minRemaining: 5, windows: [{ label: "x", remaining: 5 }] }],
@@ -378,7 +378,7 @@ describe("TrayManager", () => {
     expect(tray?.setContextMenuCalls).toBe(2);
 
     // Push the same status again — no setImage call (dedup).
-    pollCb?.({
+    poll.cb?.({
       model: makeModel({
         threshold: 25,
         providers: [{ name: "A", minRemaining: 5, windows: [{ label: "x", remaining: 5 }] }],
@@ -391,7 +391,7 @@ describe("TrayManager", () => {
     expect(tray?.setContextMenuCalls).toBe(2);
 
     // Push a green model — icon updates.
-    pollCb?.({
+    poll.cb?.({
       model: makeModel({ threshold: 25 }),
       fetchedAt: 0,
       nextFetchAt: 0,
@@ -435,11 +435,11 @@ describe("TrayManager", () => {
   it("handles error model payloads as gray without throwing", async () => {
     const deps = makeDeps();
     const mgr = new TrayManager(deps);
-    let pollCb: ((p: PushPayload) => void) | null = null;
+    const poll: { cb: ((p: PushPayload) => void) | null } = { cb: null };
     mgr.start((cb) => {
-      pollCb = cb;
+      poll.cb = cb;
       return () => {
-        pollCb = null;
+        poll.cb = null;
       };
     });
     const electron = await import("electron") as unknown as {
@@ -449,7 +449,7 @@ describe("TrayManager", () => {
     // call fires (dedup). The point of this test is that the error payload
     // does not throw.
     expect(() => {
-      pollCb?.({ model: { error: "fail" }, fetchedAt: 0, nextFetchAt: 0 });
+      poll.cb?.({ model: { error: "fail" }, fetchedAt: 0, nextFetchAt: 0 });
     }).not.toThrow();
     expect(electron.__trays[0]?.setImageCalls).toHaveLength(0);
     mgr.destroy();

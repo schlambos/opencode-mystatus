@@ -22,12 +22,7 @@
     "useDefineForClassFields": true,
     "forceConsistentCasingInFileNames": true,
     "types": ["vitest/globals"],
-    "outDir": "./out/types/web",
-    "baseUrl": ".",
-    "paths": {
-      "~core": ["../plugin/mystatus.ts"],
-      "~core/*": ["../plugin/*"]
-    }
+    "outDir": "./out/types/web"
   },
   "include": [
     "src/renderer/**/*.ts",

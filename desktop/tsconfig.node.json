@@ -20,12 +20,7 @@
     "verbatimModuleSyntax": true,
     "forceConsistentCasingInFileNames": true,
     "types": ["node"],
-    "outDir": "./out/types/node",
-    "baseUrl": ".",
-    "paths": {
-      "~core": ["../plugin/mystatus.ts"],
-      "~core/*": ["../plugin/*"]
-    }
+    "outDir": "./out/types/node"
   },
   "include": [
     "src/main/**/*.ts",

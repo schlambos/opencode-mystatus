@@ -8,12 +8,14 @@
 // The deps seam lets tests mock app.setLoginItemSettings without booting
 // Electron.
 
-import type { App, LoginItemSettings } from "electron";
+import type { App, Settings } from "electron";
 import type { LoginItemResult, SetLoginItemRequest } from "../shared/ipc.js";
 
 export interface LoginItemDeps {
   readonly platform: NodeJS.Platform;
-  readonly setLoginItemSettings: (settings: LoginItemSettings) => void;
+  // Electron's `Settings` is the all-optional setLoginItemSettings input;
+  // `LoginItemSettings` (all-required) is the getLoginItemSettings RETURN type.
+  readonly setLoginItemSettings: (settings: Settings) => void;
 }
 
 function isSupported(platform: NodeJS.Platform): boolean {

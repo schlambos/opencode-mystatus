@@ -36,6 +36,7 @@ export const CHANNELS = {
   openExternal: "mystatus:open:external",
   exportSave: "mystatus:export:save",
   loginItem: "mystatus:login-item",
+  envAntigravity: "mystatus:env:antigravity",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -348,18 +349,34 @@ export interface AntigravityEnvStatus {
  * the paste providers (todo 12) and the cookie-capture providers (todo 11).
  * The writer (todo 13) resolves the write path profile-aware via
  * resolveCredentialWritePath.
+ *
+ * The runtime list is the SINGLE SOURCE OF TRUTH: the type is derived from
+ * it, and the IPC boundary enforces it at runtime (renderer input is
+ * untrusted — a compromised renderer must not be able to write or delete
+ * arbitrary files under ~/.config/opencode/, e.g. opencode.json).
  */
-export type CredentialFileName =
-  | "copilot-quota-token.json"
-  | "poe-api-key.json"
-  | "atlas-cookies.json"
-  | "byteplus-cookies.json"
-  | "mistral-cookies.json"
-  | "ollama-cookies.json"
-  | "longcat-cookies.json"
-  | "qwencloud-cookies.json"
-  | "stepfun-cookies.json"
-  | "opencode-go.json";
+export const CREDENTIAL_FILE_NAMES = [
+  "copilot-quota-token.json",
+  "poe-api-key.json",
+  "atlas-cookies.json",
+  "byteplus-cookies.json",
+  "mistral-cookies.json",
+  "ollama-cookies.json",
+  "longcat-cookies.json",
+  "qwencloud-cookies.json",
+  "stepfun-cookies.json",
+  "opencode-go.json",
+] as const;
+
+export type CredentialFileName = (typeof CREDENTIAL_FILE_NAMES)[number];
+
+/** Runtime allowlist check for renderer-supplied credential file names. */
+export function isCredentialFileName(name: unknown): name is CredentialFileName {
+  return (
+    typeof name === "string" &&
+    (CREDENTIAL_FILE_NAMES as readonly string[]).includes(name)
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Export-to-file (todo 15)

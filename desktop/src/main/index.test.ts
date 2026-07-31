@@ -24,7 +24,8 @@ describe("registerShellIpc", () => {
       __handlers: Map<string, (...a: unknown[]) => unknown>;
     };
 
-    registerShellIpc(ipcMain);
+    // The mock implements only `handle`; registerShellIpc uses nothing else.
+    registerShellIpc(ipcMain as unknown as Parameters<typeof registerShellIpc>[0]);
 
     const handler = __handlers.get(CHANNELS.ping);
     expect(handler).toBeDefined();
