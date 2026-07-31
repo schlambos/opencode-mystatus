@@ -10,6 +10,7 @@
  *   - Poe         (points balance)          auth.json, env var, or poe-api-key.json
  *   - Z.AI        (GLM Coding Plan)         auth.json → zai-coding-plan
  *   - xAI/Grok    (SuperGrok weekly/monthly usage + extra credits)  auth.json → xai/xai-oauth (dev) + ~/.grok/auth.json (consumer, auto-refreshed) via cli-chat-proxy /v1/billing[?format=credits]
+ *   - Kimi Code   (weekly + rolling 5-hour)  auth.json → kimi-for-coding
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
@@ -40,9 +41,18 @@ interface QuotaWindow {
     sectionHeader?: string;
     trendKey?: string;
 }
+/**
+ * Set when a live query failed and a previous snapshot was rendered instead, so
+ * cached numbers are never mistaken for current ones.
+ */
+export interface StaleInfo {
+    ts: number;
+    reason?: string;
+}
 interface ProviderCard {
     subtitle?: string;
     note?: string;
+    stale?: StaleInfo;
     header?: string[];
     windows?: QuotaWindow[];
     footer?: string[];
@@ -67,6 +77,7 @@ interface MyStatusConfig {
     uiRefreshSec?: number;
     providers?: {
         disabled?: string[];
+        hidden?: string[];
         order?: string[];
     };
     google?: {
@@ -82,6 +93,8 @@ interface MyStatusConfig {
     };
 }
 export declare function loadConfig(): MyStatusConfig;
+/** Persist config changes (best-effort; preserves existing fields). */
+export declare function saveConfig(patch: Partial<MyStatusConfig>): void;
 export interface RanProvider {
     title: string;
     result: QueryResult | null;
@@ -119,6 +132,11 @@ export interface MyStatusViewProvider {
     soonestResetMs?: number;
     windows: MyStatusViewWindow[];
     note?: string;
+    /** Present when these numbers come from cache because the live query failed. */
+    stale?: {
+        ageMs: number;
+        reason?: string;
+    };
 }
 export interface MyStatusViewModel {
     summary: {
@@ -141,6 +159,22 @@ export interface MyStatusViewModel {
     errors: string[];
     alerts: string[];
     threshold: number;
+    issues: StatusIssue[];
+    health: StatusHealth;
+}
+/** A provider that failed, served stale cache, or has no credentials. */
+export interface StatusIssue {
+    provider: string;
+    kind: "error" | "stale" | "unconfigured";
+    detail: string;
+    ageMs?: number;
+}
+export interface StatusHealth {
+    queried: number;
+    rendered: number;
+    stale: number;
+    failed: number;
+    unconfigured: number;
 }
 /** Build structured view data for the live TUI dashboard. */
 export declare function buildMyStatusViewModel(snapshot: MyStatusSnapshot, args: MyStatusArgs, opts?: FormatMyStatusOptions): MyStatusViewModel | {

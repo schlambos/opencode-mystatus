@@ -72,7 +72,9 @@ Options:
   --interval <seconds>     Provider refresh interval in watch mode (default: 60)
   -h, --help               Show this help message
 
-Watch mode keys: j/k or arrows scroll, g/G top/bottom, r refresh, q quit
+Watch mode keys: 1/2/3 or Tab views, e issues, x hide/show provider,
+                 d density (auto/detail/compact), j/k or arrows scroll,
+                 space/b page, g/G top/bottom, r refresh, q quit
 
 Providers: anthropic,atlascloud,byteplus,copilot,google,longcat,minimax,mistral,
            nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai`);

@@ -571,69 +571,75 @@ Pairing `cacheTtlSec` with `watchIntervalSec` reduces redundant API calls.
 |-----|--------|
 | `1` / `2` / `3` | Switch Current / Weekly / Monthly |
 | `Tab` | Cycle views |
+| `e` | Toggle Issues pane (stale data, failures, not-configured providers) |
+| `x` | Hide the provider at the cursor (quota pane) or show it again (hidden pane) |
+| `d` | Cycle density: auto / detail / compact |
 | `j` / `k` or arrows | Scroll |
+| `space` / `b` | Page down / up |
 | `g` / `G` | Jump to top / bottom |
 | `r` | Force sync |
 | `q` | Quit |
+
+#### Hiding providers
+
+Press `x` on any provider in the quota panes to hide it from the list. Hidden providers are still queried in the background (so their data stays fresh when you unhide them), but they are filtered from the Current, Weekly, and Monthly views. A `x Hidden N` tab appears in the tab bar when any providers are hidden.
+
+To manage hidden providers, press `x` when the `Hidden` tab is active (or navigate to it by pressing `x` from the quota pane after hiding at least one provider). The hidden pane lists all hidden providers with their names. Press `x` on any entry to show it again.
+
+Hidden state is persisted to `~/.config/opencode/mystatus.json` under `providers.hidden` (an array of provider names, case-insensitive). This is separate from `providers.disabled`, which prevents the provider from being queried at all.
+
+#### Issues pane
+
+Press `e` to toggle the Issues pane. It surfaces three things the quota panes don't show:
+
+1. **Stale data** — providers whose live query failed but cached numbers are still displayed. Shows the cache age and the failure reason (e.g. `token expired`, `404`). On the quota panes, these providers get a yellow `stale 1d 15h` badge next to the provider name.
+2. **Failed providers** — live errors with no cached fallback. The one-shot summary card also shows a `Stale data:` line and a `Providers: N/M reporting` line.
+3. **Not configured** — providers with no credentials, listed compactly. They are silently skipped on the quota panes.
+
+Sub-accounts that fail for the same reason are collapsed into one row (e.g. `Google (4 accounts) stale 16h`). The tab bar shows an attention badge (`e Issues 5`) when there are stale or failed providers.
+
+#### Density
+
+Each quota window is one row: label, meter, percent remaining, and reset countdown.
+
+- **auto** (default) — full per-window detail when the list fits the terminal, otherwise one row per provider showing its lowest window.
+- **detail** — always list every window.
+- **compact** — always one row per provider.
+
+Frames are painted differentially: only rows whose text changed are rewritten, so countdown ticks never clear or flash the screen.
 
 #### Sample output (Current view)
 
 Representative layout with anonymized accounts. ANSI colors render in-terminal; shown here as plain text.
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ usage remaining quota                                    50s ago   refresh 10s │
-│ 8 accounts  ·  5 ok  ·  1 watch  ·  2 low                                  │
-│ [1 Current]    2 Weekly     3 Monthly              what you have left now    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ LongCat API Quota                                               lowest 11%   │
-│     Free quota                                                               │
-│     ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   11% left                      │
-│     Total tokens                                                             │
-│     ████████████████████████████████░░░░░░░░   78% left                      │
-│                                                                              │
-│ Mistral Vibe Usage                                              lowest 0%    │
-│     Vibe Usage · account-a@example.com                                       │
-│     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   0% left   resets 9d 11h       │
-│     Vibe Usage · account-b@example.com                                       │
-│     ████████████████████████████████████░░░░   96% left  resets 9d 11h     │
-│                                                                              │
-│ xAI/Grok                                                        lowest 21%   │
-│     Weekly SuperGrok limit                                                   │
-│     ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   21% left  resets 6d 11h       │
-│                                                                              │
-│ Ollama                                                          lowest 95%   │
-│     Session                                                                  │
-│     ████████████████████████████████████░░░░   95% left  resets 2h 46m      │
-│                                                                              │
-│ BytePlus                                                        lowest 97%   │
-│     Session                                                                  │
-│     █████████████████████████████████████░░░   97% left  resets 4h 38m      │
-│                                                                              │
-│ OpenAI                                                          lowest 99%   │
-│     5-hour limit                                                             │
-│     ████████████████████████████████████████   99% left  resets 5h          │
-│                                                                              │
-│ StepFun                                                        lowest 100%   │
-│     5-hour rolling                                                           │
-│     ████████████████████████████████████████   100% left resets now         │
-│                                                                              │
-│ Google                                                         lowest 100%   │
-│     Gemini Pro · user@example.com                                            │
-│     ████████████████████████████████████████   100% left resets 4h 59m      │
-│     Gemini Flash · user@example.com                                          │
-│     ████████████████████████████████████████   100% left resets 4h 59m      │
-│     Claude · user@example.com                                                │
-│     ████████████████████████████████████████   100% left resets 4h 59m      │
-│     GPT-OSS · user@example.com                                               │
-│     ████████████████████████████████████████   100% left resets 4h 59m      │
-│                                                                              │
-│ Anthropic                                                      lowest 100%   │
-│     5-hour limit                                                             │
-│     ████████████████████████████████████████   100% left resets —            │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ 1/2/3 views   j/k scroll   r sync   q quit                                  │
-└──────────────────────────────────────────────────────────────────────────────┘
+ usage  8 accounts  ·  5 ok  ·  1 watch  ·  2 low                    12s ago   sync 48s
+ 1 Current  ·  2 Weekly  ·  3 Monthly  ·  e Issues 2          2 stale  ·  detail (auto)
+───────────────────────────────────────────────────────────────────────────────────────
+ LongCat
+   Free quota            ████░░░░░░░░░░░░░░░░░░░░░░  11%
+   Total tokens          ████████████████████░░░░░░  78%
+ Mistral Vibe — account-a
+   Vibe Usage            ░░░░░░░░░░░░░░░░░░░░░░░░░░   0%  ↻ 9d 11h
+ xAI/Grok
+   Weekly SuperGrok      █████░░░░░░░░░░░░░░░░░░░░░  21%  ↻ 6d 11h
+ Ollama
+   Session               █████████████████████████░  95%  ↻ 2h 46m
+ OpenAI
+   5-hour                ██████████████████████████  99%      ↻ 5h
+ Google — user
+   Gemini · 5-hour       ██████████████████████████ 100%  ↻ 4h 59m
+   Claude & GPT · 5-hour ██████████████████████████ 100%  ↻ 4h 59m
+───────────────────────────────────────────────────────────────────────────────────────
+ 1/2/3 view  ·  e issues  ·  d density  ·  j/k scroll  ·  r sync  ·  q quit
+```
+
+Compact rows collapse a provider to its lowest window, with that window's name on the right:
+
+```text
+ Anthropic              ░░░░░░░░░░░░░░░░░░░░░░░░░░   0%            5-hour
+ OpenAI                 ████████████████████░░░░░░  78%  ↻ 6d 19h  7-day
+ Google — mattg         █████████████████████████░  95%   ↻ 4d 1h  Gemini · Weekly
 ```
 
 The **Weekly** tab collects every longer window — Anthropic's general and Fable limits, OpenAI's general and named-model limits, Ollama Weekly, SuperGrok's shared weekly pool, and so on. Weekly-only providers remain visible on **Current** as their actionable quota and also appear under **Weekly** for correct horizon grouping. The **Monthly** tab shows billing-cycle windows for multi-tier plans (e.g. BytePlus Monthly). LongCat only exposes token pools (no rolling reset windows), so it stays on **Current**.
