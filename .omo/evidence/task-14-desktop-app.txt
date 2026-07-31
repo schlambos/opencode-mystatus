@@ -1,0 +1,13 @@
+
+> mystatus-desktop@0.0.0 test
+> vitest run src/main/config-io.test.ts src/main/ipc.test.ts src/renderer/lib/settings.test.ts src/renderer/pages/SettingsPane.test.tsx
+
+
+ RUN  v4.1.10 /Users/matt/Repos/mystatus/desktop
+
+
+ Test Files  4 passed (4)
+      Tests  70 passed (70)
+   Start at  17:49:31
+   Duration  5.04s (transform 300ms, setup 0ms, import 352ms, tests 5.22s, environment 239ms)
+

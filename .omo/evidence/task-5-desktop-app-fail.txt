@@ -1,0 +1,39 @@
+Task 5 — FAILURE SCENARIO: summary.lowest / summary.soonest undefined
+=====================================================================
+Date: 2026-07-30
+
+Scenario (plan QA failure case): every provider errored, so the core omits
+summary.lowest and summary.soonest (buildMyStatusViewModel only sets them
+when a metric exists — plugin/mystatus.ts:7391-7397). The header must
+degrade without rendering NaN/undefined anywhere.
+
+Fixture used (SummaryHeader.test.tsx "degrades without NaN/undefined text
+when lowest and soonest are absent"):
+  summary: { accounts: 2, green: 0, yellow: 0, red: 2 }   // lowest/soonest omitted
+  health:  { queried: 2, rendered: 0, stale: 0, failed: 2, unconfigured: 0 }
+
+Assertions (all hold):
+  - summary-lowest  → "No windows reported."
+  - summary-soonest → "No upcoming resets reported."
+  - soonest-countdown testid absent (no countdown can be derived)
+  - summary-health  → "0/2 reporting · 2 failed"
+                      (no "stale" / "not configured" segments — zero counts)
+  - container.textContent matches neither /NaN/ nor /undefined/
+
+Run:
+  $ npx vitest run -t "degrades without NaN"
+   Test Files  1 passed | 10 skipped (11)
+        Tests  1 passed | 151 skipped (152)
+
+Same suite, full verbose run at commit time:
+  ✓ degrades without NaN/undefined text when lowest and soonest are absent  2ms
+  ✓ hides the health line when nothing failed, went stale, or is unconfigured
+  Test Files  1 passed (1)
+       Tests  7 passed (7)
+
+Guards that make the degradation structural, not incidental:
+  - resetCountdown(resetMs, fetchedAt, now) returns null for absent/non-finite
+    resetMs and the "now" floor for left <= 0 — never a negative duration.
+  - age/next-sync clamp with Math.max(0, ...) before formatting.
+  - lowest/soonest fallback strings are rendered inside the SAME testids so
+    the layout and downstream e2e selectors stay stable.

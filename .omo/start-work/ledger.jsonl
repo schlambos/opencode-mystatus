@@ -1,0 +1,10 @@
+{"event":"work-started","plan":"desktop-app","session_id":"codex:atlas-desktop-app","ts":"2026-07-30T18:40:06Z","active_plan":".omo/plans/desktop-app.md"}
+{"event":"task-completed","plan":"desktop-app","task":"1","session_id":"ses_04babc1e0ffeot6hnSEy1advQc","ts":"2026-07-30T18:54:00Z","commits":["4ca568c","d5ed9cd"],"tests":["typecheck","build","vitest 2 pass"],"artifact":".omo/evidence/task-1-desktop-app.txt"}
+{"event":"task-completed","plan":"desktop-app","task":"2","ts":"2026-07-30T19:36:00Z","commit":"b53225d"}
+{"event":"task-completed","plan":"desktop-app","task":"4","ts":"2026-07-30T19:36:00Z","commit":"ccba2f5","e2e":"5/5"}
+{"event":"task-completed","plan":"desktop-app","task":"20","ts":"2026-07-30T19:36:00Z","commit":"5e2c286"}
+{"event":"task-completed","plan":"desktop-app","task":"3","ts":"2026-07-30T19:47:00Z","commit":"a2dd6f8","tests":55}
+{"event":"wave2-complete","plan":"desktop-app","tasks":["5","6","7","8","9"],"ts":"2026-07-30T20:50:00Z","verify":"typecheck+vitest208+build headless","note":"e2e deferred no-GUI per user"}
+{"event":"tasks-completed","plan":"desktop-app","tasks":["10","16","21"],"ts":"2026-07-30T21:20:00Z","tests":271}
+{"event":"task-completed","plan":"desktop-app","task":"13","ts":"2026-07-30T22:15:00Z","commit":"31575b8","tests":458}
+{"event":"F3-headless-pass","plan":"desktop-app","ts":"2026-07-30T22:38:00Z","tests":458,"real_config_mutated":false,"gui_half":"deferred-user-forbade-gui"}

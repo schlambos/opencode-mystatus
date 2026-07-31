@@ -1,0 +1,98 @@
+Task 5 — Summary header card
+============================
+Date: 2026-07-30
+
+## Scope delivered
+- SummaryHeader.tsx renders MyStatusViewModel.summary VERBATIM (no summary
+  math re-derived): accounts count, green/yellow/red tallies as colored dot
+  spans (status tokens, never emoji-font glyphs), lowest window
+  (`provider · label · NN%`, percent colored by the existing statusTone tier
+  tokens), soonest reset with a live countdown derived from the store ticker
+  via lib/status.ts resetCountdown (resetMs - (now - fetchedAt), TUI parity).
+- Health line from model.health, parity with plugin/tui.ts:608-626
+  attentionFlags: `{rendered}/{queried} reporting · N failed · N stale ·
+  N not configured`, order failed → stale → unconfigured, each segment only
+  when > 0; the whole row only appears when any of the three is non-zero.
+- Sync cadence mirrors tui.ts statusText: "last synced {fmtAge} ago ·
+  next sync in {N}s" (raw seconds — formatDuration would render "0m" for 48s).
+- Manual refresh button → window.mystatus.refresh() via getBridge(); spinner
+  tracks the real sync (poller.ts forceRefresh resolves only after the forced
+  fetch broadcasts); in-flight press guard; degrades silently when the
+  preload bridge never loaded.
+- Left-edge accent reflects the worst tally tier present (red → dead,
+  yellow → warn, green → ok, else flat) — pure display mapping of displayed
+  fields, no math.
+- Integrated into DashboardPane: the todo-4 ad-hoc StatChip grid + soonest
+  bar were replaced by <SummaryHeader model fetchedAt nextFetchAt now />;
+  pane still owns the payloadError/awaiting-sync/modelError states and the
+  error strip.
+- shell.spec.ts (todo 4) assertions migrated from the removed
+  provider-count/dashboard-overview chips to summary-header testids;
+  e2e fixture health (1 stale, 1 unconfigured) exercises the health line.
+
+## Test infra added
+- @testing-library/react ^16.3.2 + @testing-library/dom ^10.4.1 +
+  @testing-library/jest-dom ^7 + jsdom devDeps. Vitest global env stays
+  "node"; SummaryHeader.test.tsx opts in via `// @vitest-environment jsdom`.
+- Bridge installed by assigning window.mystatus (NOT vi.stubGlobal of the
+  whole window — react-dom needs the real jsdom window/document).
+
+## Verification
+- npx vitest run src/renderer/components/SummaryHeader.test.tsx: 7/7 passed
+    1. all summary fields + sync cadence + health line verbatim (incl. 3%
+       colored text-status-low, countdown "44m" = 45m - 12s elapsed)
+    2. refresh invokes bridge exactly once per press; in-flight re-press
+       ignored; second press after resolve allowed
+    3. no bridge → click does not throw, button stays enabled
+    4. countdown ticks 44m → 29m as now advances; "now" (never negative)
+       past the reset moment
+    5. lowest % tier coloring: 0% → text-status-dead, 99% → text-status-ok
+    6. degraded fixture (lowest/soonest absent, all providers errored):
+       fallback copy, "0/2 reporting · 2 failed", zero NaN/undefined text
+    7. health line hidden when failed/stale/unconfigured all zero
+- npm run build: EXIT 0
+- npx playwright test e2e/shell.spec.ts: 5/5 passed (incl. migrated
+  summary-header assertions and error-result stale-fallback assertion)
+- npm run typecheck:web — 0 errors in this task's files; 6 errors, all in
+  sibling agents' unmerged WIP (Dashboard.tsx/TrendRow.tsx todo 6-7,
+  issues.ts todo 9) — out of category, recorded for their tasks
+- npm run typecheck (desktop solution): EXIT 0
+- repo-root npm run typecheck: EXIT 0
+
+## Parallel-wave coordination (worktree churn, NOT this task's failures)
+- Todos 6-9 are editing the same tree concurrently. At various points their
+  in-progress files failed the shared vitest run: poller.test.ts (todo 8
+  threshold wiring of loadPrefs), issues.test.ts (todo 9), store.test.ts +
+  controls.test.ts (todos 6-8 mid-edit of the store). The failing set
+  changed between consecutive runs — signature of mid-edit churn. None of
+  them touch SummaryHeader/DashboardPane wiring: this task's suite passes
+  in isolation (7/7, re-verified at 16:00 after their latest store edits)
+  and inside the built app (e2e 5/5).
+- A sibling npm install re-pinned jsdom ^30.0.1 → ^26.1.0 in package.json;
+  this task's suite was re-verified green against jsdom 26.1.0.
+- Todo 6 layered its Dashboard import into DashboardPane.tsx on top of this
+  task's version. The commit stages THIS task's version (temp-swap: write
+  own version → git add → restore sibling WIP to the worktree) so the commit
+  builds without todo 6's untracked Dashboard.tsx; sibling WIP stays in the
+  working tree for their own commit.
+- status.ts/store.ts sibling additions (toneFillClass/toneStrokeClass etc.)
+  are purely additive; this commit relies only on the committed (HEAD)
+  surface of both files.
+
+## Files created
+  desktop/src/renderer/components/SummaryHeader.tsx
+  desktop/src/renderer/components/SummaryHeader.test.tsx
+  .omo/evidence/task-5-desktop-app.txt
+  .omo/evidence/task-5-desktop-app-fail.txt
+
+## Files modified (this task's share)
+  desktop/src/renderer/pages/DashboardPane.tsx  (chip grid → SummaryHeader)
+  desktop/e2e/shell.spec.ts                     (assertions → header testids)
+  desktop/package.json                          (4 testing devDeps)
+  desktop/package-lock.json
+
+## Pre-existing dirty files (UNTOUCHED, not staged)
+  README.md, bin/mystatus-cli.ts, dist/plugin/*, plugin/mystatus.ts,
+  plugin/tui.ts + sibling agents' uncommitted desktop/ WIP
+
+Commit: feat(desktop): summary header card

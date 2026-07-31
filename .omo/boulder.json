@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "active_work_id": "desktop-app",
+  "works": {
+    "desktop-app": {
+      "work_id": "desktop-app",
+      "active_plan": ".omo/plans/desktop-app.md",
+      "plan_name": "desktop-app",
+      "session_ids": ["codex:atlas-desktop-app"],
+      "status": "active",
+      "worktree_path": null,
+      "started_at": "2026-07-30T18:40:06Z"
+    }
+  }
+}

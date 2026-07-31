@@ -1,0 +1,88 @@
+task 6 — horizon tabs + provider cards (desktop)
+==================================================
+
+Implementation
+--------------
+- desktop/src/renderer/lib/tiers.ts
+    Vendored, exact re-implementation of plugin/tui.ts:304-402 (windowTier,
+    splitTiers, windowsForView, groupsForHorizon). Module carries the PARITY
+    marker and a derivation note citing tui.ts:304-402. Tier semantics and
+    group ordering are unchanged; terminal-width name shortening is omitted
+    deliberately (the desktop renders full names).
+- desktop/src/renderer/lib/hiddenProviders.ts
+    Lower-cased hidden set + shallow-merge-safe setProviderHidden(name, hide)
+    (getConfig -> spread providers -> patchConfig) so core saveConfig's shallow
+    merge (plugin/mystatus.ts:6740-6748) cannot wipe disabled/order. Reusable
+    seam for the per-card hide button (todo 9).
+- desktop/src/renderer/lib/store.ts
+    Added reloadConfig() export so the config snapshot refreshes after a
+    hide/unhide mutation. Merged cleanly alongside todo 7's history addition.
+- desktop/src/renderer/components/Meter.tsx
+    One meter row: label / tone-colored bar (animated width) / NN% / live
+    reset countdown (resetCountdown parity, ↻ prefix).
+- desktop/src/renderer/components/ProviderCard.tsx
+    Card: name + stale badge (`stale <dur>`, formatDuration parity) + note row
+    + meter rows; trailing `actions` slot for todo 9's eye-slash button.
+- desktop/src/renderer/components/IssuesPanel.tsx
+    Issues tab content: health line, failed/stale rows, unconfigured list
+    (tui.ts:538-563 shape). Todo 9 can extend with collapse/links.
+- desktop/src/renderer/components/Dashboard.tsx
+    Tab bar Current / Weekly / Monthly / Issues (badge = failed+stale) /
+    Hidden(N) (shown only when N>0). One pushed model, split client-side —
+    tabs never re-query (plan todo 6). Hidden providers filtered from quota
+    tabs exactly as the TUI does (tui.ts:659). Empty-tab text mirrors
+    tui.ts:670.
+- desktop/src/renderer/pages/DashboardPane.tsx
+    Replaced the wave-2 placeholder with <Dashboard/>; coordinated below todo
+    5's SummaryHeader (merge point held low in the tree).
+
+Tests (agent-executed)
+----------------------
+Vitest tiers.test.ts — 51/51 passed. Golden fixture table hand-derived from
+tui.ts:304-334 covers: monthly/weekly/short keyword branches, the credits/
+balance/points/total branch, rule-order precedence ("session credits" -> monthly,
+"monthly ai credits" -> monthly, "weekly completions" -> weekly), every resetMs
+fallback boundary (<=8h short incl. 0 and the 8h boundary; <=240h weekly incl.
+the 240h boundary; >240h monthly; Infinity/NaN/undefined -> short), the default
+short fallthrough, case-insensitivity, and the biweekly / "7 days" word-boundary
+traps. windowsForView cases cover the Current short->weekly->monthly fallback,
+weekly passthrough, the Monthly EXCLUSION rule (monthly-only -> []), and
+short+monthly. groupsForHorizon cases cover worst-then-soonest ordering,
+empty-window exclusion, intra-group window sorting (undefined resetMs last),
+soonest ignoring non-positive resetMs, and view-filtered ordering.
+
+Playwright e2e/dashboard.spec.ts — 7/7 passed (launched with HOME/USERPROFILE
+redirected to a throwaway dir per the mandatory safety gate):
+  1 current tab sorts providers by min remaining asc (Grok 22 -> Poe 46 -> Anthropic 49)
+  2 weekly tab collects every weekly window, dropping weekly-less providers
+  3 monthly tab shows billing windows for multi-tier providers only
+        (monthly-only Poe EXCLUDED; weekly-only Grok absent)
+  4 issues tab shows the health line and unconfigured list
+  5 hidden tab is absent while nothing is hidden
+  6 tabs split one pushed model client-side and survive cycling (no re-query)
+  7 zero-remaining and zero-window providers never crash the tab
+
+Evidence screenshots:
+  .omo/evidence/task-6-desktop-app.png       (Current tab, 3 providers, sorted)
+  .omo/evidence/task-6-desktop-app-fail.png  (0% red meter + zero-window skip)
+
+Type gates
+----------
+  npm --prefix desktop run typecheck   -> exit 0
+  npm --prefix desktop run typecheck:web -> exit 0 (renderer graph)
+  repo-root npm run typecheck          -> exit 0 (root graph untouched)
+  npm --prefix desktop run build       -> exit 0 (ESM main + renderer bundle)
+
+Residual risk / parallel-stream failures (NOT introduced by this todo)
+----------------------------------------------------------------------
+`npx vitest run` reports two failing files that belong to in-progress parallel
+waves and are outside this todo's scope:
+  - src/renderer/lib/store.test.ts  — todo 7's refreshHistory() calls
+    api.getHistory() but the test mock predates that branch (9 cases).
+  - src/renderer/lib/controls.test.ts — todo 8's clampThreshold test (1 case).
+All test files owned by this todo pass. The plugin/ tree was not touched and
+tier semantics were verified against the golden table, not changed.
+
+Known drift risk (per plan): the vendored tier logic must be re-verified by
+hand against plugin/tui.ts:304-402 if the TUI ever changes (todo 19 README
+note).

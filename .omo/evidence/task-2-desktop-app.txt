@@ -1,0 +1,80 @@
+Task 2 — Core bridge: typed main-process API over the plugin core
+=================================================================
+Date: 2026-07-30
+
+## Files created
+desktop/src/main/core.ts          — typed coreApi facade over ~core
+desktop/src/main/ipc.ts            — registerIpc(ipcMain) wiring handlers
+desktop/src/main/core.test.ts     — vitest with temp HOME
+
+## Files modified
+desktop/src/shared/ipc.ts         — expanded CHANNELS + full typed contract
+desktop/src/preload/index.ts      — narrow window.mystatus bridge (invoke + onViewModel)
+desktop/src/main/index.ts         — wires registerIpc(ipcMain) in whenReady
+desktop/src/renderer/App.tsx      — onPush → onViewModel (bridge rename)
+
+## npm --prefix desktop run typecheck
+Result: EXIT 0 (tsconfig.json references node + web projects, both clean)
+
+## npm --prefix desktop run test (vitest)
+Command: npx vitest run src/main/core.test.ts
+Result: 5 tests PASS (219ms)
+  - getViewModel returns MyStatusViewModel or {error}, never throws
+  - patchConfig({sort:'name'}) round-trips through getConfig()
+  - patchConfig preserves previously written keys across a second patch
+  - getJsonExport returns format:'json' + string
+  - getAnsiExport returns format:'ansi' + string
+
+Full suite: 3 files, 19 tests PASS (237ms)
+
+## npm --prefix desktop run build
+Result: EXIT 0
+  out/main/index.js      184.45 kB  (ESM)
+  out/preload/index.mjs  0.88 kB    (ESM, .mjs forced by electron-vite)
+  out/renderer/...       (css 7.45 kB, js 555.64 kB)
+
+## ESM main bundle verification
+out/main/index.js:
+  - import/export statements: 10
+  - require( calls: 0
+  - @opencode-ai/plugin: externalized (1 reference = external decl, not bundled)
+  - core functions bundled: queryMyStatus, buildMyStatusViewModel,
+    formatMyStatus, loadConfig, saveConfig (all 5 imported from ~core)
+  - format: es (build.rollupOptions.output.format: 'es')
+  - package.json "type": "module"
+
+## Repo-root typecheck
+Command: npm run typecheck (repo root)
+Result: EXIT 0 — root tsconfig.json unchanged, plugin/ untouched
+
+## Safety gate
+- Tests redirect process.env.HOME and process.env.USERPROFILE to a tmp dir
+  in beforeAll() BEFORE any dynamic import of core.js.
+- ~/.config/opencode/ pre-created in tmp HOME because core saveConfig
+  silently swallows ENOENT (plugin/mystatus.ts:6745-6747).
+- Tmp dir cleaned up in afterAll().
+
+## Security
+- contextIsolation: true (unchanged from task 1)
+- nodeIntegration: false (unchanged)
+- sandbox: true (unchanged)
+- Preload exposes ONLY: ping, getViewModel, getExport, getConfig,
+  patchConfig, onViewModel. ipcRenderer is never leaked wholesale — every
+  method is bound to a known channel via ipcRenderer.invoke / .on / .off.
+- View model passed through verbatim — no wrapping or transformation.
+
+## git status --short (pre-commit)
+ M README.md           <- pre-existing dirty, UNTOUCHED
+ M bin/mystatus-cli.ts  <- pre-existing dirty, UNTOUCHED
+ M dist/plugin/*        <- pre-existing dirty, UNTOUCHED
+ M plugin/mystatus.ts   <- pre-existing dirty, UNTOUCHED
+ M plugin/tui.ts        <- pre-existing dirty, UNTOUCHED
+?? .omo/               <- notepad/evidence (not committed in this task)
+?? desktop/            <- this task (staged for commit)
+
+## Failure-QA scenario (unwritable HOME)
+Not separately run — the getViewModel test already exercises the
+"no credentials / core returns {error} or empty model" path with a
+clean tmp HOME, which is the same facade-resilience guarantee the
+failure scenario targets (facade resolves, does not reject/crash,
+surfaces the core's own error string).

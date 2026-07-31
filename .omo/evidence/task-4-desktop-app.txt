@@ -1,0 +1,117 @@
+Task 4 — Renderer shell: layout, routing, theme, state store
+==============================================================
+Date: 2026-07-30
+
+## Scope delivered
+- Sidebar shell with 3 nav items (Dashboard / Credentials / Settings),
+  state-based routing (NO react-router), active indicator + aria-current.
+- Tiny external store (useSyncExternalStore, zero new deps) holding the
+  latest pushed view model, fetchedAt, nextFetchAt, config snapshot,
+  connection status, and a 1s `now` ticker (refcounted by subscribers).
+  Live countdown derived per render as resetMs - (now - fetchedAt) — same
+  math as plugin/tui.ts:293-298 + 638.
+- Dark-first Tailwind v4 theme tokens (ink surfaces, fog text scale, the
+  four plugin status tiers ok/warn/low/dead = ≥50 / ≥threshold / <threshold
+  / ≤0, cool accent), ops-console grid backdrop, mono+sans pairing (CSP
+  forbids web fonts), rise/blink animations.
+- Hand-rolled components only (no component library): ErrorBoundary,
+  PaneShell, Sidebar, DashboardPane/CredentialsPane/SettingsPane.
+- Renderer only consumes window.mystatus; never fetches. Payload validated
+  at the boundary (isPushPayload / isViewModel). Malformed payload →
+  recoverable panel; core {error} result → model-error strip/panel keeping
+  prior data (TUI-style stale fallback); missing bridge → degrade, no
+  white screen. contextIsolation preserved.
+
+## Coordination with parallel todo 2 (landed mid-task as b53225d)
+- Bridge API changed under the work: onPush → onViewModel; typed
+  PushPayload with model: ViewModelResult (can be {error}); typed
+  MyStatusConfig; staleConfig became a boolean.
+- Adapted store to onViewModel, the error-result branch, typed config, and
+  staleConfig=true → re-fetch config. Kept optional-chaining for `refresh`
+  (todo 3, not yet present) via RendererBridge.
+- Removed my duplicate view-model type mirror; viewmodel.ts now imports the
+  types from shared/ipc.ts and only owns runtime validation.
+
+## Root-cause fix to the existing scaffold (preload did not load)
+- First real window launch surfaced a latent bug: the preload was built as
+  ESM (.mjs with import statements) but the window runs sandbox: true.
+  Sandboxed preload can only execute CommonJS, so the preload threw
+  "Cannot use import statement outside a module", window.mystatus was
+  undefined, and the renderer crashed (blank #root). Todo 1/2 had never
+  launched a renderer that actually uses the bridge, so it went unnoticed.
+- Fix (security posture preserved): preload is now the one target built as
+  CJS (electron.vite.config.ts preload output format:"cjs", entry .js);
+  main/index.ts preload path .mjs → .js. Verified out/preload/index.js is
+  CJS ("use strict"; const electron = require("electron")).
+- Hardened the boundary: getBridge() returns undefined when preload is
+  absent; connectStatusStore degrades instead of white-screening (covered
+  by a unit test).
+
+## Verification
+- npm run typecheck:web (fresh, out/types cleared): EXIT 0
+- npm run typecheck (desktop solution script): EXIT 0
+- npm run typecheck (repo root): EXIT 0
+- npm run test (vitest): 43 passed across 5 files
+    * renderer/lib/status.test.ts (8) — tier + fmtDur/fmtAge/resetCountdown parity
+    * renderer/lib/store.test.ts (12) — push accept, error result, malformed
+      reject, ticker tick/stop, config snapshot, staleConfig refetch,
+      ping live/error, missing-bridge degrade, getConfig reject
+    * main/core.test.ts, main/prefs.test.ts, main/index.test.ts (todo 1/2/20)
+- npm run build: EXIT 0 (preload CJS 0.95 kB; renderer css 21.68 kB, js 578 kB)
+- npx playwright test e2e/shell.spec.ts: 5 passed
+    1. boots, title=mystatus, 3 nav items render
+    2. state routing switches panes (aria-current on active)
+    3. pushed view model → "3 providers", soonest countdown, live chip
+    4. pushed {error} result → model-error strip, prior data retained
+    5. malformed {} push → payload-error panel, sidebar survives
+- Evidence screenshots:
+    task-4-desktop-app.png       (happy: full chip grid + live countdown)
+    task-4-desktop-app-fail.png  (recoverable malformed-payload panel)
+
+## Known pre-existing issue (NOT this task's scope)
+- `npm run typecheck:node` fails on a FRESH build (exit 2): todo 2's
+  src/main/core.ts imports ~core, pulling plugin/mystatus.ts into the node
+  type program, which then violates desktop's strict flags
+  (exactOptionalPropertyTypes / noUnusedLocals / noUncheckedIndexedAccess),
+  plus 4 errors in todo 1/2's own files (core.ts:78, index.test.ts:27,
+  index.ts:51-52). My files contribute zero node-program errors, and
+  fixing plugin/ is forbidden while fixing todo-2 files is out of category.
+  The acceptance gate this task owns — `typecheck` (solution) and the repo
+  root `typecheck` — both pass; the meaningful renderer gate (typecheck:web)
+  is clean. Recorded for the wave that owns core.ts / tsconfig.node.json.
+  Note: stale tsconfig.*.tsbuildinfo replays can mask this failure (it
+  surfaced as a transient plugin error in the web project too, until
+  out/types was cleared).
+
+## Security
+- contextIsolation: true, nodeIntegration: false, sandbox: true (unchanged)
+- preload is CJS so sandbox stays ON (the fix did not weaken it)
+- CSP meta tag intact; only system fonts (no external font requests)
+- renderer never writes files; only consumes the bridge
+
+## Files created
+  desktop/src/shared/viewmodel.ts
+  desktop/src/renderer/lib/bridge.ts
+  desktop/src/renderer/lib/store.ts
+  desktop/src/renderer/lib/store.test.ts
+  desktop/src/renderer/lib/status.ts
+  desktop/src/renderer/lib/status.test.ts
+  desktop/src/renderer/components/ErrorBoundary.tsx
+  desktop/src/renderer/components/PaneShell.tsx
+  desktop/src/renderer/components/Sidebar.tsx
+  desktop/src/renderer/pages/DashboardPane.tsx
+  desktop/src/renderer/pages/CredentialsPane.tsx
+  desktop/src/renderer/pages/SettingsPane.tsx
+
+## Files modified (desktop only)
+  desktop/electron.vite.config.ts   (preload → CJS)
+  desktop/src/main/index.ts         (preload .mjs → .js)
+  desktop/src/renderer/App.tsx      (state routing + ErrorBoundary + store connect)
+  desktop/src/renderer/index.html   (body classes → theme tokens)
+  desktop/src/renderer/styles.css   (@theme tokens + console backdrop)
+  desktop/e2e/shell.spec.ts         (placeholder → 5 real e2e tests)
+
+## Pre-existing dirty files (UNTOUCHED, not staged)
+  README.md, bin/mystatus-cli.ts, dist/plugin/*, plugin/mystatus.ts, plugin/tui.ts
+
+Commit: feat(desktop): renderer shell, theme, and state store

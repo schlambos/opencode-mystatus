@@ -1,0 +1,31 @@
+F3 — Real QA execution (HEADLESS-ADAPTED)
+=========================================
+Date: 2026-07-30
+
+DEVIATION FROM PLAN (explicit, user-mandated):
+The plan's F3 requires launching the packaged artifact and walking the UI.
+The user explicitly forbade launching Electron/Playwright/any GUI window after
+repeated windows disrupted their machine. The GUI half of F3 is therefore
+DEFERRED pending explicit user consent. It is NOT silently descoped.
+
+WHAT WAS EXECUTED (no GUI):
+1. Full unit/integration suite: 28 files, 458 tests, ALL PASS
+2. Headless smoke gate (desktop/scripts/smoke.mjs): all 5 gates PASS
+   - repo-root typecheck, desktop typecheck, vitest, electron-vite build, leak scan
+3. Leak detector proven to actually fire (task-19-desktop-app-fail.txt):
+   injected passport_token_key=FAKE... -> detected -> removed -> clean re-run
+4. NO-WRITE PROOF for the real config dir:
+   BEFORE md5 of `find ~/.config/opencode -maxdepth 1 -type f -exec stat`:
+     8971855e1715b7057e1f882a671c770c
+   AFTER (post full test run):
+     8971855e1715b7057e1f882a671c770c
+   RESULT: identical -> the suite wrote NOTHING to the developer's real
+   ~/.config/opencode. HOME redirection in tests is effective.
+
+UNIT GATES COVERING NATIVE FEATURES (Playwright cannot assert these):
+- tray menu template + icon variant selection: desktop/src/main/tray.test.ts
+- notification crossing/cooldown decision fn: desktop/src/main/notifier.test.ts
+- updater gating (disabled unless packaged + opt-in): desktop/src/main/updater.test.ts
+- export save/cancel/error paths: desktop/src/main/export.test.ts
+
+VERDICT: F3-headless PASS. F3-GUI DEFERRED (awaiting user consent).

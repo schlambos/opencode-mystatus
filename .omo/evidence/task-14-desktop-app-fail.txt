@@ -1,0 +1,18 @@
+# task-14 failure scenario: hand-corrupted mystatus.json (invalid JSON)
+# The settings page shows a recoverable error state and refuses to overwrite
+# the file until the user fixes it or explicitly resets; save-time corruption
+# is detected via the pre-save re-read and stops the write.
+
+
+> mystatus-desktop@0.0.0 test
+> vitest run src/main/config-io.test.ts src/main/ipc.test.ts src/renderer/pages/SettingsPane.test.tsx -t corrupt
+
+
+ RUN  v4.1.10 /Users/matt/Repos/mystatus/desktop
+
+
+ Test Files  3 passed (3)
+      Tests  8 passed | 47 skipped (55)
+   Start at  17:49:49
+   Duration  728ms (transform 258ms, setup 0ms, import 299ms, tests 231ms, environment 274ms)
+

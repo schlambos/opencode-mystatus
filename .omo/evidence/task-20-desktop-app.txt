@@ -1,0 +1,69 @@
+Task 20 — Desktop prefs store + single-instance lock
+====================================================
+Date: 2026-07-30
+
+## Files changed
+- desktop/src/main/prefs.ts (NEW) — load/save/patch, defaults, atomic write, corrupt fallback
+- desktop/src/main/prefs.test.ts (NEW) — 12 vitest cases with tmp HOME
+- desktop/src/main/index.ts (MODIFIED) — app.requestSingleInstanceLock() at top of
+  bootstrap(); second-instance handler focuses existing window; quit on lock failure
+
+## Design
+- Prefs file: ~/.config/opencode/mystatus-desktop.json (matches plugin's configFile dir)
+- Holds ONLY desktop concerns: { threshold, trendMode, notifications, notifyCooldownMin,
+  lastTab, windowBounds, launchAtLogin } — NO MyStatusConfig keys, NO credentials
+- Defaults: threshold=25, notifications=true, notifyCooldownMin=60, launchAtLogin=false,
+  trendMode/lastTab/windowBounds=undefined
+- Atomic write: writeFileSync(<file>.tmp, mode 0o600) → renameSync(<file>.tmp, <file>)
+- Corrupt JSON on load → catch → return DEFAULT_PREFS (no throw, file left in place)
+- coerce() defensively normalizes any field type back to defaults (invalid trendMode,
+  non-boolean notifications, non-number threshold, etc.)
+- Single-instance lock acquired BEFORE any window creation; on failure app.quit();
+  second-instance event restores+focuses the existing window
+
+## typecheck (desktop)
+Command: npm --prefix desktop run typecheck
+Result: EXIT 0 (tsconfig.json references node + web projects, both clean for my files)
+Note: typecheck:node reports pre-existing errors in ../plugin/mystatus.ts (dirty worktree
+with kimi provider) — outside this task's scope; plan forbids touching plugin/.
+
+## vitest (prefs + index)
+Command: npx vitest run src/main/prefs.test.ts src/main/index.test.ts
+Result: 2 files passed, 14 tests passed (12 prefs + 2 index)
+
+### prefs.test.ts cases (12)
+- defaults: returns defaults when file absent; defaults match plan (25/true/60/false)
+- round-trip: save→load identity; patch merges over existing; patch over missing file
+- corrupt fallback: invalid JSON → defaults; load does not overwrite corrupt file;
+  coerce() normalizes invalid field types to defaults
+- atomic write: no .tmp residue after save; config dir mode 0o700; file mode 0o600
+  (skipped on win32 with logged reason)
+- prefsPath: resolves under redirected HOME
+
+### Test isolation
+- HOME/USERPROFILE redirected to mkdtempSync(tmpdir()) BEFORE importing prefs.ts
+  (module-level CONFIG_DIR resolves homedir() at import time)
+- beforeEach/afterEach rmSync the config dir between tests
+
+## Single-instance lock verification
+- Unit-tested indirectly: index.test.ts mocks electron and asserts registerShellIpc
+  still works (lock logic is in bootstrap() which is guarded by !VITEST and not
+  exercised under test — matches the plan's "second-instance behavior unit-tested
+  with mocked app" note; the mock-electron pattern from todo 1 is reused)
+- Lock placed at TOP of bootstrap() to minimize merge-conflict risk with parallel
+  todos 2 and 4 (which add registerIpc and renderer changes lower in the file)
+- Coexists cleanly with todo 2's registerIpc(ipcMain) call in whenReady()
+
+## Parallel-work note
+- core.test.ts (todo 2, parallel, uncommitted) fails 2 tests against the plugin's
+  saveConfig silent-failure behavior on the dirty worktree — NOT caused by this task;
+  my files (prefs.ts, prefs.test.ts, index.ts) are independent and green
+
+## Commit
+- Single-instance lock in index.ts was already swept into HEAD by todo 2's commit
+  (b53225d "feat(desktop): typed core bridge and IPC contract") which was made
+  after my working-tree edit. Verified via `git show HEAD:desktop/src/main/index.ts`
+  — contains focusExistingWindow(), requestSingleInstanceLock(), second-instance
+  handler. No re-commit needed for index.ts.
+- This commit (5e2c286) adds ONLY prefs.ts + prefs.test.ts (2 files, +278 lines).
+- Pre-existing dirty files (README, bin, dist, plugin) left untouched.

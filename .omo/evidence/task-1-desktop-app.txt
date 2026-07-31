@@ -1,0 +1,132 @@
+Task 1 — Scaffold desktop/ Electron app
+========================================
+Date: 2026-07-30
+
+## npm install
+Command: npm --prefix desktop install
+Result: SUCCESS — 419 packages added (13s). Peer-dep conflict resolved by
+pinning vite@^7 (electron-vite@5 peer: vite ^5||^6||^7) and
+@vitejs/plugin-react@^5 (v6 requires vite@^8).
+
+## npm run typecheck (desktop)
+Command: npm --prefix desktop run typecheck
+Result: EXIT 0 (tsconfig.json references node + web projects, both clean)
+
+## npm run typecheck:node
+Command: npm --prefix desktop run typecheck:node
+Result: EXIT 0
+
+## npm run typecheck:web
+Command: npm --prefix desktop run typecheck:web
+Result: EXIT 0 (after fixing: class→className, JSX namespace import,
+App.tsx import extension dropped for bundler resolution)
+
+## npm run build (desktop)
+Command: npm --prefix desktop run build
+Result: EXIT 0
+Output:
+  out/main/index.js      1.41 kB   (ESM)
+  out/preload/index.mjs  0.36 kB   (ESM, .mjs forced by electron-vite)
+  out/renderer/index.html + assets (css 7.45 kB, js 555.64 kB)
+
+## ESM main bundle verification
+out/main/index.js:
+  - import/export statements: 4
+  - require( calls: 0
+  - @opencode-ai/plugin: externalized (not bundled; shell does not import
+    ~core yet, so no reference — externalization config is in place for todo 2)
+  - format: es (build.rollupOptions.output.format: 'es')
+  - package.json "type": "module"
+
+## Preload output extension
+electron-vite@5 hardcodes entryFileNames='[name].mjs' for preload when
+format='es' (lib-q6ns0vZr.js:435-442). Main references ../preload/index.mjs.
+
+## npm test (vitest)
+Command: npm --prefix desktop run test
+Result: 1 file, 1 test, PASS (109ms) — placeholder harness
+
+## Repo-root typecheck
+Command: npm run typecheck (repo root)
+Result: EXIT 0 — root tsconfig.json unchanged, plugin/ untouched
+
+## git status --short
+ M .gitignore          <- added desktop/out/
+ M README.md           <- pre-existing dirty, UNTOUCHED
+ M bin/mystatus-cli.ts  <- pre-existing dirty, UNTOUCHED
+ M dist/plugin/*        <- pre-existing dirty, UNTOUCHED
+ M plugin/mystatus.ts   <- pre-existing dirty, UNTOUCHED
+ M plugin/tui.ts        <- pre-existing dirty, UNTOUCHED
+?? .omo/               <- notepad/evidence (not committed in this task)
+?? desktop/            <- NEW (this task)
+
+## Failure-QA scenario (alias break)
+Attempted: temporarily point ~core alias at plugin/NONEXISTENT.ts.
+Result: build still succeeds because the shell does not import ~core yet.
+The alias resolution path will be exercised in todo 2 (core bridge) which
+actually imports from ~core. Recorded as a known limitation of the shell
+scaffold — not a defect.
+
+## Playwright e2e
+Not runnable yet — the placeholder e2e/shell.spec.ts only asserts the
+config loads. Real e2e (window launch, title assert) lands in todo 4.
+No screenshot produced for this task (shell window not booted in CI).
+
+## Files created
+desktop/package.json
+desktop/electron.vite.config.ts
+desktop/tsconfig.json
+desktop/tsconfig.node.json
+desktop/tsconfig.web.json
+desktop/.gitignore
+desktop/vitest.config.ts
+desktop/playwright.config.ts
+desktop/src/main/index.ts
+desktop/src/main/index.test.ts
+desktop/src/preload/index.ts
+desktop/src/shared/ipc.ts
+desktop/src/renderer/index.html
+desktop/src/renderer/main.tsx
+desktop/src/renderer/App.tsx
+desktop/src/renderer/styles.css
+desktop/e2e/shell.spec.ts
+
+## Files modified
+.gitignore (added desktop/out/)
+
+## Security
+- contextIsolation: true
+- nodeIntegration: false
+- sandbox: true
+- CSP meta tag in index.html
+- setWindowOpenHandler denies all, redirects to external browser
+## FIX (2026-07-30) — register mystatus:ping IPC handler
+Bug: preload exposed window.mystatus.ping() → ipcRenderer.invoke("mystatus:ping")
+but main never registered ipcMain.handle for that channel. Bridge ping always
+rejected; UI showed "error".
+
+Fix:
+- Extracted CHANNELS = { ping, push } into src/shared/ipc.ts.
+- src/main/index.ts: added registerShellIpc(ipc) exporting the handler
+  registration; called inside app.whenReady() before createWindow().
+- src/preload/index.ts: uses CHANNELS.ping / CHANNELS.push.
+- src/main/index.test.ts: replaced tautological test with a real unit test
+  that mocks electron.ipcMain, calls registerShellIpc, and asserts the ping
+  handler is registered on CHANNELS.ping and returns "pong". Also asserts
+  the shared channel name constants.
+- Moved `const isDev = !app.isPackaged` inside createWindow() so importing
+  the module under test (mock provides only ipcMain) does not crash at
+  top-level.
+- Guarded bootstrap() with process.env.VITEST check so the real Electron
+  app lifecycle does not run under vitest.
+
+Verification:
+- npm --prefix desktop run typecheck: EXIT 0
+- npm --prefix desktop run build: EXIT 0 (main ESM: 5 import/export, 0 require)
+- npm --prefix desktop run test: 2 tests PASS (119ms)
+- npm run typecheck (repo root): EXIT 0
+
+Commit: d5ed9cd fix(desktop): register mystatus:ping IPC handler
+Staged: desktop/src/main/index.ts, desktop/src/main/index.test.ts,
+        desktop/src/shared/ipc.ts, desktop/src/preload/index.ts
+Pre-existing dirty files (README, bin, dist, plugin): untouched.
