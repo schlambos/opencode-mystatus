@@ -1,95 +1,110 @@
 import type { JSX } from "react";
-import { ControlsBar } from "../components/ControlsBar";
-import { Dashboard } from "../components/Dashboard";
-import { PaneShell } from "../components/PaneShell";
-import { SummaryHeader } from "../components/SummaryHeader";
-import { TrendPanel } from "../components/TrendPanel";
 import { useStatusState } from "../lib/store";
+import { hiddenNameSet, setProviderHidden } from "../lib/hiddenProviders";
+import { resetCountdown, statusTone, toneTextClass } from "../lib/status";
+import type { MyStatusViewProvider } from "../../shared/ipc";
 
-export function DashboardPane(): JSX.Element {
-  const { model, fetchedAt, nextFetchAt, now, payloadError, modelError } = useStatusState();
+const BAR_CELLS = 12;
 
-  if (payloadError !== null) {
-    return (
-      <PaneShell testId="pane-dashboard" kicker="Overview" title="Dashboard">
-        <div
-          role="alert"
-          data-testid="payload-error"
-          className="animate-rise max-w-2xl rounded-lg border border-status-low/40 bg-status-low/10 p-5"
-        >
-          <p className="text-[10px] font-semibold tracking-[0.2em] text-status-low uppercase">
-            Malformed status payload
-          </p>
-          <p className="mt-2 text-sm text-fog-200">
-            The main process pushed a payload this shell cannot use:{" "}
-            <code className="rounded bg-ink-950/80 px-1.5 py-0.5 font-mono text-xs text-status-low">
-              {payloadError}
-            </code>
-          </p>
-          <p className="mt-2 text-sm text-fog-400">
-            Previously received data stays on screen. The panel clears itself on the next healthy
-            sync.
-          </p>
-        </div>
-      </PaneShell>
-    );
-  }
+const toneBarClass = {
+  ok: "bg-status-ok",
+  warn: "bg-status-warn",
+  low: "bg-status-low",
+  dead: "bg-status-dead",
+} as const;
 
-  if (model === null || fetchedAt === null || nextFetchAt === null) {
-    return (
-      <PaneShell testId="pane-dashboard" kicker="Overview" title="Dashboard">
-        {modelError !== null ? (
-          <div
-            role="alert"
-            data-testid="model-error"
-            className="animate-rise max-w-2xl rounded-lg border border-status-dead/40 bg-status-dead/10 p-5"
-          >
-            <p className="text-[10px] font-semibold tracking-[0.2em] text-status-dead uppercase">
-              First sync failed
-            </p>
-            <p className="mt-2 font-mono text-sm text-fog-200">{modelError}</p>
-            <p className="mt-2 text-sm text-fog-400">The shell retries on the next poll cycle.</p>
-          </div>
-        ) : (
-          <div
-            data-testid="awaiting-sync"
-            className="animate-rise flex max-w-2xl items-center gap-3 rounded-lg border border-ink-700 bg-ink-900 p-5"
-          >
-            <span className="h-2 w-2 rounded-full bg-status-warn animate-blink" aria-hidden />
-            <div>
-              <p className="text-sm font-medium text-fog-200">Waiting for the first sync…</p>
-              <p className="mt-0.5 text-xs text-fog-500">
-                The main-process poller pushes view models over IPC; this pane lights up on the
-                first payload.
-              </p>
-            </div>
-          </div>
-        )}
-      </PaneShell>
-    );
-  }
+function Bar({ pct, threshold }: { pct: number; threshold: number }): JSX.Element {
+  const filled = Math.max(0, Math.min(BAR_CELLS, Math.round((pct / 100) * BAR_CELLS)));
+  const tone = statusTone(pct, threshold);
+  return (
+    <div className="flex gap-[3px]" aria-hidden>
+      {Array.from({ length: BAR_CELLS }, (_, i) => (
+        <span
+          key={i}
+          className={`h-2.5 w-2.5 rounded-[2px] ${i < filled ? toneBarClass[tone] : "bg-ink-700"}`}
+        />
+      ))}
+    </div>
+  );
+}
+
+function Row({
+  provider,
+  threshold,
+  fetchedAt,
+  now,
+}: {
+  provider: MyStatusViewProvider;
+  threshold: number;
+  fetchedAt: number | null;
+  now: number;
+}): JSX.Element {
+  const pct = provider.minRemaining;
+  const tone = statusTone(pct, threshold);
+  const reset = resetCountdown(provider.soonestResetMs, fetchedAt, now);
 
   return (
-    <PaneShell testId="pane-dashboard" kicker="Overview" title="Dashboard">
+    <li
+      data-testid="provider-row"
+      data-provider-name={provider.name}
+      className="group flex items-center gap-4 py-2.5"
+    >
+      <span className="w-44 shrink-0 truncate text-sm text-fog-100">{provider.name}</span>
+      <Bar pct={pct} threshold={threshold} />
+      <span className={`w-12 text-right font-mono text-sm tabular-nums ${toneTextClass[tone]}`}>
+        {pct}%
+      </span>
+      <span className="w-20 text-right font-mono text-xs tabular-nums text-fog-500">
+        {reset === null ? "" : reset.text}
+      </span>
+      <button
+        type="button"
+        title={`Hide ${provider.name}`}
+        onClick={() => void setProviderHidden(provider.name, true)}
+        className="ml-auto opacity-0 transition-opacity group-hover:opacity-100 text-fog-600 hover:text-fog-200"
+      >
+        ×
+      </button>
+    </li>
+  );
+}
+
+export function DashboardPane(): JSX.Element {
+  const { model, config, fetchedAt, now, modelError } = useStatusState();
+
+  if (model === null) {
+    return (
+      <p className="px-6 py-8 text-sm text-fog-500">
+        {modelError ?? "Loading…"}
+      </p>
+    );
+  }
+
+  const hidden = hiddenNameSet(config);
+  const rows = model.providers
+    .filter((p) => !hidden.has(p.name.toLowerCase()))
+    .slice()
+    .sort((a, b) => a.minRemaining - b.minRemaining);
+
+  return (
+    <div className="px-6 py-4">
       {modelError !== null && (
-        <div
-          role="alert"
-          data-testid="model-error-strip"
-          className="animate-rise mb-4 rounded-lg border border-status-low/40 bg-status-low/10 px-4 py-2.5 text-sm text-fog-200"
-        >
-          Last query failed — showing previous data.{" "}
-          <span className="font-mono text-xs text-status-low">{modelError}</span>
-        </div>
+        <p className="mb-3 text-xs text-status-low">Last sync failed — showing previous data.</p>
       )}
-      <SummaryHeader model={model} fetchedAt={fetchedAt} nextFetchAt={nextFetchAt} now={now} />
-
-      <div className="mt-4">
-        <ControlsBar />
-      </div>
-
-      <Dashboard />
-
-      <TrendPanel />
-    </PaneShell>
+      <ul className="divide-y divide-ink-800">
+        {rows.map((p) => (
+          <Row
+            key={p.name}
+            provider={p}
+            threshold={model.threshold}
+            fetchedAt={fetchedAt}
+            now={now}
+          />
+        ))}
+      </ul>
+      {rows.length === 0 && (
+        <p className="py-8 text-sm text-fog-500">Nothing to show. Add credentials with the gear.</p>
+      )}
+    </div>
   );
 }
