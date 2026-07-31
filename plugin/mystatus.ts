@@ -10,6 +10,7 @@
  *   - Poe         (points balance)          auth.json, env var, or poe-api-key.json
  *   - Z.AI        (GLM Coding Plan)         auth.json → zai-coding-plan
  *   - xAI/Grok    (SuperGrok weekly/monthly usage + extra credits)  auth.json → xai/xai-oauth (dev) + ~/.grok/auth.json (consumer, auto-refreshed) via cli-chat-proxy /v1/billing[?format=credits]
+ *   - Kimi Code   (weekly + rolling 5-hour)  auth.json → kimi-for-coding
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
@@ -77,10 +78,20 @@ interface QuotaWindow {
   trendKey?: string; // override key used for trend tracking + summary metric label (defaults to label)
 }
 
+/**
+ * Set when a live query failed and a previous snapshot was rendered instead, so
+ * cached numbers are never mistaken for current ones.
+ */
+export interface StaleInfo {
+  ts: number; // when the cached snapshot was taken
+  reason?: string; // why the live query failed
+}
+
 // One rendered panel. Free-form header/footer lines plus structured windows.
 interface ProviderCard {
   subtitle?: string; // sub-account (email, "Alt 1"); composed with provider title
   note?: string; // e.g. "(cached 3m ago)" shown at the top
+  stale?: StaleInfo; // cached fallback after a failed live query
   header?: string[]; // "Account: …", "Plan: …"
   windows?: QuotaWindow[];
   footer?: string[]; // Zen balance, payments, model spend, etc.
@@ -143,6 +154,16 @@ interface MiniMaxAuthData {
   key?: string;
 }
 
+interface KimiCodeAuthData {
+  type: string;
+  key?: string;
+}
+
+interface QwenTokenPlanAuthData {
+  type: string;
+  key?: string;
+}
+
 interface NanoGptAuthData {
   type: string;
   key?: string;
@@ -177,8 +198,10 @@ interface AuthData {
   "zai-coding-plan"?: ZaiAuthData;
   "xai-oauth"?: XaiAuthData;
   xai?: XaiAuthData;
+  "kimi-for-coding"?: KimiCodeAuthData;
   "minimax-coding-plan"?: MiniMaxAuthData;
   "nano-gpt"?: NanoGptAuthData;
+  "qwen-token-plan"?: QwenTokenPlanAuthData;
 }
 
 interface AntigravityAccount {
@@ -2326,25 +2349,52 @@ async function queryCopilot(auth: CopilotAuthData | undefined, ansi = false): Pr
 // OpenCode Go + Zen (merged — shared dashboard config)
 // ============================================================
 //
-// Go quota windows from /workspace/{id}/go SSR
-// Zen balance from /workspace/{id}/billing SSR
-// Zen per-model costs from /workspace/{id}/usage SSR
+// The opencode.ai dashboard is a SolidStart app whose server functions are
+// callable via POST /_server with an X-Server-Id header and the same auth=
+// session cookie used by the SSR pages.  The RPC returns structured data
+// (seroval-serialised) instead of HTML, so we prefer it over regex scraping.
+//
+// Server function IDs (extracted from the dashboard's client JS bundles):
+//   getWorkspaces           def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f
+//   queryLiteSubscription   c7389bd0e731f80f49593e5ee53835475f4e28594dd6bd83eb229bab753498cd
+//   queryBillingInfo        c83b78a614689c38ebee981f9b39a8b377716db85c1fd7dbab604adc02d3313d
+//   getUsageInfo            6262ba54bff26cd7ec162f93db420e0d19df9cd94b2233dfe3b6b24c3f990388
+//   getPaymentsInfo         b5d793c83bf3d968eb8f74ec0416c35494e04234eef719af5302bf6daf669eb0
+//
+// There is no Bearer-token or API-key alternative: the opencode-go API key
+// only authorises inference (/zen/go/v1/*), and console.opencode.ai's device
+// flow only exposes /api/{user,orgs,config} (provider catalog, not usage).
+// The auth= cookie from auth.opencode.ai OAuth (client_id=app, browser-based
+// authorization-code flow) is the sole credential for usage data.
+//
+// Fallback: if the RPC fails (e.g. server function IDs change after a
+// dashboard deploy), we fall back to scraping the SSR HTML pages.
 
 const OPENCODE_DASHBOARD_PREFIX = "https://opencode.ai/workspace/";
 const OPENCODE_GO_SUFFIX = "/go";
 const OPENCODE_ZEN_BILLING_SUFFIX = "/billing";
 const OPENCODE_ZEN_USAGE_SUFFIX = "/usage";
 const OPENCODE_GO_API_BASE = "https://opencode.ai/zen/go/v1";
+const OPENCODE_SERVER_RPC = "https://opencode.ai/_server";
 const OPENCODE_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Gecko/20100101 Firefox/148.0";
 
 const ZEN_UNITS_PER_DOLLAR = 1e8;
 
+// SolidStart server function IDs (hashes).  These are stable across deploys
+// because they are content-addressed, but if the dashboard's route handlers
+// change we'll need to re-extract them from the client JS bundles.
+const OC_FN_GET_WORKSPACES = "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f";
+const OC_FN_LITE_SUBSCRIPTION = "c7389bd0e731f80f49593e5ee53835475f4e28594dd6bd83eb229bab753498cd";
+const OC_FN_BILLING_INFO = "c83b78a614689c38ebee981f9b39a8b377716db85c1fd7dbab604adc02d3313d";
+const OC_FN_USAGE_INFO = "6262ba54bff26cd7ec162f93db420e0d19df9cd94b2233dfe3b6b24c3f990388";
+const OC_FN_PAYMENTS_INFO = "b5d793c83bf3d968eb8f74ec0416c35494e04234eef719af5302bf6daf669eb0";
+
 interface OpenCodeGoConfig {
   id?: string;
   name?: string;
   apiKeyEnv?: string;
-  workspaceId: string;
+  workspaceId?: string; // optional — auto-discovered via getWorkspaces RPC
   authCookie: string;
 }
 
@@ -2482,6 +2532,101 @@ function zenPaymentLabel(type: string | null, last4: string | null): string {
   return last4 ? `${name} \u00b7\u00b7\u00b7${last4}` : name;
 }
 
+// ── SolidStart /_server RPC ───────────────────────────────────
+//
+// Call a dashboard server function directly.  Returns the response text on
+// success, or null on failure (caller falls back to SSR scraping).  The
+// response is seroval-serialised — try JSON.parse first, then regex-extract.
+
+async function callOpenCodeServerFn(
+  fnId: string,
+  authCookie: string,
+  args: unknown[] = [],
+): Promise<string | null> {
+  try {
+    const res = await fetchTimeout(
+      OPENCODE_SERVER_RPC,
+      {
+        method: "POST",
+        headers: {
+          "X-Server-Id": fnId,
+          "X-Server-Instance": `mystatus-${Date.now()}`,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/plain, */*",
+          Cookie: `auth=${authCookie}`,
+          "User-Agent": OPENCODE_USER_AGENT,
+        },
+        body: JSON.stringify(args),
+      },
+      15_000,
+      1,
+    );
+    if (!res.ok) return null;
+    // X-Error header means the server function threw.
+    if (res.headers.get("X-Error")) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
+// Seroval responses are close to JSON but may use unquoted keys, `new Date()`,
+// `$R[N]=...` references, `void 0`, etc.  Try JSON first; if that fails, fall
+// back to extracting scalar values with regex.  This handles the common case
+// where the server returns a flat object of numbers/booleans/strings.
+function parseSerovalResponse<T = unknown>(text: string): T | null {
+  // 1. Plain JSON.
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    // not JSON — continue to regex
+  }
+
+  // 2. Seroval compact format: keys without quotes, values as JS literals.
+  //    Extract key:value pairs for numbers, booleans, null, and quoted strings.
+  const result: Record<string, unknown> = {};
+  const re = /(\w+):(true|false|null|void 0|-?\d+(?:\.\d+)?|"(?:[^"\\]|\\.)*"|new Date\("(?:[^"\\]|\\.)*"\))/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const key = m[1];
+    const raw = m[2];
+    if (raw === "true") result[key] = true;
+    else if (raw === "false") result[key] = false;
+    else if (raw === "null" || raw === "void 0") result[key] = null;
+    else if (raw.startsWith('"')) result[key] = raw.slice(1, -1);
+    else if (raw.startsWith("new Date(")) {
+    // keep raw for later ISO extraction
+      const dateMatch = raw.match(/new Date\("([^"]+)"\)/);
+      if (dateMatch) result[key] = dateMatch[1];
+    } else result[key] = Number(raw);
+  }
+  if (Object.keys(result).length > 0) return result as T;
+  return null;
+}
+
+// Extract a nested object from seroval text by key prefix.
+// e.g. extractSerovalObject(text, "rollingUsage") → {usagePercent: 0, resetInSec: 18000}
+function extractSerovalObject(text: string, key: string): Record<string, number | string | boolean | null> | null {
+  // Try JSON sub-object first (if the whole thing parsed as JSON, this is redundant but cheap).
+  const bracketStart = text.indexOf(`${key}:{`);
+  if (bracketStart === -1) return null;
+  // Find matching closing brace (no nesting expected for usage windows).
+  const objStart = bracketStart + key.length + 1; // skip "key:"
+  let depth = 0;
+  let end = -1;
+  for (let i = objStart; i < text.length; i++) {
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}") {
+      depth--;
+      if (depth === 0) { end = i; break; }
+    }
+  }
+  if (end === -1) return null;
+  const objText = text.slice(objStart, end + 1);
+  const parsed = parseSerovalResponse<Record<string, number | string | boolean | null>>(objText);
+  return parsed;
+}
+
 function resolveOpenCodeGoConfigs(): OpenCodeGoConfig[] {
   const jsonPath = findReadable("opencode-go.json", "config")
     ?? join(opencodeConfigDir(), "opencode-go.json");
@@ -2497,7 +2642,7 @@ function resolveOpenCodeGoConfigs(): OpenCodeGoConfig[] {
       if (Array.isArray(cfg.accounts) && cfg.accounts.length > 0) {
         return cfg.accounts
           .filter((a): a is OpenCodeGoConfig =>
-            typeof a?.workspaceId === "string" && typeof a?.authCookie === "string",
+            typeof a?.authCookie === "string" && (typeof a?.workspaceId === "string" || a?.workspaceId === undefined),
           )
           .map((a) => ({
             id: a.id,
@@ -2508,7 +2653,7 @@ function resolveOpenCodeGoConfigs(): OpenCodeGoConfig[] {
           }));
       }
 
-      if (cfg.workspaceId && cfg.authCookie) {
+      if (cfg.authCookie) {
         return [{ workspaceId: cfg.workspaceId, authCookie: cfg.authCookie }];
       }
     } catch {}
@@ -2516,7 +2661,7 @@ function resolveOpenCodeGoConfigs(): OpenCodeGoConfig[] {
 
   const envWs = process.env.OPENCODE_GO_WORKSPACE_ID;
   const envCookie = process.env.OPENCODE_GO_AUTH_COOKIE;
-  if (envWs && envCookie) return [{ workspaceId: envWs, authCookie: envCookie }];
+  if (envCookie) return [{ workspaceId: envWs, authCookie: envCookie }];
 
   return [];
 }
@@ -2564,57 +2709,116 @@ async function probeOpenCodeGoApiKey(apiKey: string | undefined): Promise<QueryR
 
 async function queryOpenCodeGoZenSingle(config: OpenCodeGoConfig, ansi = false): Promise<QueryResult> {
   const label = config.name || config.id || "OpenCode";
+  const cookie = config.authCookie;
 
-  const headers = {
-    "User-Agent": OPENCODE_USER_AGENT,
-    Accept: "text/html",
-    Cookie: `auth=${config.authCookie}`,
-  } as const;
+  // ── Resolve workspace ID ─────────────────────────────────────
+  // If not in config, auto-discover via getWorkspaces RPC.
+  let workspaceId = config.workspaceId;
+  if (!workspaceId) {
+    const wsText = await callOpenCodeServerFn(OC_FN_GET_WORKSPACES, cookie, []);
+    if (wsText) {
+      const parsed = parseSerovalResponse<Array<{ id?: string; name?: string }>>(wsText);
+      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0]?.id === "string") {
+        workspaceId = parsed[0].id;
+      } else {
+        // seroval compact: try to extract id values
+        const idMatch = wsText.match(/id:"([^"]+)"/);
+        if (idMatch) workspaceId = idMatch[1];
+      }
+    }
+    if (!workspaceId) {
+      return {
+        success: false,
+        error: `${label}: could not auto-discover workspace ID. Set workspaceId in opencode-go.json.`,
+      };
+    }
+  }
 
-  try {
-    const base = OPENCODE_DASHBOARD_PREFIX + encodeURIComponent(config.workspaceId);
-    const [goRes, billingRes, usageRes] = await Promise.all([
-      fetchTimeout(base + OPENCODE_GO_SUFFIX, { headers }),
-      fetchTimeout(base + OPENCODE_ZEN_BILLING_SUFFIX, { headers }),
-      fetchTimeout(base + OPENCODE_ZEN_USAGE_SUFFIX, { headers }),
-    ]);
+  // ── Try the /_server RPC first ───────────────────────────────
+  const [subText, billingText, usageText] = await Promise.all([
+    callOpenCodeServerFn(OC_FN_LITE_SUBSCRIPTION, cookie, [workspaceId]),
+    callOpenCodeServerFn(OC_FN_BILLING_INFO, cookie, [workspaceId]),
+    callOpenCodeServerFn(OC_FN_USAGE_INFO, cookie, [workspaceId, 0]),
+  ]);
 
-    const windows: QuotaWindow[] = [];
+  let windows: QuotaWindow[] = [];
+  const footer: string[] = [];
 
-    // Go quota windows
-    if (goRes.ok) {
-      const goHtml = await goRes.text();
-      for (const pattern of GO_SCRAPE_PATTERNS) {
-        const data = parseGoWindow(goHtml, pattern);
-        if (!data) continue;
-        windows.push({
-          label: pattern.label,
-          remaining: Math.round(100 - Math.max(0, data.usagePercent)),
-          resetInSec: Math.max(0, data.resetInSec),
-        });
+  if (subText) {
+    // queryLiteSubscription returns:
+    //   { rollingUsage: {usagePercent, resetInSec},
+    //     weeklyUsage:  {usagePercent, resetInSec},
+    //     monthlyUsage: {usagePercent, resetInSec},
+    //     useBalance, mine }
+    const subParsed = parseSerovalResponse<{
+      rollingUsage?: { usagePercent?: number; resetInSec?: number };
+      weeklyUsage?: { usagePercent?: number; resetInSec?: number };
+      monthlyUsage?: { usagePercent?: number; resetInSec?: number };
+    }>(subText);
+
+    if (subParsed) {
+      for (const [key, lbl] of [
+        ["rollingUsage", "5h (rolling)"],
+        ["weeklyUsage", "Weekly"],
+        ["monthlyUsage", "Monthly"],
+      ] as const) {
+        const w = subParsed[key];
+        if (w && typeof w.usagePercent === "number" && typeof w.resetInSec === "number") {
+          windows.push({
+            label: lbl,
+            remaining: Math.round(100 - Math.max(0, w.usagePercent)),
+            resetInSec: Math.max(0, w.resetInSec),
+          });
+        }
       }
     }
 
-    // Zen balance / spend footer
-    const footer: string[] = [];
-    let billing: ReturnType<typeof parseZenBillingHtml> = null;
-    let billingHtml = "";
-    if (billingRes.ok) {
-      billingHtml = await billingRes.text();
-      billing = parseZenBillingHtml(billingHtml);
+    // If JSON parse failed, try extracting nested objects from seroval text.
+    if (windows.length === 0) {
+      for (const [key, lbl] of [
+        ["rollingUsage", "5h (rolling)"],
+        ["weeklyUsage", "Weekly"],
+        ["monthlyUsage", "Monthly"],
+      ] as const) {
+        const obj = extractSerovalObject(subText, key);
+        if (obj && typeof obj.usagePercent === "number" && typeof obj.resetInSec === "number") {
+          windows.push({
+            label: lbl,
+            remaining: Math.round(100 - Math.max(0, obj.usagePercent)),
+            resetInSec: Math.max(0, obj.resetInSec),
+          });
+        }
+      }
     }
+  }
 
-    if (billing) {
+  if (billingText) {
+    // queryBillingInfo returns:
+    //   { balance, monthlyUsage, monthlyLimit, reloadAmount, reloadTrigger,
+    //     paymentMethodType, paymentMethodLast4, timeMonthlyUsageUpdated, ... }
+    const billing = parseSerovalResponse<{
+      balance?: number;
+      monthlyUsage?: number;
+      monthlyLimit?: number | null;
+      reloadAmount?: number;
+      reloadTrigger?: number;
+      paymentMethodType?: string;
+      paymentMethodLast4?: string;
+    }>(billingText);
+
+    if (billing && typeof billing.balance === "number") {
       const balanceUsd = billing.balance / ZEN_UNITS_PER_DOLLAR;
-      const monthlyUsd = billing.monthlyUsage / ZEN_UNITS_PER_DOLLAR;
+      const monthlyUsd = (billing.monthlyUsage ?? 0) / ZEN_UNITS_PER_DOLLAR;
 
       footer.push(`Zen balance:    $${balanceUsd.toFixed(2)}`);
 
       if (billing.paymentMethodType) {
-        footer.push(`Payment:        ${zenPaymentLabel(billing.paymentMethodType, billing.paymentMethodLast4)}`);
+        footer.push(
+          `Payment:        ${zenPaymentLabel(billing.paymentMethodType, billing.paymentMethodLast4 ?? null)}`,
+        );
       }
 
-      if (billing.monthlyLimit !== null && billing.monthlyLimit > 0) {
+      if (billing.monthlyLimit !== null && typeof billing.monthlyLimit === "number" && billing.monthlyLimit > 0) {
         const limitUsd = billing.monthlyLimit / ZEN_UNITS_PER_DOLLAR;
         const pct = Math.max(0, Math.min(100, Math.round((monthlyUsd / limitUsd) * 100)));
         const remain = 100 - pct;
@@ -2622,14 +2826,125 @@ async function queryOpenCodeGoZenSingle(config: OpenCodeGoConfig, ansi = false):
       } else {
         footer.push(`Monthly spend:  $${monthlyUsd.toFixed(2)}`);
       }
+    }
+  }
 
-      const payments = parseZenPayments(billingHtml);
-      if (payments.length > 0) {
-        const latest = payments.slice(0, 2);
-        footer.push("Payments:       " + latest.map((p) => `+$${p.amountUsd.toFixed(2)}`).join(", "));
+  if (usageText) {
+    // getUsageInfo returns per-model usage with cost and request counts.
+    const usageParsed = parseSerovalResponse<
+      Array<{ model?: string; cost?: number; requests?: number }>
+    >(usageText);
+    const modelCosts: Array<{ model: string; costUsd: number; requests: number }> = [];
+
+    if (Array.isArray(usageParsed)) {
+      const modelMap = new Map<string, { cost: number; requests: number }>();
+      for (const entry of usageParsed) {
+        if (entry && typeof entry.model === "string") {
+          const cost = (typeof entry.cost === "number" ? entry.cost : 0) / ZEN_UNITS_PER_DOLLAR;
+          const existing = modelMap.get(entry.model) ?? { cost: 0, requests: 0 };
+          existing.cost += cost;
+          existing.requests += 1;
+          modelMap.set(entry.model, existing);
+        }
+      }
+      modelCosts.push(
+        ...[...modelMap.entries()]
+          .map(([model, v]) => ({ model, costUsd: v.cost, requests: v.requests }))
+          .sort((a, b) => b.costUsd - a.costUsd),
+      );
+    }
+
+    // Fallback: regex extraction from seroval text (same pattern as SSR scrape).
+    if (modelCosts.length === 0) {
+      const re = /model:"([^"]+)"[^}]*cost:(\d+)/g;
+      let m: RegExpExecArray | null;
+      const modelMap = new Map<string, { cost: number; requests: number }>();
+      while ((m = re.exec(usageText)) !== null) {
+        const model = m[1];
+        const cost = Number(m[2]) / ZEN_UNITS_PER_DOLLAR;
+        const existing = modelMap.get(model) ?? { cost: 0, requests: 0 };
+        existing.cost += cost;
+        existing.requests += 1;
+        modelMap.set(model, existing);
+      }
+      modelCosts.push(
+        ...[...modelMap.entries()]
+          .map(([model, v]) => ({ model, costUsd: v.cost, requests: v.requests }))
+          .sort((a, b) => b.costUsd - a.costUsd),
+      );
+    }
+
+    if (modelCosts.length > 0) {
+      const top = modelCosts.slice(0, 5);
+      const totalCost = modelCosts.reduce((s, m) => s + m.costUsd, 0);
+      footer.push("", `Zen spend:      $${totalCost.toFixed(2)} across ${modelCosts.length} models`);
+      for (const m of top) {
+        footer.push(`  ${m.model.padEnd(22)} $${m.costUsd.toFixed(4)} (${m.requests})`);
+      }
+    }
+  }
+
+  // ── Fallback to SSR HTML scraping if RPC returned nothing ─────
+  if (windows.length === 0 && footer.length === 0) {
+    const ssrHeaders = {
+      "User-Agent": OPENCODE_USER_AGENT,
+      Accept: "text/html",
+      Cookie: `auth=${cookie}`,
+    } as const;
+
+    try {
+      const base = OPENCODE_DASHBOARD_PREFIX + encodeURIComponent(workspaceId);
+      const [goRes, billingRes, usageRes] = await Promise.all([
+        fetchTimeout(base + OPENCODE_GO_SUFFIX, { headers: ssrHeaders }),
+        fetchTimeout(base + OPENCODE_ZEN_BILLING_SUFFIX, { headers: ssrHeaders }),
+        fetchTimeout(base + OPENCODE_ZEN_USAGE_SUFFIX, { headers: ssrHeaders }),
+      ]);
+
+      // Go quota windows (SSR fallback)
+      if (goRes.ok) {
+        const goHtml = await goRes.text();
+        for (const pattern of GO_SCRAPE_PATTERNS) {
+          const data = parseGoWindow(goHtml, pattern);
+          if (!data) continue;
+          windows.push({
+            label: pattern.label,
+            remaining: Math.round(100 - Math.max(0, data.usagePercent)),
+            resetInSec: Math.max(0, data.resetInSec),
+          });
+        }
       }
 
-      // Zen per-model cost breakdown
+      // Zen billing (SSR fallback)
+      let billingHtml = "";
+      if (billingRes.ok) {
+        billingHtml = await billingRes.text();
+        const billing = parseZenBillingHtml(billingHtml);
+        if (billing) {
+          const balanceUsd = billing.balance / ZEN_UNITS_PER_DOLLAR;
+          const monthlyUsd = billing.monthlyUsage / ZEN_UNITS_PER_DOLLAR;
+          footer.push(`Zen balance:    $${balanceUsd.toFixed(2)}`);
+          if (billing.paymentMethodType) {
+            footer.push(
+              `Payment:        ${zenPaymentLabel(billing.paymentMethodType, billing.paymentMethodLast4)}`,
+            );
+          }
+          if (billing.monthlyLimit !== null && billing.monthlyLimit > 0) {
+            const limitUsd = billing.monthlyLimit / ZEN_UNITS_PER_DOLLAR;
+            const pct = Math.max(0, Math.min(100, Math.round((monthlyUsd / limitUsd) * 100)));
+            const remain = 100 - pct;
+            footer.push(`${createProgressBar(remain, 26, ansi)} ${remain}% of $${limitUsd.toFixed(0)}/mo`);
+          } else {
+            footer.push(`Monthly spend:  $${monthlyUsd.toFixed(2)}`);
+          }
+          const payments = parseZenPayments(billingHtml);
+          if (payments.length > 0) {
+            const latest = payments.slice(0, 2);
+            footer.push("Payments:       " + latest.map((p) => `+$${p.amountUsd.toFixed(2)}`).join(", "));
+          }
+        }
+      }
+
+      // Zen per-model usage (SSR fallback)
       if (usageRes.ok) {
         const usageHtml = await usageRes.text();
         const modelCosts = parseZenUsageByModel(usageHtml);
@@ -2642,25 +2957,22 @@ async function queryOpenCodeGoZenSingle(config: OpenCodeGoConfig, ansi = false):
           }
         }
       }
+    } catch {
+      // non-fatal — checked below
     }
+  }
 
-    if (windows.length === 0 && footer.length === 0) {
-      return {
-        success: false,
-        error: `${label}: could not parse any dashboard data.`,
-      };
-    }
-
-    return {
-      success: true,
-      cards: [{ subtitle: label, windows, footer: footer.length ? footer : undefined }],
-    };
-  } catch (err) {
+  if (windows.length === 0 && footer.length === 0) {
     return {
       success: false,
-      error: `${label}: ${err instanceof Error ? err.message : String(err)}`,
+      error: `${label}: could not parse any dashboard data (RPC and SSR both failed).`,
     };
   }
+
+  return {
+    success: true,
+    cards: [{ subtitle: label, windows, footer: footer.length ? footer : undefined }],
+  };
 }
 
 async function queryOpenCodeGoZen(auth: OpenCodeGoAuthData | undefined, ansi = false): Promise<QueryResult | null> {
@@ -2991,34 +3303,174 @@ async function queryZai(auth: ZaiAuthData | undefined, ansi = false): Promise<Qu
 }
 
 // ============================================================
+// Kimi for Coding (api.kimi.com)
+// ============================================================
+
+const KIMI_CODE_USAGE_URL = "https://api.kimi.com/coding/v1/usages";
+
+interface KimiCodeUsageDetail {
+  limit?: string | number;
+  used?: string | number;
+  remaining?: string | number;
+  resetTime?: string;
+}
+
+interface KimiCodeUsageResponse {
+  user?: {
+    membership?: { level?: string };
+  };
+  usage?: KimiCodeUsageDetail;
+  limits?: Array<{
+    window?: {
+      duration?: number;
+      timeUnit?: string;
+    };
+    detail?: KimiCodeUsageDetail;
+  }>;
+  parallel?: { limit?: string | number };
+}
+
+function kimiCodeNumber(value: string | number | undefined): number | undefined {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function kimiCodeWindow(
+  label: string,
+  detail: KimiCodeUsageDetail | undefined,
+): QuotaWindow | null {
+  let remaining = kimiCodeNumber(detail?.remaining);
+  const used = kimiCodeNumber(detail?.used);
+  let limit = kimiCodeNumber(detail?.limit);
+
+  // Kimi omits fields inconsistently across windows:
+  //   weekly exhausted → { limit, used } with no remaining
+  //   5h full          → { limit, remaining } with no used
+  //   some shapes      → remaining present, limit missing/0
+  // Recover the third value from the other two whenever possible so a real
+  // 0% window is kept instead of dropped (which left only a 100% sibling and
+  // made the card badge read 100%).
+  if (limit === undefined && used !== undefined && remaining !== undefined) {
+    limit = used + remaining;
+  }
+  if ((limit === undefined || limit <= 0) && used !== undefined && remaining !== undefined) {
+    const recovered = used + remaining;
+    if (recovered > 0) limit = recovered;
+  }
+  if (remaining === undefined && used !== undefined && limit !== undefined) {
+    remaining = Math.max(0, limit - used);
+  }
+
+  if (remaining === undefined || limit === undefined || limit <= 0) return null;
+
+  return {
+    label,
+    remaining: Math.round(clampPercent((remaining / limit) * 100)),
+    resetAt: detail?.resetTime,
+    detail: used !== undefined ? [`Used: ${Math.max(0, used)} / ${limit}`] : undefined,
+  };
+}
+
+function kimiCodeWindowLabel(
+  window: KimiCodeUsageResponse["limits"] extends Array<infer T> | undefined ? T : never,
+): string {
+  const duration = window?.window?.duration;
+  const unit = window?.window?.timeUnit;
+  if (duration === 300 && unit === "TIME_UNIT_MINUTE") return "5h (rolling)";
+  if (duration && unit === "TIME_UNIT_MINUTE") return `${duration}m (rolling)`;
+  return "Rate limit";
+}
+
+async function queryKimiCode(
+  auth: KimiCodeAuthData | undefined,
+  _ansi = false,
+): Promise<QueryResult | null> {
+  if (!auth?.key) return null;
+
+  try {
+    const response = await fetchTimeout(KIMI_CODE_USAGE_URL, {
+      headers: {
+        Authorization: `Bearer ${auth.key}`,
+        Accept: "application/json",
+        "User-Agent": "OpenCode-MyStatus/3",
+      },
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`Kimi Code usage API error (${response.status}): ${body.slice(0, 200)}`);
+    }
+
+    const data = (await response.json()) as KimiCodeUsageResponse;
+    const windows: QuotaWindow[] = [];
+    for (const limit of data.limits ?? []) {
+      const window = kimiCodeWindow(kimiCodeWindowLabel(limit), limit.detail);
+      if (window) windows.push(window);
+    }
+    const weekly = kimiCodeWindow("Weekly", data.usage);
+    if (weekly) windows.push(weekly);
+    if (!windows.length) throw new Error("Kimi Code usage API returned no quota windows");
+
+    const level = data.user?.membership?.level
+      ?.replace(/^LEVEL_/, "")
+      .toLowerCase()
+      .replace(/\b\w/g, (character) => character.toUpperCase());
+    const header: string[] = [];
+    if (level) header.push(`Plan:           ${level}`);
+    const parallel = kimiCodeNumber(data.parallel?.limit);
+    if (parallel !== undefined) header.push(`Parallel limit: ${parallel}`);
+
+    return { success: true, cards: [{ header, windows }] };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+// ============================================================
 // xAI/Grok
 //
-// SuperGrok included usage is reported by cli-chat-proxy billing. A paid plan
-// can spend the included pool across API, Build, Chat, Imagine, and Voice;
-// extra usage credits apply after the included pool is exhausted.
+// Endpoint surface verified by proxying the real Grok CLI 0.2.112 through a
+// logging reverse proxy (GROK_CLI_CHAT_PROXY_BASE_URL) and diffing its billing
+// responses at 0% and 1% weekly usage.
 //
-// Two endpoint views:
-//   GET /v1/billing?format=credits
-//     Prefer: creditUsagePercent / weeklyUsagePercent, productUsage[],
-//     currentPeriod, onDemand{Used,Cap}, prepaidBalance.
-//     Unified-billing accounts may only return period metadata
-//     (isUnifiedBillingUser) without a usage percent.
-//   GET /v1/billing
-//     Ledger: used + monthlyLimit (cents) and/or weeklyLimit, with
-//     billingPeriodEnd. Used as the primary bar when credits omits percent,
-//     otherwise as a separate monthly reference under the weekly bar.
+//   GET /v1/billing?format=credits   ← the subscription quota, and the only
+//                                      billing call the Grok CLI makes
+//     currentPeriod{ type: USAGE_PERIOD_TYPE_WEEKLY|…, start, end }
+//     creditUsagePercent — percent of the window consumed
+//     productUsage[] — [{ product: "GrokBuild", usagePercent }]
+//     onDemandUsed / onDemandCap / prepaidBalance (cents), topUpMethod,
+//     isUnifiedBillingUser
 //
-// Two OAuth tokens can read the endpoint, both for the same account:
-//   • opencode dev (~/.local/share/opencode/auth.json → "xai"/"xai-oauth",
-//       referrer "opencode") — minted by the opencode-grok-auth plugin
+// This is protobuf-JSON, so proto3 default omission applies: creditUsagePercent
+// and productUsage are simply ABSENT while the window is at zero, and appear
+// once usage lands. Absent therefore means 0%, not "unknown" — reading it as
+// unknown and substituting some other pool is exactly how this card started
+// reporting a monthly API spend figure as a weekly subscription limit.
+//
+// Deliberately not used:
+//   GET /v1/billing (no format) — the pay-as-you-go API spend ledger
+//     (used / monthlyLimit cents over a calendar month). A different pool with
+//     a different period; not the SuperGrok quota.
+//   x-ratelimit-* response headers on /v1/responses — per-minute API limits.
+//   weeklyLimit / weeklyUsagePercent / weeklyResetAt — never existed.
+//
+//   GET https://grok.com/rest/subscriptions
+//     Accepts the same bearer; yields the active tier and renewal date.
+//
+// Two OAuth tokens can read the endpoints, both for the same account:
 //   • grok consumer (~/.grok/auth.json → "<issuer>::<client>".key,
 //       referrer "grok-build") — minted by `grok login`
+//   • opencode dev (~/.local/share/opencode/auth.json → "xai"/"xai-oauth",
+//       referrer "opencode") — minted by the opencode-grok-auth plugin
 //
 // We prefer the consumer token (auto-refreshes via refresh_token) and fall
 // back to the opencode dev token.
 // ============================================================
 
 const GROK_BILLING_BASE = "https://cli-chat-proxy.grok.com/v1/billing";
+const GROK_SUBSCRIPTIONS_URL = "https://grok.com/rest/subscriptions";
 const XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
 const XAI_OAUTH_TOKEN_ENDPOINT = "https://auth.x.ai/oauth2/token";
 
@@ -3136,13 +3588,11 @@ function formatGrokResetDate(iso: string | undefined): string | undefined {
 interface GrokCreditsConfig {
   currentPeriod?: { type?: string; start?: string; end?: string };
   creditUsagePercent?: number;
-  weeklyUsagePercent?: number;
+  productUsage?: Array<{ product?: string; usagePercent?: number }>;
   billingPeriodStart?: string;
   billingPeriodEnd?: string;
-  weeklyResetAt?: string;
   onDemandUsed?: { val?: number };
   onDemandCap?: { val?: number };
-  productUsage?: Array<{ product?: string; usagePercent?: number }>;
   prepaidBalance?: { val?: number };
   isUnifiedBillingUser?: boolean;
 }
@@ -3158,13 +3608,12 @@ function grokPeriodLabel(type: string | undefined): string {
     .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
-interface GrokIncludedConfig {
-  monthlyLimit?: { val?: number };
-  weeklyLimit?: { val?: number };
-  used?: { val?: number };
-  onDemandCap?: { val?: number };
-  billingPeriodStart?: string;
+interface GrokSubscription {
+  tier?: string;
+  status?: string;
+  billingInterval?: string;
   billingPeriodEnd?: string;
+  cancelAtPeriodEnd?: boolean;
 }
 
 function formatGrokBillingCents(value: number): string {
@@ -3175,233 +3624,163 @@ function formatGrokBillingCents(value: number): string {
 }
 
 function grokProductLabel(product: string): string {
-  const normalized = product.trim().toLowerCase().replace(/[_-]+/g, "");
+  const normalized = product.trim().toLowerCase().replace(/[_-]+/g, "").replace(/^grok/, "");
   const labels: Record<string, string> = {
     api: "API",
     build: "Build",
-    grokbuild: "Build",
     chat: "Chat",
-    grokchat: "Chat",
     imagine: "Imagine",
-    grokimagine: "Imagine",
     voice: "Voice",
-    grokvoice: "Voice",
   };
   return labels[normalized] ?? product;
+}
+
+// grok.com reports tiers as SUBSCRIPTION_TIER_* enums; map the known ones and
+// humanize anything xAI adds later rather than showing the raw enum.
+function grokTierLabel(tier: string | undefined): string | undefined {
+  const normalized = tier?.trim().toUpperCase().replace(/^SUBSCRIPTION_TIER_/, "") ?? "";
+  if (!normalized) return undefined;
+  const labels: Record<string, string> = {
+    GROK_PRO: "SuperGrok",
+    GROK_PRO_MAX: "SuperGrok Heavy",
+    GROK_HEAVY: "SuperGrok Heavy",
+    GROK_BASIC: "Grok Basic",
+    FREE: "Grok Free",
+  };
+  return (
+    labels[normalized] ??
+    normalized
+      .replace(/[_-]+/g, " ")
+      .toLowerCase()
+      .replace(/\b\w/g, (character) => character.toUpperCase())
+  );
 }
 
 function grokCentsVal(value: { val?: number } | undefined): number | undefined {
   return typeof value?.val === "number" && Number.isFinite(value.val) ? value.val : undefined;
 }
 
-function grokFinitePercent(...candidates: Array<number | undefined>): number | undefined {
-  for (const candidate of candidates) {
-    if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
-  }
-  return undefined;
+// Omitted by proto3 default encoding while the window is untouched.
+function grokUsagePercent(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? clampPercent(value) : 0;
 }
 
+// onDemand and prepaid amounts are cents.
 function appendGrokExtraUsageDetail(detail: string[], credits: GrokCreditsConfig | null): void {
   if (!credits) return;
   const onDemand = grokCentsVal(credits.onDemandUsed) ?? 0;
   const onDemandCap = grokCentsVal(credits.onDemandCap) ?? 0;
-  if (onDemandCap > 0) detail.push(`Extra usage: ${onDemand}/${onDemandCap}`);
+  if (onDemandCap > 0) {
+    detail.push(
+      `Extra usage: ${formatGrokBillingCents(onDemand)} / ${formatGrokBillingCents(onDemandCap)}`,
+    );
+  }
   const prepaid = grokCentsVal(credits.prepaidBalance) ?? 0;
-  if (prepaid > 0) detail.push(`Extra usage credits: ${prepaid}`);
+  if (prepaid > 0) detail.push(`Extra usage credits: ${formatGrokBillingCents(prepaid)}`);
 }
 
+// productUsage names the surface that consumed the shared window, e.g.
+// "GrokBuild". Absent entirely until something has been spent.
 function appendGrokProductDetail(detail: string[], credits: GrokCreditsConfig | null): void {
   const products = credits?.productUsage?.filter((p) => p && typeof p.product === "string");
   if (!products?.length) return;
   detail.push(
     `By product: ${products
-      .map((p) => {
-        const usage =
-          typeof p.usagePercent === "number" && Number.isFinite(p.usagePercent) ? p.usagePercent : 0;
-        return `${grokProductLabel(String(p.product))} ${usage.toFixed(2)}%`;
-      })
-      .join(" · ")}`,
+      .map((p) => `${grokProductLabel(String(p.product))} ${grokUsagePercent(p.usagePercent).toFixed(2)}%`)
+      .join(" \u00b7 ")}`,
   );
 }
 
+// grok.com returns every subscription the account has ever held; only the
+// active row describes the current plan.
+async function fetchGrokSubscription(token: string): Promise<GrokSubscription | null> {
+  try {
+    const res = await fetchTimeout(GROK_SUBSCRIPTIONS_URL, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { subscriptions?: GrokSubscription[] };
+    const list = Array.isArray(data.subscriptions) ? data.subscriptions : [];
+    return list.find((s) => /ACTIVE/i.test(s.status ?? "") && !/INACTIVE/i.test(s.status ?? "")) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function queryXai(auth: XaiAuthData | undefined): Promise<QueryResult | null> {
-  if (!auth || auth.type !== "oauth" || !auth.access) return null;
   // Prefer the consumer (grok-build) token — it auto-refreshes via
   // refresh_token, so it stays live across long sessions. Fall back to the
   // opencode dev token, which reads the same account's billing.
   const consumerToken = await resolveGrokConsumerToken();
   const hasConsumer = !!consumerToken;
-  const devTokenExpired = !!(auth.expires && auth.expires < Date.now());
+  const devAuth =
+    auth && auth.type === "oauth" && auth.access
+      ? { access: auth.access, expires: auth.expires }
+      : undefined;
+  if (!devAuth && !hasConsumer) return null;
+  const devTokenExpired = !!(devAuth?.expires && devAuth.expires < Date.now());
   if (devTokenExpired && !hasConsumer) {
     return { success: false, error: "xAI token expired. Use a Grok model in OpenCode to refresh." };
   }
-  const creditsToken = consumerToken ?? auth.access;
+  const creditsToken = consumerToken ?? devAuth!.access;
   const authHeaders = { Authorization: `Bearer ${creditsToken}`, Accept: "application/json" };
 
   const header: string[] = [
-    devTokenExpired ? "Auth:           consumer-only (dev token expired)" : "Auth:           valid",
+    !devAuth
+      ? "Auth:           grok login (consumer)"
+      : devTokenExpired
+        ? "Auth:           consumer-only (dev token expired)"
+        : "Auth:           valid",
   ];
-  if (!devTokenExpired && typeof auth.expires === "number" && auth.expires > Date.now()) {
-    header.push(`Token expires:  ${formatDuration(Math.floor((auth.expires - Date.now()) / 1000))}`);
+  if (!devTokenExpired && typeof devAuth?.expires === "number" && devAuth.expires > Date.now()) {
+    header.push(
+      `Token expires:  ${formatDuration(Math.floor((devAuth.expires - Date.now()) / 1000))}`,
+    );
   }
 
-  // Fetch both billing views. Credits may omit usage percent for unified
-  // billing users; the default ledger still carries used/limit dollars.
   let creditsCfg: GrokCreditsConfig | null = null;
-  let ledgerCfg: GrokIncludedConfig | null = null;
   try {
     const r = await fetchTimeout(`${GROK_BILLING_BASE}?format=credits`, { headers: authHeaders });
-    if (r.ok) creditsCfg = ((await r.json()) as { config?: GrokCreditsConfig }).config ?? {};
-  } catch {
-    // non-fatal
-  }
-  try {
-    const billRes = await fetchTimeout(GROK_BILLING_BASE, { headers: authHeaders });
-    if (billRes.ok) ledgerCfg = ((await billRes.json()) as { config?: GrokIncludedConfig }).config ?? {};
-  } catch {
-    // non-fatal
-  }
-
-  const windows: QuotaWindow[] = [];
-  const planName = hasConsumer ? "SuperGrok" : "Grok";
-  const periodLabel = grokPeriodLabel(creditsCfg?.currentPeriod?.type);
-  const creditsUsedPct = grokFinitePercent(creditsCfg?.weeklyUsagePercent, creditsCfg?.creditUsagePercent);
-  const used = grokCentsVal(ledgerCfg?.used);
-  const weeklyLimit = grokCentsVal(ledgerCfg?.weeklyLimit);
-  const monthlyLimit = grokCentsVal(ledgerCfg?.monthlyLimit);
-  const hasWeeklyUnits =
-    typeof used === "number" && typeof weeklyLimit === "number" && weeklyLimit > 0;
-  const hasMonthlyDollars =
-    typeof used === "number" && typeof monthlyLimit === "number" && monthlyLimit > 0;
-
-  if (typeof creditsUsedPct === "number") {
-    // Preferred path: provider-reported weekly (or period) percentage.
-    const remain = Math.round(clampPercent(100 - creditsUsedPct));
-    const resetAt =
-      creditsCfg?.currentPeriod?.end ?? creditsCfg?.weeklyResetAt ?? creditsCfg?.billingPeriodEnd;
-    const resetDate = formatGrokResetDate(resetAt);
-    const detail = [
-      `${periodLabel} usage: ${creditsUsedPct.toFixed(2)}% used${resetDate ? ` \u00b7 Resets ${resetDate}` : ""}`,
-    ];
-    appendGrokProductDetail(detail, creditsCfg);
-    appendGrokExtraUsageDetail(detail, creditsCfg);
-    if (hasWeeklyUnits) {
-      detail.push(`Weekly included units: ${used!.toLocaleString()} / ${weeklyLimit!.toLocaleString()}`);
-    } else if (hasMonthlyDollars) {
-      detail.push(
-        `Separate monthly billing: ${formatGrokBillingCents(used!)} / ${formatGrokBillingCents(monthlyLimit!)} (reference only)`,
-      );
-      const monthlyReset = formatGrokResetDate(ledgerCfg?.billingPeriodEnd);
-      if (monthlyReset) detail.push(`Monthly ledger resets: ${monthlyReset}`);
-    }
-    windows.push({
-      label: `${periodLabel} ${planName} limit`,
-      remaining: remain,
-      resetAt,
-      detail,
-    });
-  } else if (hasWeeklyUnits) {
-    // Ledger reports weekly included units without a credits percent.
-    const usedPct = (used! / weeklyLimit!) * 100;
-    const remain = Math.round(clampPercent(100 - usedPct));
-    const resetAt =
-      creditsCfg?.currentPeriod?.end ??
-      creditsCfg?.weeklyResetAt ??
-      creditsCfg?.billingPeriodEnd ??
-      ledgerCfg?.billingPeriodEnd;
-    const resetDate = formatGrokResetDate(resetAt);
-    const detail = [
-      `Weekly included units: ${used!.toLocaleString()} / ${weeklyLimit!.toLocaleString()} (${usedPct.toFixed(2)}% used)${resetDate ? ` \u00b7 Resets ${resetDate}` : ""}`,
-    ];
-    appendGrokProductDetail(detail, creditsCfg);
-    appendGrokExtraUsageDetail(detail, creditsCfg);
-    if (hasMonthlyDollars) {
-      detail.push(
-        `Separate monthly billing: ${formatGrokBillingCents(used!)} / ${formatGrokBillingCents(monthlyLimit!)} (reference only)`,
-      );
-      const monthlyReset = formatGrokResetDate(ledgerCfg?.billingPeriodEnd);
-      if (monthlyReset) detail.push(`Monthly ledger resets: ${monthlyReset}`);
-    }
-    windows.push({
-      label: `Weekly ${planName} limit`,
-      remaining: remain,
-      resetAt,
-      detail,
-    });
-  } else if (hasMonthlyDollars) {
-    // Credits omitted the usage percent (common for isUnifiedBillingUser).
-    // The dollar ledger still has used/limit; period metadata on the credits
-    // view remains the SuperGrok window (usually weekly). Label + reset follow
-    // that window so the card doesn't say "Monthly" while counting down ~5 days.
-    const usedPct = (used! / monthlyLimit!) * 100;
-    const remain = Math.round(clampPercent(100 - usedPct));
-    const periodResetAt =
-      creditsCfg?.currentPeriod?.end ??
-      creditsCfg?.weeklyResetAt ??
-      creditsCfg?.billingPeriodEnd;
-    const ledgerResetAt = ledgerCfg?.billingPeriodEnd;
-    const resetAt = periodResetAt ?? ledgerResetAt;
-    const labelPeriod = periodResetAt ? periodLabel : "Monthly";
-    const resetDate = formatGrokResetDate(resetAt);
-    const detail = [
-      `Usage: ${formatGrokBillingCents(used!)} / ${formatGrokBillingCents(monthlyLimit!)} (${usedPct.toFixed(2)}% used)${resetDate ? ` \u00b7 Resets ${resetDate}` : ""}`,
-    ];
-    appendGrokProductDetail(detail, creditsCfg);
-    appendGrokExtraUsageDetail(detail, creditsCfg);
-    windows.push({
-      label: `${labelPeriod} ${planName} limit`,
-      remaining: remain,
-      resetAt,
-      detail,
-    });
-  } else if (creditsCfg) {
-    // Auth + period metadata only — keep the card informative even when xAI
-    // returns no quantitative usage fields on either endpoint.
-    const resetAt =
-      creditsCfg.currentPeriod?.end ?? creditsCfg.weeklyResetAt ?? creditsCfg.billingPeriodEnd;
-    const resetDate = formatGrokResetDate(resetAt);
-    const detail = [
-      creditsCfg.isUnifiedBillingUser
-        ? "Unified billing active; no usage percent or ledger amounts returned"
-        : "No usage percent or ledger amounts returned",
-    ];
-    if (resetDate) detail.push(`${periodLabel} period ends: ${resetDate}`);
-    appendGrokProductDetail(detail, creditsCfg);
-    appendGrokExtraUsageDetail(detail, creditsCfg);
-    header.push(`Billing:        ${periodLabel.toLowerCase()} period (usage unavailable)`);
-    if (detail.length || resetAt) {
-      windows.push({
-        label: `${periodLabel} ${planName} limit`,
-        remaining: 100,
-        resetAt,
-        detail,
-        suffix: "usage unavailable",
-      });
-    }
-  }
-
-  if (!hasConsumer) {
-    header.push("SuperGrok:      run `grok login` for weekly details");
-  }
-
-  // Liveness check: confirm at least one of the two tokens still works against
-  // the xAI API. Prefer the consumer token (auto-refreshes via refresh_token)
-  // and fall back to the opencode dev token. Either valid token is enough for
-  // the card to be meaningful.
-  try {
-    const res = await fetchTimeout("https://api.x.ai/v1/models", {
-      headers: {
-        Authorization: `Bearer ${creditsToken}`,
-        Accept: "application/json",
-        "x-grok-source": "opencode-allstatus",
-      },
-    });
-    if (!res.ok) throw new Error(`xAI API error (${res.status})`);
+    if (!r.ok) throw new Error(`xAI billing error (${r.status})`);
+    creditsCfg = ((await r.json()) as { config?: GrokCreditsConfig }).config ?? {};
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
+  const subscription = await fetchGrokSubscription(creditsToken);
 
-  return { success: true, cards: [{ header, windows: windows.length ? windows : undefined }] };
+  const planName = grokTierLabel(subscription?.tier) ?? (hasConsumer ? "SuperGrok" : "Grok");
+  const periodLabel = grokPeriodLabel(creditsCfg.currentPeriod?.type);
+  const usedPct = grokUsagePercent(creditsCfg.creditUsagePercent);
+  const resetAt = creditsCfg.currentPeriod?.end ?? creditsCfg.billingPeriodEnd;
+  const resetDate = formatGrokResetDate(resetAt);
+
+  if (subscription?.billingPeriodEnd) {
+    const renews = formatGrokResetDate(subscription.billingPeriodEnd);
+    header.push(
+      `Plan:           ${planName}${renews ? ` \u00b7 ${subscription.cancelAtPeriodEnd ? "ends" : "renews"} ${renews}` : ""}`,
+    );
+  }
+
+  const detail = [
+    `${periodLabel} usage: ${usedPct.toFixed(2)}% used${resetDate ? ` \u00b7 Resets ${resetDate}` : ""}`,
+  ];
+  appendGrokProductDetail(detail, creditsCfg);
+  appendGrokExtraUsageDetail(detail, creditsCfg);
+
+  const windows: QuotaWindow[] = [
+    {
+      label: `${periodLabel} ${planName} limit`,
+      remaining: Math.round(clampPercent(100 - usedPct)),
+      resetAt,
+      detail,
+    },
+  ];
+
+  if (!hasConsumer) {
+    header.push("SuperGrok:      run `grok login` for subscription details");
+  }
+
+  return { success: true, cards: [{ header, windows }] };
 }
 
 // ============================================================
@@ -3857,11 +4236,12 @@ async function queryStepFun(ansi = false): Promise<QueryResult | null> {
 }
 
 // ============================================================
-// QwenCloud Token Plan (home.qwencloud.com — Aliyun BSS API)
+// QwenCloud Token Plan (home.qwencloud.com)
 // ============================================================
 //
-//   Quota source:    POST https://home.qwencloud.com/data/api.json?...GetSeatSubscriptionSummary
-//   Renewal source:  POST https://home.qwencloud.com/data/api.json?...CheckTokenPlanAutoRenewal
+//   Individual:      POST https://cs-data.qwencloud.com/data/api.json
+//                    zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/{usage,subscription,quota-config}
+//   Team fallback:   POST https://home.qwencloud.com/data/api.json?...GetSeatSubscriptionSummary
 //   Auth:            Browser session cookies (login_qwencloud_ticket,
 //                    login_aliyunid_pk, isg, login_ESM_account_ticket)
 //                    stored in ~/.config/opencode/qwencloud-cookies.json
@@ -3878,14 +4258,37 @@ async function queryStepFun(ansi = false): Promise<QueryResult | null> {
 //     }
 
 const QWENCLOUD_BASE = "https://home.qwencloud.com";
+const QWENCLOUD_DATA_BASE = "https://cs-data.qwencloud.com";
 const QWENCLOUD_BX_V = "2.5.36";
 
 interface QwenCloudCookieConfig {
-  ticket: string;
-  aliyunPk: string;
-  isg: string;
+  cookie?: string;
+  ticket?: string;
+  aliyunPk?: string;
+  isg?: string;
   esmTicket?: string;
 }
+
+interface QwenCloudPersonalUsage {
+  per5HourPercentage?: number;
+  per5HourResetTime?: number;
+  per1WeekPercentage?: number;
+  per1WeekResetTime?: number;
+}
+
+interface QwenCloudPersonalSubscription {
+  specCode?: string;
+  remainingDays?: number;
+  startTime?: number;
+  endTime?: number;
+  autoRenewFlag?: boolean;
+  status?: string;
+}
+
+type QwenCloudQuotaConfig = Record<
+  string,
+  { five_hour?: number; weekly?: number }
+>;
 
 interface QwenCloudSubSummaryResponse {
   code: string;
@@ -3930,7 +4333,7 @@ function loadQwenCloudCookies(): QwenCloudCookieConfig | null {
     if (!existsSync(p)) return null;
     const raw = readFileSync(p, "utf-8");
     const cfg = JSON.parse(raw) as QwenCloudCookieConfig;
-    if (cfg.ticket && cfg.aliyunPk && cfg.isg) return cfg;
+    if (cfg.cookie?.trim() || (cfg.ticket && cfg.aliyunPk && cfg.isg)) return cfg;
     return null;
   } catch {
     return null;
@@ -3938,6 +4341,9 @@ function loadQwenCloudCookies(): QwenCloudCookieConfig | null {
 }
 
 function qwencloudCookieString(cookies: QwenCloudCookieConfig): string {
+  if (cookies.cookie?.trim()) {
+    return cookies.cookie.trim().replace(/^cookie:\s*/i, "");
+  }
   let c = `login_qwencloud_ticket=${cookies.ticket}; login_aliyunid_pk=${cookies.aliyunPk}; isg=${cookies.isg}`;
   if (cookies.esmTicket) c += `; login_ESM_account_ticket=${cookies.esmTicket}`;
   return c;
@@ -3954,18 +4360,27 @@ function qwencloudHeaders(cookies: QwenCloudCookieConfig): Record<string, string
   };
 }
 
-// Fetch the homepage, extract SEC_TOKEN from inline JS.
 async function qwencloudFetchSecToken(
   cookies: QwenCloudCookieConfig,
 ): Promise<string | null> {
   try {
     const headers = qwencloudHeaders(cookies);
     delete (headers as Record<string, string | undefined>)["Content-Type"];
-    const res = await fetchTimeout(`${QWENCLOUD_BASE}/`, {
+    const infoRes = await fetchTimeout(`${QWENCLOUD_BASE}/tool/user/info.json`, {
       headers,
     });
-    if (!res.ok) return null;
-    const html = await res.text();
+    if (infoRes.ok) {
+      const info = await infoRes.json() as {
+        data?: { secToken?: string };
+        secToken?: string;
+      };
+      const token = info.data?.secToken ?? info.secToken;
+      if (token) return token;
+    }
+
+    const homeRes = await fetchTimeout(`${QWENCLOUD_BASE}/`, { headers });
+    if (!homeRes.ok) return null;
+    const html = await homeRes.text();
     const m = html.match(/SEC_TOKEN:\s*"([^"]+)"/);
     return m ? m[1] : null;
   } catch {
@@ -3973,9 +4388,135 @@ async function qwencloudFetchSecToken(
   }
 }
 
-async function queryQwenCloud(ansi = false): Promise<QueryResult | null> {
+function qwencloudPersonalPayload<T>(value: unknown): T | null {
+  if (!value || typeof value !== "object") return null;
+  const root = value as {
+    data?: { DataV2?: { data?: { data?: T } } };
+  };
+  return root.data?.DataV2?.data?.data ?? null;
+}
+
+async function qwencloudPersonalRequest<T>(
+  endpoint: "usage" | "subscription" | "quota-config",
+  cookies: QwenCloudCookieConfig,
+  secToken: string,
+): Promise<T | null> {
+  const api = `zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/${endpoint}`;
+  const params = {
+    Api: api,
+    Data: {
+      cornerstoneParam: {
+        domain: "home.qwencloud.com",
+        consoleSite: "QWENCLOUD",
+        console: "ONE_CONSOLE",
+        xsp_lang: "en-US",
+        protocol: "V2",
+        productCode: "p_efm",
+      },
+    },
+    V: "1.0",
+  };
+  const query = new URLSearchParams({
+    product: "sfm_bailian",
+    action: "IntlBroadScopeAspnGateway",
+    api,
+  });
+  const response = await fetchTimeout(`${QWENCLOUD_DATA_BASE}/data/api.json?${query}`, {
+    method: "POST",
+    headers: {
+      ...qwencloudHeaders(cookies),
+      Referer: `${QWENCLOUD_BASE}/billing/subscription/token-plan-individual`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      "X-Requested-With": "XMLHttpRequest",
+    },
+    body: new URLSearchParams({
+      product: "sfm_bailian",
+      action: "IntlBroadScopeAspnGateway",
+      sec_token: secToken,
+      region: "ap-southeast-1",
+      params: JSON.stringify(params),
+    }),
+  });
+  if (!response.ok) return null;
+  return qwencloudPersonalPayload<T>(await response.json());
+}
+
+async function queryQwenCloudPersonal(
+  cookies: QwenCloudCookieConfig,
+  secToken: string,
+): Promise<QueryResult | null> {
+  const [usage, subscription, quotaConfig] = await Promise.all([
+    qwencloudPersonalRequest<QwenCloudPersonalUsage>("usage", cookies, secToken),
+    qwencloudPersonalRequest<QwenCloudPersonalSubscription>("subscription", cookies, secToken),
+    qwencloudPersonalRequest<QwenCloudQuotaConfig>("quota-config", cookies, secToken),
+  ]);
+  if (!usage || !subscription) return null;
+
+  const spec = subscription.specCode?.toLowerCase() ?? "unknown";
+  const quota = quotaConfig?.[spec];
+  const windows: QuotaWindow[] = [];
+  const addWindow = (
+    label: string,
+    fraction: number | undefined,
+    reset: number | undefined,
+    total: number | undefined,
+  ) => {
+    if (typeof fraction !== "number" || !Number.isFinite(fraction)) return;
+    const usedFraction = Math.max(0, Math.min(1, fraction));
+    const detail = total !== undefined
+      ? [`Used: ${(usedFraction * total).toLocaleString(undefined, { maximumFractionDigits: 1 })} / ${total.toLocaleString()}`]
+      : [`Used: ${(usedFraction * 100).toFixed(1)}%`];
+    windows.push({
+      label,
+      remaining: Math.round((1 - usedFraction) * 100),
+      resetAt: typeof reset === "number" && Number.isFinite(reset)
+        ? new Date(reset).toISOString()
+        : undefined,
+      detail,
+    });
+  };
+  addWindow("5h (rolling)", usage.per5HourPercentage, usage.per5HourResetTime, quota?.five_hour);
+  addWindow("Weekly", usage.per1WeekPercentage, usage.per1WeekResetTime, quota?.weekly);
+  if (!windows.length) return null;
+
+  const plan = spec.replace(/\b\w/g, (character) => character.toUpperCase());
+  const header = [`Plan:           Token Plan Individual (${plan})`];
+  if (subscription.status) header.push(`Status:         ${subscription.status.toLowerCase()}`);
+  if (subscription.autoRenewFlag !== undefined) {
+    header.push(`Auto-renewal:   ${subscription.autoRenewFlag ? "enabled" : "disabled"}`);
+  }
+  const footer: string[] = [];
+  if (subscription.remainingDays !== undefined) {
+    footer.push(`Subscription:   ${subscription.remainingDays}d remaining`);
+  }
+  if (subscription.endTime) {
+    footer.push(`Expires:        ${new Date(subscription.endTime).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })}`);
+  }
+
+  return {
+    success: true,
+    cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+  };
+}
+
+async function queryQwenCloud(
+  auth: QwenTokenPlanAuthData | undefined,
+  ansi = false,
+): Promise<QueryResult | null> {
   const cookies = loadQwenCloudCookies();
-  if (!cookies) return null;
+  if (!cookies) {
+    if (!auth?.key) return null;
+    return {
+      success: false,
+      error:
+        "QwenCloud Token Plan API key found, but quota requires a signed-in console session.\n" +
+        "Add the Cookie header to ~/.config/opencode/qwencloud-cookies.json.",
+    };
+  }
 
   // Step 1: get CSRF token from homepage
   const secToken = await qwencloudFetchSecToken(cookies);
@@ -3991,6 +4532,9 @@ async function queryQwenCloud(ansi = false): Promise<QueryResult | null> {
   const baseHeaders = qwencloudHeaders(cookies);
 
   try {
+    const personal = await queryQwenCloudPersonal(cookies, secToken);
+    if (personal) return personal;
+
     // Step 2: call subscription + renewal in parallel
     const params = new URLSearchParams({
       product: "BssOpenAPI-V3",
@@ -4070,25 +4614,23 @@ async function queryQwenCloud(ansi = false): Promise<QueryResult | null> {
       const total = Number(equity.TotalValue);
       const surplus = Number(equity.SurplusValue);
       const used = total - surplus;
-      const remainPct = total > 0 ? Math.round(clampPercent((surplus / total) * 100)) : 100;
+      const remainPct = total > 0 ? Math.round((surplus / total) * 100) : 100;
 
       windows.push({
         label: `Credits (${detail.RemainingDays ?? "?"}d remaining)`,
         remaining: remainPct,
         detail: [`Used: ${used.toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${total.toLocaleString(undefined, { maximumFractionDigits: 0 })}`],
-        resetAt: epochToIso(group?.NextCycleFlushTime),
+        resetAt: group?.NextCycleFlushTime
+          ? new Date(group.NextCycleFlushTime).toISOString()
+          : undefined,
       });
     }
 
     const footer: string[] = [];
     if (detail.EndTime) {
-      const start = epochToMs(detail.StartTime);
-      const end = epochToMs(detail.EndTime);
-      if (start !== undefined && end !== undefined) {
-        footer.push(
-          `Cycle:          ${new Date(start).toLocaleDateString("en-US", { month: "short", day: "numeric" })} — ${new Date(end).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
-        );
-      }
+      footer.push(
+        `Cycle:          ${new Date(detail.StartTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })} — ${new Date(detail.EndTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
+      );
     }
 
     return {
@@ -5664,6 +6206,7 @@ interface GridCell {
   title: string;
   lines: string[];
   metrics?: WindowMetric[];
+  stale?: StaleInfo;
 }
 
 // Annotation hook: returns a trend line to insert under a window's bar.
@@ -5771,14 +6314,19 @@ function cardToCell(
     lines.push(...card.footer);
   }
 
-  return { title, lines, metrics };
+  return { title, lines, metrics, stale: card.stale };
+}
+
+interface ProviderFailure {
+  title: string;
+  detail: string;
 }
 
 function collect(
   result: QueryResult | null,
   providerTitle: string,
   cells: GridCell[],
-  errors: string[],
+  failures: ProviderFailure[],
   ansi: boolean,
   trend?: TrendFn,
 ): void {
@@ -5809,7 +6357,7 @@ function collect(
       cells.push({ title: providerTitle, lines: result.output.split("\n") });
     }
   } else if (result.error) {
-    errors.push(`${providerTitle}:\n${result.error}`);
+    failures.push({ title: providerTitle, detail: result.error });
   }
 }
 
@@ -5861,16 +6409,25 @@ function extractAlerts(cells: GridCell[], threshold = 25): string[] {
 // JSON serialization
 // ============================================================
 
-function cellsToJson(cells: GridCell[], alerts: string[], errors: string[]): string {
+function cellsToJson(
+  cells: GridCell[],
+  alerts: string[],
+  errors: string[],
+  issues: StatusIssue[],
+  health: StatusHealth,
+): string {
   return JSON.stringify(
     {
       cells: cells.map((c) => ({
         title: c.title,
         lines: c.lines.map((l) => l.replace(ANSI_RE, "")),
         metrics: c.metrics?.length ? c.metrics : undefined,
+        stale: c.stale ? { ageMs: Math.max(0, Date.now() - c.stale.ts), reason: c.stale.reason } : undefined,
       })),
       alerts: alerts.length > 0 ? alerts : undefined,
       errors: errors.length > 0 ? errors : undefined,
+      issues: issues.length > 0 ? issues : undefined,
+      health,
     },
     null,
     2,
@@ -6119,7 +6676,7 @@ interface MyStatusConfig {
   historyMinIntervalSec?: number;
   watchIntervalSec?: number;
   uiRefreshSec?: number;
-  providers?: { disabled?: string[]; order?: string[] };
+  providers?: { disabled?: string[]; hidden?: string[]; order?: string[] };
   google?: { excludeEmails?: string[] };
   antigravityTools?: {
     enabled?: boolean;
@@ -6197,6 +6754,17 @@ export function loadConfig(): MyStatusConfig {
   }
 }
 
+/** Persist config changes (best-effort; preserves existing fields). */
+export function saveConfig(patch: Partial<MyStatusConfig>): void {
+  try {
+    const existing = loadConfig();
+    const merged = { ...existing, ...patch };
+    writeFileSync(configFile("mystatus.json"), JSON.stringify(merged, null, 2));
+  } catch {
+    /* best-effort */
+  }
+}
+
 // Resolve render width: explicit arg → env → live TTY → config → safe default.
 // The plugin runs in a non-TTY server process, so the override path matters
 // more than auto-detection.
@@ -6230,6 +6798,7 @@ const PROVIDERS: Provider[] = [
   { id: "byteplus", title: "BytePlus Coding Plan", query: (_a, ansi) => queryBytePlus(_a, ansi) },
   { id: "copilot", title: "GitHub Copilot Account Quota", query: (a, ansi) => queryCopilot(a["github-copilot"], ansi) },
   { id: "google", title: "Google Account Quota", query: (_a, ansi) => queryGoogle(ansi) },
+  { id: "kimi", title: "Kimi for Coding", query: (a, ansi) => queryKimiCode(a["kimi-for-coding"], ansi) },
   { id: "longcat", title: "LongCat API Quota", query: (_a, ansi) => queryLongCat(ansi) },
   { id: "minimax", title: "MiniMax Token Plan", query: (a, ansi) => queryMiniMax(a["minimax-coding-plan"], ansi) },
   { id: "mistral", title: "Mistral Vibe Usage", query: (_a, ansi) => queryMistral(_a, ansi) },
@@ -6238,7 +6807,7 @@ const PROVIDERS: Provider[] = [
   { id: "ollama", title: "Ollama Cloud", query: (_a, ansi) => queryOllama(_a, ansi) },
   { id: "opencode-go", title: "OpenCode Go+Zen Account Quota", query: (a, ansi) => queryOpenCodeGoZen(a["opencode-go"], ansi) },
   { id: "poe", title: "Poe Account Quota", query: (a, ansi) => queryPoe(a.poe, ansi) },
-  { id: "qwencloud", title: "QwenCloud Token Plan", query: (_a, ansi) => queryQwenCloud(ansi) },
+  { id: "qwencloud", title: "QwenCloud Token Plan", query: (a, ansi) => queryQwenCloud(a["qwen-token-plan"], ansi) },
   { id: "stepfun", title: "StepFun Token Plan", query: (_a, ansi) => queryStepFun(ansi) },
   { id: "xai", title: "xAI/Grok", query: (a) => queryXai(a["xai-oauth"] ?? a.xai) },
   { id: "zai", title: "Z.AI Coding Plan", query: (a, ansi) => queryZai(a["zai-coding-plan"], ansi) },
@@ -6305,6 +6874,30 @@ function noteCards(result: QueryResult, note: string): QueryResult {
   return { ...result, cards: result.cards.map((c) => ({ ...c, note: c.note ?? note })) };
 }
 
+function firstLine(s: string, max = 90): string {
+  const line = s.split("\n")[0].trim();
+  return line.length > max ? `${line.slice(0, max - 1)}\u2026` : line;
+}
+
+/**
+ * Cached fallback after a failed live query: flag it as stale and keep the
+ * failure reason, so a broken provider cannot masquerade as a current reading.
+ */
+function staleCards(result: QueryResult, ts: number, reason?: string): QueryResult {
+  if (!result.cards) return result;
+  const age = formatDuration(Math.max(0, Math.floor((Date.now() - ts) / 1000)));
+  const detail = reason ? ` \u00b7 ${firstLine(reason)}` : "";
+  const note = `stale \u00b7 cached ${age} ago${detail}`;
+  return {
+    ...result,
+    cards: result.cards.map((c) => ({
+      ...c,
+      note: c.note ?? note,
+      stale: c.stale ?? { ts, reason: reason ? firstLine(reason, 200) : undefined },
+    })),
+  };
+}
+
 export interface RanProvider {
   title: string;
   result: QueryResult | null;
@@ -6337,12 +6930,15 @@ async function runProvider(
     }
     // Live attempt errored → fall back to a previous good snapshot if we have one.
     if (cached?.result.success) {
-      return { title: p.title, result: noteCards(cached.result, ageNote(cached.ts)) };
+      return { title: p.title, result: staleCards(cached.result, cached.ts, result.error) };
     }
     return { title: p.title, result };
   } catch (err) {
     if (cached?.result.success) {
-      return { title: p.title, result: noteCards(cached.result, ageNote(cached.ts)) };
+      return {
+        title: p.title,
+        result: staleCards(cached.result, cached.ts, err instanceof Error ? err.message : String(err)),
+      };
     }
     return {
       title: p.title,
@@ -6483,6 +7079,8 @@ function buildSummaryCell(
   metrics: WindowMetric[],
   threshold: number,
   ansi: boolean,
+  issues: StatusIssue[],
+  health: StatusHealth,
 ): GridCell {
   let green = 0;
   let yellow = 0;
@@ -6515,6 +7113,23 @@ function buildSummaryCell(
     header.push(
       `Soonest reset:  ${soonest.cellTitle} \u00b7 ${soonest.label}  ${formatDuration(Math.floor(soonest.resetMs / 1000))}`,
     );
+  }
+
+  const stale = issues.filter((i) => i.kind === "stale");
+  if (stale.length > 0) {
+    const oldest = formatDuration(Math.floor((stale[0].ageMs ?? 0) / 1000));
+    const names = stale.map((i) => shortProvider(i.provider)).join(", ");
+    header.push(
+      `Stale data:     ${stale.length} provider${stale.length > 1 ? "s" : ""} (oldest ${oldest}) \u2014 ${firstLine(names, 60)}`,
+    );
+  }
+  const failed = issues.filter((i) => i.kind === "error").length;
+  const idle = issues.filter((i) => i.kind === "unconfigured").length;
+  if (failed > 0 || idle > 0) {
+    const parts: string[] = [];
+    if (failed > 0) parts.push(`${failed} failed`);
+    if (idle > 0) parts.push(`${idle} not configured`);
+    header.push(`Providers:      ${health.rendered}/${health.queried} reporting \u00b7 ${parts.join(" \u00b7 ")}`);
   }
   return cardToCell({ header }, "Summary", ansi);
 }
@@ -6580,6 +7195,8 @@ export interface MyStatusViewProvider {
   soonestResetMs?: number;
   windows: MyStatusViewWindow[];
   note?: string;
+  /** Present when these numbers come from cache because the live query failed. */
+  stale?: { ageMs: number; reason?: string };
 }
 
 export interface MyStatusViewModel {
@@ -6595,6 +7212,24 @@ export interface MyStatusViewModel {
   errors: string[];
   alerts: string[];
   threshold: number;
+  issues: StatusIssue[];
+  health: StatusHealth;
+}
+
+/** A provider that failed, served stale cache, or has no credentials. */
+export interface StatusIssue {
+  provider: string;
+  kind: "error" | "stale" | "unconfigured";
+  detail: string;
+  ageMs?: number; // age of the cached data, for stale issues
+}
+
+export interface StatusHealth {
+  queried: number;
+  rendered: number;
+  stale: number;
+  failed: number;
+  unconfigured: number;
 }
 
 interface PreparedStatus {
@@ -6604,6 +7239,39 @@ interface PreparedStatus {
   alerts: string[];
   threshold: number;
   sortMode: "urgency" | "name" | "reset";
+  issues: StatusIssue[];
+  health: StatusHealth;
+}
+
+const ISSUE_ORDER: Record<StatusIssue["kind"], number> = { error: 0, stale: 1, unconfigured: 2 };
+
+function buildIssues(
+  failures: ProviderFailure[],
+  cells: GridCell[],
+  unconfigured: string[],
+  now: number,
+): StatusIssue[] {
+  const issues: StatusIssue[] = [
+    ...failures.map((f) => ({ provider: f.title, kind: "error" as const, detail: firstLine(f.detail, 200) })),
+    ...cells
+      .filter((c) => c.stale)
+      .map((c) => ({
+        provider: c.title,
+        kind: "stale" as const,
+        detail: c.stale?.reason ?? "live query failed",
+        ageMs: Math.max(0, now - (c.stale?.ts ?? now)),
+      })),
+    ...unconfigured.map((title) => ({
+      provider: title,
+      kind: "unconfigured" as const,
+      detail: "no credentials found",
+    })),
+  ];
+  return issues.sort((a, b) => {
+    if (a.kind !== b.kind) return ISSUE_ORDER[a.kind] - ISSUE_ORDER[b.kind];
+    if (a.kind === "stale") return (b.ageMs ?? 0) - (a.ageMs ?? 0);
+    return a.provider.localeCompare(b.provider, undefined, { sensitivity: "base" });
+  });
 }
 
 function prepareStatusView(
@@ -6631,10 +7299,16 @@ function prepareStatusView(
   const trend = makeTrendFn(buildSeries(history), trendMode, useAnsi, now);
 
   const cells: GridCell[] = [];
-  const errors: string[] = [];
+  const failures: ProviderFailure[] = [];
+  const unconfigured: string[] = [];
   for (const { title, result } of snapshot.ran) {
-    collect(result, title, cells, errors, useAnsi, trend);
+    if (result === null) {
+      unconfigured.push(title);
+      continue;
+    }
+    collect(result, title, cells, failures, useAnsi, trend);
   }
+  const errors = failures.map((f) => `${f.title}:\n${f.detail}`);
 
   if (cells.length === 0) {
     return {
@@ -6650,7 +7324,22 @@ function prepareStatusView(
   const alerts = extractAlerts(cells, threshold);
   sortCells(cells, sortMode);
 
-  return { cells, errors, metrics, alerts, threshold, sortMode };
+  return {
+    cells,
+    errors,
+    metrics,
+    alerts,
+    threshold,
+    sortMode,
+    issues: buildIssues(failures, cells, unconfigured, now),
+    health: {
+      queried: snapshot.ran.length,
+      rendered: cells.length,
+      stale: cells.filter((c) => c.stale).length,
+      failed: failures.length,
+      unconfigured: unconfigured.length,
+    },
+  };
 }
 
 /** Build structured view data for the live TUI dashboard. */
@@ -6662,7 +7351,8 @@ export function buildMyStatusViewModel(
   const prepared = prepareStatusView(snapshot, args, opts);
   if ("error" in prepared) return prepared;
 
-  const { cells, errors, metrics, alerts, threshold } = prepared;
+  const { cells, errors, metrics, alerts, threshold, issues, health } = prepared;
+  const now = Date.now();
 
   let green = 0;
   let yellow = 0;
@@ -6704,6 +7394,9 @@ export function buildMyStatusViewModel(
         resetMs: m.resetMs,
       })),
       note,
+      stale: cell.stale
+        ? { ageMs: Math.max(0, now - cell.stale.ts), reason: cell.stale.reason }
+        : undefined,
     };
   });
 
@@ -6725,6 +7418,8 @@ export function buildMyStatusViewModel(
     errors,
     alerts,
     threshold,
+    issues,
+    health,
   };
 }
 
@@ -6777,14 +7472,16 @@ export function formatMyStatus(
   const layoutMode = resolveLayout(args.layout, cfg);
   const showSummary = (args.summary ?? cfg.summary ?? true) && !isJson;
 
-  const { cells, errors, metrics, alerts, threshold } = prepared;
+  const { cells, errors, metrics, alerts, threshold, issues, health } = prepared;
 
   if (isJson) {
-    return cellsToJson(cells, alerts, errors);
+    return cellsToJson(cells, alerts, errors, issues, health);
   }
 
   const renderCells = [...cells];
-  if (showSummary) renderCells.unshift(buildSummaryCell(cells, metrics, threshold, useAnsi));
+  if (showSummary) {
+    renderCells.unshift(buildSummaryCell(cells, metrics, threshold, useAnsi, issues, health));
+  }
 
   let output = renderGrid(renderCells, termWidth, layoutMode).trimEnd();
 
@@ -6818,7 +7515,7 @@ export const MyStatusPlugin: Plugin = async () => ({
   tool: {
     mystatus: tool({
       description:
-        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,longcat,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
+        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Kimi for Coding, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,kimi,longcat,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
       args: {
         format: tool.schema.string().optional(),
         threshold: tool.schema.number().optional(),
