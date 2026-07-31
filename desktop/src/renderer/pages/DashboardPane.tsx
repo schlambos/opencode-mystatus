@@ -37,12 +37,7 @@ const dotClass: Record<StatusTone, string> = {
   dead: "bg-status-dead",
 };
 
-function worstTone(windows: readonly MyStatusViewWindow[], threshold: number): StatusTone {
-  if (windows.length === 0) return "ok";
-  let pct = 100;
-  for (const w of windows) pct = Math.min(pct, w.remaining);
-  return statusTone(pct, threshold);
-}
+
 
 function Pill({
   window: win,
@@ -154,7 +149,7 @@ function ProviderCard({
   fetchedAt: number | null;
   now: number;
 }): JSX.Element {
-  const worst = worstTone(windows, threshold);
+  const worst = statusTone(provider.minRemaining, threshold);
 
   return (
     <section
@@ -184,11 +179,17 @@ function ProviderCard({
         </button>
       </header>
 
-      <ul className="flex flex-col gap-1">
-        {windows.map((w) => (
-          <Pill key={w.label} window={w} threshold={threshold} fetchedAt={fetchedAt} now={now} />
-        ))}
-      </ul>
+      {windows.length > 0 ? (
+        <ul className="flex flex-col gap-1">
+          {windows.map((w) => (
+            <Pill key={w.label} window={w} threshold={threshold} fetchedAt={fetchedAt} now={now} />
+          ))}
+        </ul>
+      ) : (
+        <p className="rounded-md border border-ink-800 px-2 py-2 font-mono text-[11px] text-fog-600">
+          No windows in this view — every quota for this provider is in another horizon.
+        </p>
+      )}
 
       <footer className="mt-2.5 flex items-center gap-0.5 border-t border-ink-800 pt-2">
         {FOOTER_ACTIONS.map((a) => (
@@ -233,14 +234,13 @@ export function DashboardPane(): JSX.Element {
         provider,
         windows: windowsForView(provider.windows, tab as Horizon),
       }))
-      .filter((c) => c.windows.length > 0)
       .sort((a, b) => a.provider.minRemaining - b.provider.minRemaining);
   }, [model, config, tab]);
 
   const tierCounts = useMemo(() => {
     if (model === null) return { all: 0, ok: 0, warn: 0, low: 0, dead: 0 };
     const counts = { all: cards.length, ok: 0, warn: 0, low: 0, dead: 0 };
-    for (const c of cards) counts[worstTone(c.windows, model.threshold)] += 1;
+    for (const c of cards) counts[statusTone(c.provider.minRemaining, model.threshold)] += 1;
     return counts;
   }, [cards, model]);
 
@@ -248,7 +248,7 @@ export function DashboardPane(): JSX.Element {
     if (model === null) return [];
     const q = query.trim().toLowerCase();
     return cards.filter((c) => {
-      if (tierFilter !== "all" && worstTone(c.windows, model.threshold) !== tierFilter) return false;
+      if (tierFilter !== "all" && statusTone(c.provider.minRemaining, model.threshold) !== tierFilter) return false;
       if (q !== "" && !c.provider.name.toLowerCase().includes(q)) return false;
       return true;
     });
