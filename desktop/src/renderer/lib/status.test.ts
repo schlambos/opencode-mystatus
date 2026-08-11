@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  effectiveRemaining,
   formatAge,
   formatDuration,
   offTabWorstCue,
@@ -104,6 +105,15 @@ describe("viewMinRemaining", () => {
   it("returns the lowest remaining among view windows", () => {
     expect(viewMinRemaining([{ remaining: 100 }, { remaining: 0 }, { remaining: 40 }])).toBe(0);
     expect(viewMinRemaining([{ remaining: 100 }])).toBe(100);
+  });
+});
+
+describe("effectiveRemaining", () => {
+  it("prefers window mins and ignores the 101 no-meter sentinel", () => {
+    expect(effectiveRemaining([{ remaining: 40 }], 101)).toBe(40);
+    expect(effectiveRemaining([], 101)).toBeNull();
+    expect(effectiveRemaining([], 100)).toBe(100);
+    expect(effectiveRemaining([], undefined)).toBeNull();
   });
 });
 

@@ -91,6 +91,22 @@ export function viewMinRemaining(windows: ReadonlyArray<{ remaining: number }>):
   return min;
 }
 
+/**
+ * Core uses minRemaining=101 as a "no meters" sentinel (cellMinRemaining).
+ * Never treat values >100 as a real remaining percentage in the UI.
+ */
+export function effectiveRemaining(
+  windows: ReadonlyArray<{ remaining: number }>,
+  minRemaining?: number,
+): number | null {
+  const fromWindows = viewMinRemaining(windows);
+  if (fromWindows !== null) return fromWindows;
+  if (typeof minRemaining === "number" && Number.isFinite(minRemaining) && minRemaining <= 100) {
+    return minRemaining;
+  }
+  return null;
+}
+
 export interface OffTabWorstCue {
   horizonLabel: string;
   remaining: number;

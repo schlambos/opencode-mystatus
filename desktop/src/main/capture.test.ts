@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CaptureSpec } from "../shared/ipc.js";
 import {
   captureSession,
+  chromeBrowserProfile,
   fallbackResult,
   type CaptureDeps,
   type CaptureWindowOpts,
@@ -58,24 +59,32 @@ interface FakeSession {
   clearCache: ReturnType<typeof vi.fn>;
   clearAuthCache: ReturnType<typeof vi.fn>;
   cookies: FakeCookies;
+  webRequest: {
+    onBeforeSendHeaders: ReturnType<typeof vi.fn>;
+    headerHandler: null | ((details: { requestHeaders: Record<string, string> }, cb: (r: { requestHeaders: Record<string, string> }) => void) => void);
+  };
 }
 
 interface FakeWindow {
   webContents: {
     on: (event: string, fn: NavListener | DidNavListener | DidRedirectListener) => void;
     setWindowOpenHandler: (h: OpenHandler) => void;
+    setUserAgent: ReturnType<typeof vi.fn>;
+    loadURL: ReturnType<typeof vi.fn>;
+    executeJavaScript: ReturnType<typeof vi.fn>;
     listeners: Record<string, Array<NavListener | DidNavListener | DidRedirectListener>>;
     openHandler: OpenHandler | null;
   };
   on: (event: string, fn: ClosedListener) => void;
   isDestroyed: () => boolean;
   close: ReturnType<typeof vi.fn>;
+  show: ReturnType<typeof vi.fn>;
   closedListeners: ClosedListener[];
   destroyed: boolean;
 }
 
 function makeFakeSession(cookieJar: ElectronCookie[]): FakeSession {
-  return {
+  const ses: FakeSession = {
     setUserAgent(ua: string) {
       this.userAgent = ua;
     },
@@ -94,7 +103,14 @@ function makeFakeSession(cookieJar: ElectronCookie[]): FakeSession {
         cookieJar.push(...c);
       },
     },
+    webRequest: {
+      headerHandler: null,
+      onBeforeSendHeaders: vi.fn((handler: FakeSession["webRequest"]["headerHandler"]) => {
+        ses.webRequest.headerHandler = handler;
+      }),
+    },
   };
+  return ses;
 }
 
 function makeFakeWindow(): FakeWindow {
@@ -108,6 +124,9 @@ function makeFakeWindow(): FakeWindow {
       setWindowOpenHandler(h: OpenHandler) {
         (self.webContents as unknown as { openHandler: OpenHandler | null }).openHandler = h;
       },
+      setUserAgent: vi.fn(),
+      loadURL: vi.fn().mockResolvedValue(undefined),
+      executeJavaScript: vi.fn().mockResolvedValue(undefined),
       listeners,
       openHandler: null,
     },
@@ -118,6 +137,7 @@ function makeFakeWindow(): FakeWindow {
     close: vi.fn(() => {
       self.destroyed = true;
     }),
+    show: vi.fn(),
     closedListeners,
     destroyed: false,
   };
@@ -191,6 +211,28 @@ function emitDidRedirect(win: FakeWindow, url: string): void {
 function emitClosed(win: FakeWindow): void {
   for (const fn of win.closedListeners) fn();
 }
+
+// ---------------------------------------------------------------------------
+// chromeBrowserProfile
+// ---------------------------------------------------------------------------
+
+describe("chromeBrowserProfile", () => {
+  it("matches the given Chromium version and never mentions Electron", () => {
+    const p = chromeBrowserProfile("150.0.7871.129", "darwin");
+    expect(p.userAgent).toContain("Chrome/150.0.7871.129");
+    expect(p.userAgent).not.toContain("Electron");
+    expect(p.secChUa).toContain('"Google Chrome";v="150"');
+    expect(p.secChUa).toContain('"Chromium";v="150"');
+    expect(p.secChUa.toLowerCase()).not.toContain("electron");
+    expect(p.secChUaMobile).toBe("?0");
+    expect(p.secChUaPlatform).toBe('"macOS"');
+  });
+
+  it("uses Windows / Linux platform tokens", () => {
+    expect(chromeBrowserProfile("140.0.0.0", "win32").secChUaPlatform).toBe('"Windows"');
+    expect(chromeBrowserProfile("140.0.0.0", "linux").userAgent).toContain("Linux");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // captureSession unit tests
@@ -287,6 +329,43 @@ describe("captureSession", () => {
 
     expect(ses.userAgent).toContain("Chrome/");
     expect(ses.userAgent).not.toContain("Electron");
+  });
+
+  it("overrides sec-ch-ua Client Hints so they do not advertise Electron", async () => {
+    const cookieJar: ElectronCookie[] = [{ name: "session", value: "v" }];
+    const ses = makeFakeSession(cookieJar);
+    const win = makeFakeWindow();
+    const deps = makeDeps(ses, win, realTimers);
+
+    await captureSession(makeSpec(), deps);
+
+    expect(ses.webRequest.onBeforeSendHeaders).toHaveBeenCalled();
+    expect(ses.webRequest.headerHandler).not.toBeNull();
+    let out: Record<string, string> = { "User-Agent": "Electron", "sec-ch-ua": '"Electron";v="43"' };
+    ses.webRequest.headerHandler!({ requestHeaders: { ...out } }, (r) => {
+      out = r.requestHeaders;
+    });
+    expect(out["User-Agent"]).toContain("Chrome/");
+    expect(out["User-Agent"]).not.toContain("Electron");
+    const secChUa = out["sec-ch-ua"] ?? "";
+    expect(secChUa).toContain("Google Chrome");
+    expect(secChUa).toContain("Chromium");
+    expect(secChUa.toLowerCase()).not.toContain("electron");
+    expect(out["sec-ch-ua-mobile"]).toBe("?0");
+    expect(out["sec-ch-ua-platform"]).toMatch(/^"/);
+  });
+
+  it("loads startUrl and shows the capture window", async () => {
+    const cookieJar: ElectronCookie[] = [{ name: "session", value: "v" }];
+    const ses = makeFakeSession(cookieJar);
+    const win = makeFakeWindow();
+    const deps = makeDeps(ses, win, realTimers);
+    const spec = makeSpec({ startUrl: "https://console.example.com/login" });
+
+    await captureSession(spec, deps);
+
+    expect(win.webContents.loadURL).toHaveBeenCalledWith("https://console.example.com/login");
+    expect(win.show).toHaveBeenCalledTimes(1);
   });
 
   it("installs a permission handler that denies all", async () => {
@@ -488,6 +567,12 @@ describe("fallbackResult", () => {
 // handleCapture IPC queue — vi.mock('electron'), ONE at a time
 // ---------------------------------------------------------------------------
 
+// Force the Electron fallback path in these tests (system Chrome is covered
+// separately in capture-system-browser.test.ts).
+vi.mock("./capture-system-browser.js", () => ({
+  captureWithSystemBrowser: vi.fn(async () => null),
+}));
+
 vi.mock("electron", () => {
   // Minimal fakes: session.fromPartition returns a fake session; BrowserWindow
   // constructor returns a fake window. shell.openExternal is a noop.
@@ -511,6 +596,7 @@ vi.mock("electron", () => {
       clearStorageData: vi.fn().mockResolvedValue(undefined),
       clearCache: vi.fn().mockResolvedValue(undefined),
       clearAuthCache: vi.fn().mockResolvedValue(undefined),
+      webRequest: { onBeforeSendHeaders: vi.fn() },
       cookies: {
         get: vi.fn().mockImplementation(async () => [...jar]),
       },
@@ -522,10 +608,14 @@ vi.mock("electron", () => {
     webContents: {
       on: (e: string, fn: unknown) => void;
       setWindowOpenHandler: (h: unknown) => void;
+      setUserAgent: (ua: string) => void;
+      loadURL: (url: string) => Promise<void>;
+      executeJavaScript: (code: string) => Promise<unknown>;
     };
     on: (e: string, fn: () => void) => void;
     isDestroyed: () => boolean;
     close: () => void;
+    show: () => void;
     destroyed: boolean;
     closedListeners: Array<() => void>;
     constructor() {
@@ -534,6 +624,9 @@ vi.mock("electron", () => {
       this.webContents = {
         on: vi.fn(),
         setWindowOpenHandler: vi.fn(),
+        setUserAgent: vi.fn(),
+        loadURL: vi.fn().mockResolvedValue(undefined),
+        executeJavaScript: vi.fn().mockResolvedValue(undefined),
       };
       this.on = vi.fn((event: string, fn: () => void) => {
         if (event === "closed") this.closedListeners.push(fn);
@@ -543,6 +636,7 @@ vi.mock("electron", () => {
         this.destroyed = true;
         for (const fn of this.closedListeners) fn();
       };
+      this.show = vi.fn();
       windows.push(this as unknown as (typeof windows)[number]);
     }
   }

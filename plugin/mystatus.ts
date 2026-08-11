@@ -14,6 +14,7 @@
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
+ *   - Synthetic   (rolling requests + weekly credits)  auth.json → synthetic, SYNTHETIC_API_KEY, or synthetic-api-key.json
  *   - QwenCloud   (Token Plan)              qwencloud-cookies.json → dashboard API
  *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
  *   - AtlasCloud  (Coding Plan)             atlas-cookies.json → console API
@@ -164,6 +165,11 @@ interface QwenTokenPlanAuthData {
   key?: string;
 }
 
+interface SyntheticAuthData {
+  type: string;
+  key?: string;
+}
+
 interface NanoGptAuthData {
   type: string;
   key?: string;
@@ -202,6 +208,7 @@ interface AuthData {
   "minimax-coding-plan"?: MiniMaxAuthData;
   "nano-gpt"?: NanoGptAuthData;
   "qwen-token-plan"?: QwenTokenPlanAuthData;
+  synthetic?: SyntheticAuthData;
 }
 
 interface AntigravityAccount {
@@ -1857,7 +1864,7 @@ async function queryAntigravityTools(cfg: MyStatusConfig): Promise<QueryResult |
   };
 }
 
-async function queryGoogle(ansi = false): Promise<QueryResult> {
+async function queryGoogle(ansi = false): Promise<QueryResult | null> {
   const cfg = loadConfig();
   const toolsResult = await queryAntigravityTools(cfg);
   if (toolsResult?.success && toolsResult.cards?.length) return toolsResult;
@@ -1865,6 +1872,17 @@ async function queryGoogle(ansi = false): Promise<QueryResult> {
   const allAccounts = await loadAntigravityAccountsMerged(cfg);
 
   if (allAccounts.length === 0) {
+    // Nothing configured: skip silently like any other unconfigured provider.
+    // Only surface an error when the user explicitly set up Antigravity Tools
+    // and it failed — then the failure is actionable, not noise.
+    const explicitlyConfigured = Boolean(
+      cfg.antigravityTools ||
+      process.env.ANTIGRAVITY_TOOLS_BASE_URL ||
+      process.env.ANTIGRAVITY_TOOLS_API_KEY ||
+      process.env.ANTIGRAVITY_TOOLS_ADMIN_PASSWORD ||
+      process.env.ANTIGRAVITY_TOOLS_USAGE_HOURS,
+    );
+    if (!explicitlyConfigured) return null;
     return {
       success: false,
       error: toolsResult?.error
@@ -3102,6 +3120,258 @@ async function queryPoe(auth: PoeAuthData | undefined, ansi = false): Promise<Qu
     };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ============================================================
+// Synthetic usage API
+// ============================================================
+
+const SYNTHETIC_QUOTAS_URL = "https://api.synthetic.new/v2/quotas";
+
+type SyntheticRecord = Record<string, unknown>;
+
+interface SyntheticParsedWindow {
+  kind: "regeneration" | "renewal";
+  remainingPercent: number;
+  quotaRemaining?: number;
+  quotaMax?: number;
+  regenPercent?: number;
+  regenValue?: number;
+  nextRegenAt?: string;
+  renewalAt?: string;
+  limited?: boolean;
+}
+
+function syntheticRecord(value: unknown): SyntheticRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as SyntheticRecord
+    : null;
+}
+
+function syntheticFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function parseSyntheticDollars(value: unknown): number | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const withoutDollar = trimmed.startsWith("$") ? trimmed.slice(1).trim() : trimmed;
+  if (!withoutDollar) return undefined;
+  const parsed = Number(withoutDollar);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseSyntheticTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return undefined;
+  try {
+    return new Date(ms).toISOString();
+  } catch {
+    return undefined;
+  }
+}
+
+function parseSyntheticPercent(value: unknown): number | undefined {
+  const percent = syntheticFiniteNumber(value);
+  return percent === undefined ? undefined : clampPercent(percent);
+}
+
+function parseSyntheticRegenPercent(value: unknown): number | undefined {
+  const fraction = syntheticFiniteNumber(value);
+  // Synthetic reports tickPercent as a fraction (0.01 means 1%).
+  if (fraction === undefined || fraction < 0 || fraction > 1) return undefined;
+  return Number((fraction * 100).toFixed(2));
+}
+
+function syntheticTimestampDetail(timestamp: string | undefined): string | undefined {
+  return timestamp ? `Next regeneration: ${timestamp}` : undefined;
+}
+
+function syntheticRegenerationDetail(
+  regenPercent: number | undefined,
+  regenValue: number | undefined,
+  timestamp: string | undefined,
+  dollars: boolean,
+): string {
+  const details = ["Regeneration: tick"];
+  if (regenPercent !== undefined) details.push(`+${regenPercent}%/tick`);
+  if (regenValue !== undefined) {
+    details.push(dollars ? `+$${regenValue.toFixed(2)}/tick` : `+${regenValue}/tick`);
+  }
+  const time = syntheticTimestampDetail(timestamp);
+  if (time) details.push(time);
+  return details.join(" · ");
+}
+
+function syntheticRawQuotaDetail(
+  remaining: number | undefined,
+  max: number | undefined,
+  dollars: boolean,
+  unit: string,
+): string | undefined {
+  const format = dollars
+    ? (value: number) => `$${value.toFixed(2)}`
+    : (value: number) => String(value);
+  if (remaining !== undefined && max !== undefined) {
+    return `Raw quota: ${format(remaining)} / ${format(max)} ${unit}`;
+  }
+  if (remaining !== undefined) return `Raw remaining: ${format(remaining)} ${unit}`;
+  if (max !== undefined) return `Raw limit: ${format(max)} ${unit}`;
+  return undefined;
+}
+
+function parseSyntheticRollingWindow(raw: unknown): SyntheticParsedWindow | null {
+  const value = syntheticRecord(raw);
+  if (!value) return null;
+
+  const remaining = syntheticFiniteNumber(value.remaining);
+  const max = syntheticFiniteNumber(value.max);
+  if (remaining === undefined || max === undefined || max <= 0) return null;
+
+  return {
+    kind: "regeneration",
+    remainingPercent: clampPercent((remaining / max) * 100),
+    quotaRemaining: remaining,
+    quotaMax: max,
+    regenPercent: parseSyntheticRegenPercent(value.tickPercent),
+    nextRegenAt: parseSyntheticTimestamp(value.nextTickAt),
+    limited: value.limited === true,
+  };
+}
+
+function parseSyntheticWeeklyWindow(raw: unknown): SyntheticParsedWindow | null {
+  const value = syntheticRecord(raw);
+  if (!value) return null;
+
+  const remaining = parseSyntheticDollars(value.remainingCredits);
+  const max = parseSyntheticDollars(value.maxCredits);
+  const serverPercent = parseSyntheticPercent(value.percentRemaining);
+  let remainingPercent = serverPercent;
+  if (remainingPercent === undefined && remaining !== undefined && max !== undefined && max > 0) {
+    remainingPercent = clampPercent((remaining / max) * 100);
+  }
+  if (remainingPercent === undefined) return null;
+
+  return {
+    kind: "regeneration",
+    remainingPercent,
+    quotaRemaining: remaining,
+    quotaMax: max,
+    regenValue: parseSyntheticDollars(value.nextRegenCredits),
+    nextRegenAt: parseSyntheticTimestamp(value.nextRegenAt),
+    limited: value.limited === true,
+  };
+}
+
+function parseSyntheticSubscriptionWindow(raw: unknown): SyntheticParsedWindow | null {
+  const subscription = syntheticRecord(raw);
+  if (!subscription) return null;
+
+  const limit = syntheticFiniteNumber(subscription.limit);
+  const requests = syntheticFiniteNumber(subscription.requests);
+  if (limit === undefined || limit <= 0 || requests === undefined) return null;
+
+  const used = Math.max(0, Math.min(limit, requests));
+  const remaining = limit - used;
+
+  return {
+    kind: "renewal",
+    remainingPercent: clampPercent((remaining / limit) * 100),
+    quotaRemaining: remaining,
+    quotaMax: limit,
+    renewalAt: parseSyntheticTimestamp(subscription.renewsAt),
+  };
+}
+
+function syntheticWindow(
+  label: string,
+  parsed: SyntheticParsedWindow,
+  dollars: boolean,
+  unit: string,
+): QuotaWindow {
+  const detail: string[] = [];
+  const rawQuota = syntheticRawQuotaDetail(parsed.quotaRemaining, parsed.quotaMax, dollars, unit);
+  if (rawQuota) detail.push(rawQuota);
+  if (parsed.kind === "renewal") {
+    if (parsed.renewalAt) detail.push(`Renewal: ${parsed.renewalAt}`);
+  } else {
+    detail.push(
+      syntheticRegenerationDetail(parsed.regenPercent, parsed.regenValue, parsed.nextRegenAt, dollars),
+    );
+  }
+  return {
+    label,
+    remaining: Math.round(clampPercent(parsed.remainingPercent)),
+    detail,
+    ...(parsed.limited ? { warn: "Limited; regeneration continues on each tick" } : {}),
+  };
+}
+
+function resolveSyntheticApiKey(auth: SyntheticAuthData | undefined): string | null {
+  const authKey = auth?.key?.trim();
+  if (authKey) return authKey;
+
+  const envKey = process.env.SYNTHETIC_API_KEY?.trim();
+  if (envKey) return envKey;
+
+  const jsonPath = findReadable("synthetic-api-key.json", "config")
+    ?? join(opencodeConfigDir(), "synthetic-api-key.json");
+  if (!existsSync(jsonPath)) return null;
+  try {
+    const config = syntheticRecord(JSON.parse(readFileSync(jsonPath, "utf-8")));
+    const apiKey = config?.apiKey;
+    return typeof apiKey === "string" && apiKey.trim() ? apiKey.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function querySynthetic(auth: SyntheticAuthData | undefined): Promise<QueryResult | null> {
+  const apiKey = resolveSyntheticApiKey(auth);
+  if (!apiKey) return null;
+
+  try {
+    const response = await fetchTimeout(SYNTHETIC_QUOTAS_URL, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+        "User-Agent": "OpenCode-AllStatus/1.0",
+      },
+    });
+    if (!response.ok) throw new Error(`Synthetic quotas API error (${response.status})`);
+
+    const payload = syntheticRecord(await response.json());
+    if (!payload) {
+      return { success: false, error: "Synthetic quotas API returned an unrecognized schema" };
+    }
+
+    const windows: QuotaWindow[] = [];
+    const rolling = parseSyntheticRollingWindow(payload.rollingFiveHourLimit);
+    if (rolling) {
+      windows.push(syntheticWindow("5h rolling requests", rolling, false, "requests"));
+    } else {
+      const subscription = parseSyntheticSubscriptionWindow(payload.subscription);
+      if (subscription) {
+        windows.push(syntheticWindow("Subscription requests", subscription, false, "requests"));
+      }
+    }
+
+    const weekly = parseSyntheticWeeklyWindow(payload.weeklyTokenLimit);
+    if (weekly) windows.push(syntheticWindow("Weekly credits", weekly, true, "credits"));
+
+    if (!windows.length) {
+      return { success: false, error: "Synthetic quotas API returned no recognized quota windows" };
+    }
+    return { success: true, cards: [{ windows }] };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -4396,26 +4666,75 @@ function qwencloudPersonalPayload<T>(value: unknown): T | null {
   return root.data?.DataV2?.data?.data ?? null;
 }
 
+/** Solo Token Plan commodity code used by the live console SPA. */
+const QWENCLOUD_SOLO_COMMODITY = "sfm_tokenplansolo_public_intl";
+const QWENCLOUD_TEAM_COMMODITY = "sfm_tokenplanteams_dp_intl";
+
+/** Free-tier commodity families listed by the billing SPA. */
+const QWENCLOUD_FREETIER_COMMODITIES = [
+  "sfm_inferenceglobal_public_intl",
+  "sfm_inferenceOmni_public_intl",
+  "sfm_inferenceQwenAudio_public_intl",
+  "sfm_inferenceFunAudio_public_intl",
+  "sfm_inferenceWan_public_intl",
+  "sfm_inferenceDomain_public_intl",
+  "sfm_inferenceVector_public_intl",
+  "sfm_inferenceThirdParty_public_intl",
+  "sfm_inferenceHH_public_intl",
+] as const;
+
+interface QwenFqCapacity {
+  BaseValue?: number;
+  ShowUnit?: string;
+  ShowValue?: string;
+}
+
+interface QwenFqInstance {
+  InstanceName?: string;
+  Status?: string;
+  CurrentCycleEndTime?: string;
+  EndTime?: string;
+  StartTime?: string;
+  InitCapacity?: QwenFqCapacity;
+  CurrCapacity?: QwenFqCapacity;
+  Template?: { Code?: string; Name?: string };
+}
+
+function qwenParseJavaDate(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  // Aliyun returns "Sun Aug 30 00:00:00 CST 2026". V8 often fails on CST/CDT;
+  // treat China Standard Time as UTC+8.
+  const normalized = value
+    .replace(/\bCST\b/g, "GMT+0800")
+    .replace(/\bCDT\b/g, "GMT+0800");
+  const ms = Date.parse(normalized);
+  if (!Number.isFinite(ms)) return undefined;
+  // Ignore already-elapsed cycle ends for reset countdowns.
+  if (ms <= Date.now()) return undefined;
+  return ms;
+}
+
 async function qwencloudPersonalRequest<T>(
   endpoint: "usage" | "subscription" | "quota-config",
   cookies: QwenCloudCookieConfig,
   secToken: string,
 ): Promise<T | null> {
   const api = `zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/${endpoint}`;
-  const params = {
-    Api: api,
-    Data: {
-      cornerstoneParam: {
-        domain: "home.qwencloud.com",
-        consoleSite: "QWENCLOUD",
-        console: "ONE_CONSOLE",
-        xsp_lang: "en-US",
-        protocol: "V2",
-        productCode: "p_efm",
-      },
+  const data: Record<string, unknown> = {
+    cornerstoneParam: {
+      domain: "home.qwencloud.com",
+      consoleSite: "QWENCLOUD",
+      console: "ONE_CONSOLE",
+      xsp_lang: "en-US",
+      protocol: "V2",
+      productCode: "p_efm",
     },
-    V: "1.0",
   };
+  // Live SPA always sends the solo commodity on subscription lookups.
+  if (endpoint === "subscription") {
+    data.commodityCode = QWENCLOUD_SOLO_COMMODITY;
+  }
+  const params = { Api: api, Data: data, V: "1.0" };
   const query = new URLSearchParams({
     product: "sfm_bailian",
     action: "IntlBroadScopeAspnGateway",
@@ -4503,139 +4822,351 @@ async function queryQwenCloudPersonal(
   };
 }
 
+function qwenIsTokenUnit(unit: string | undefined): boolean {
+  if (!unit) return false;
+  const u = unit.toLowerCase();
+  return u.includes("token") || u.includes("word");
+}
+
+/**
+ * Free-tier path used by the live billing SPA when no paid Token Plan exists:
+ *   1) freetier/ListBailianFreetier → template codes
+ *   2) BssOpenAPI-V3/DescribeFqInstance → InitCapacity / CurrCapacity per model
+ */
+async function queryQwenCloudFreeTier(
+  cookies: QwenCloudCookieConfig,
+  secToken: string,
+): Promise<QueryResult | null> {
+  const headers = {
+    ...qwencloudHeaders(cookies),
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+
+  const listRes = await fetchTimeout(
+    `${QWENCLOUD_BASE}/data/api.json?product=freetier&action=ListBailianFreetier`,
+    {
+      method: "POST",
+      headers,
+      body: new URLSearchParams({
+        product: "freetier",
+        action: "ListBailianFreetier",
+        sec_token: secToken,
+        region: "ap-southeast-1",
+        params: JSON.stringify({ CommodityList: [...QWENCLOUD_FREETIER_COMMODITIES] }),
+      }),
+    },
+  );
+  if (!listRes.ok) return null;
+  const listJson = (await listRes.json()) as {
+    code?: string;
+    data?: { Data?: Array<{ TemplateCode?: string }> };
+  };
+  const templates = (listJson.data?.Data ?? [])
+    .map((t) => t.TemplateCode)
+    .filter((c): c is string => typeof c === "string" && c.length > 0);
+  if (!templates.length) return null;
+
+  const instances: QwenFqInstance[] = [];
+  for (let i = 0; i < templates.length; i += 20) {
+    const chunk = templates.slice(i, i + 20);
+    const res = await fetchTimeout(
+      `${QWENCLOUD_BASE}/data/api.json?product=BssOpenAPI-V3&action=DescribeFqInstance`,
+      {
+        method: "POST",
+        headers,
+        body: new URLSearchParams({
+          product: "BssOpenAPI-V3",
+          action: "DescribeFqInstance",
+          sec_token: secToken,
+          region: "ap-southeast-1",
+          params: JSON.stringify({
+            TemplateCodes: chunk,
+            PageSize: 80,
+            CurrentPage: 1,
+          }),
+        }),
+      },
+    );
+    if (!res.ok) continue;
+    try {
+      const json = (await res.json()) as { data?: { Data?: QwenFqInstance[] } };
+      if (Array.isArray(json.data?.Data)) instances.push(...json.data.Data);
+    } catch {
+      // skip chunk
+    }
+  }
+  if (!instances.length) return null;
+
+  // Aggregate token/word free quotas + surface the lowest individual models.
+  let tokenInit = 0;
+  let tokenCurr = 0;
+  let soonestReset: number | undefined;
+  const modelRows: Array<{
+    name: string;
+    remaining: number;
+    init: number;
+    curr: number;
+    unit: string;
+    resetMs?: number;
+    status: string;
+  }> = [];
+
+  for (const inst of instances) {
+    const init = Number(inst.InitCapacity?.BaseValue ?? 0);
+    const currRaw = Number(inst.CurrCapacity?.BaseValue ?? 0);
+    const unit = inst.CurrCapacity?.ShowUnit || inst.InitCapacity?.ShowUnit || "";
+    const status = (inst.Status ?? "unknown").toLowerCase();
+    // Exhausted instances report CurrCapacity 0 — still count them.
+    const curr = status === "exhaust" ? 0 : currRaw;
+    if (!(init > 0) && !(curr >= 0 && status === "exhaust")) continue;
+
+    const resetMs = qwenParseJavaDate(inst.CurrentCycleEndTime ?? inst.EndTime);
+    if (typeof resetMs === "number") {
+      soonestReset =
+        soonestReset === undefined ? resetMs : Math.min(soonestReset, resetMs);
+    }
+
+    if (qwenIsTokenUnit(unit)) {
+      tokenInit += init;
+      tokenCurr += curr;
+    }
+
+    const name =
+      inst.Template?.Name ||
+      inst.Template?.Code?.replace(/^sfm_inference/, "").replace(/_public_intl.*/, "") ||
+      inst.InstanceName ||
+      "model";
+    const remaining = init > 0 ? Math.round((curr / init) * 100) : status === "exhaust" ? 0 : 100;
+    modelRows.push({
+      name,
+      remaining: Math.max(0, Math.min(100, remaining)),
+      init,
+      curr,
+      unit,
+      resetMs,
+      status,
+    });
+  }
+
+  if (!modelRows.length && tokenInit <= 0) return null;
+
+  const windows: QuotaWindow[] = [];
+  if (tokenInit > 0) {
+    const remainPct = Math.round((tokenCurr / tokenInit) * 100);
+    windows.push({
+      label: "Free tokens (all models)",
+      remaining: Math.max(0, Math.min(100, remainPct)),
+      resetAt: soonestReset !== undefined ? new Date(soonestReset).toISOString() : undefined,
+      detail: [
+        `Remaining: ${tokenCurr.toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${tokenInit.toLocaleString(undefined, { maximumFractionDigits: 0 })} base units`,
+      ],
+    });
+  }
+
+  // Show the tightest model quotas (exhausted first, then lowest remaining).
+  const notable = [...modelRows]
+    .sort((a, b) => {
+      if (a.remaining !== b.remaining) return a.remaining - b.remaining;
+      return a.name.localeCompare(b.name);
+    })
+    .filter((r, idx, arr) => r.remaining < 100 || r.status === "exhaust" || idx < 6)
+    .slice(0, 8);
+
+  // Avoid duplicating the aggregate when every model is 100%.
+  const showModels =
+    notable.some((r) => r.remaining < 100) || windows.length === 0
+      ? notable
+      : notable.slice(0, 3);
+
+  for (const row of showModels) {
+    const used = Math.max(0, row.init - row.curr);
+    windows.push({
+      label: row.name,
+      remaining: row.remaining,
+      resetAt: row.resetMs !== undefined ? new Date(row.resetMs).toISOString() : undefined,
+      detail: [
+        `${row.status === "exhaust" ? "Exhausted" : "Remaining"}: ${row.curr.toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${row.init.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${row.unit || "units"}` +
+          (used > 0 ? ` · used ${used.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : ""),
+      ],
+    });
+  }
+
+  if (!windows.length) return null;
+
+  const exhausted = modelRows.filter((r) => r.remaining <= 0 || r.status === "exhaust").length;
+  const header = [
+    `Plan:           Free tier (${modelRows.length} model quota${modelRows.length === 1 ? "" : "s"})`,
+  ];
+  if (exhausted > 0) header.push(`Exhausted:      ${exhausted} model${exhausted === 1 ? "" : "s"}`);
+
+  const footer: string[] = [];
+  if (soonestReset !== undefined) {
+    footer.push(
+      `Cycle ends:     ${new Date(soonestReset).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })}`,
+    );
+  }
+
+  return {
+    success: true,
+    cards: [{
+      header,
+      windows,
+      footer: footer.length ? footer : undefined,
+      note: exhausted > 0 ? `${exhausted} free-tier model quota(s) exhausted` : undefined,
+    }],
+  };
+}
+
+async function queryQwenCloudTeam(
+  cookies: QwenCloudCookieConfig,
+  secToken: string,
+  baseHeaders: Record<string, string>,
+): Promise<QueryResult | null> {
+  const params = new URLSearchParams({
+    product: "BssOpenAPI-V3",
+    action: "GetSeatSubscriptionSummary",
+    sec_token: secToken,
+    region: "ap-southeast-1",
+    params: JSON.stringify({ productCode: QWENCLOUD_TEAM_COMMODITY }),
+  });
+
+  const [subRes, renewalRes] = await Promise.all([
+    fetchTimeout(
+      `${QWENCLOUD_BASE}/data/api.json?product=BssOpenAPI-V3&action=GetSeatSubscriptionSummary`,
+      {
+        method: "POST",
+        headers: { ...baseHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+        body: params,
+      },
+    ),
+    fetchTimeout(
+      `${QWENCLOUD_BASE}/data/api.json?product=BssOpenApi&action=CheckTokenPlanAutoRenewal`,
+      {
+        method: "POST",
+        headers: { ...baseHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          CommodityCode: QWENCLOUD_TEAM_COMMODITY,
+        }),
+      },
+    ),
+  ]);
+
+  if (!subRes.ok) return null;
+
+  let subData: QwenCloudSubSummaryResponse | null = null;
+  try {
+    subData = (await subRes.json()) as QwenCloudSubSummaryResponse;
+  } catch {
+    return null;
+  }
+
+  let autoRenewal: boolean | null = null;
+  if (renewalRes.ok) {
+    try {
+      const data = (await renewalRes.json()) as QwenCloudRenewalResponse;
+      if (data.Success) autoRenewal = data.Data.AutoRenewal === 1;
+    } catch {
+      /* keep null */
+    }
+  }
+
+  // Team API returns code 200 with Data: {} when there is no team plan.
+  const detail = subData?.code === "200" ? subData.data?.Data : undefined;
+  const group = detail?.SubscriptionGroupList?.[0];
+  if (!detail || !group) return null;
+
+  const equity = group.EquityList?.find((e) => e.EquityType === "CREDITS");
+  const seats = group.SubscriptionTotalNumber ?? 1;
+  const spec = group.SpecType ?? "standard";
+  const header: string[] = [
+    `Plan:           Token Plan Team Edition (${spec}, ${seats} seat${seats > 1 ? "s" : ""})`,
+  ];
+  if (autoRenewal !== null) {
+    header.push(`Auto-renewal:   ${autoRenewal ? "enabled" : "disabled"}`);
+  }
+
+  const windows: QuotaWindow[] = [];
+  if (equity) {
+    const total = Number(equity.TotalValue);
+    const surplus = Number(equity.SurplusValue);
+    const used = total - surplus;
+    const remainPct = total > 0 ? Math.round((surplus / total) * 100) : 100;
+    windows.push({
+      label: `Credits (${detail.RemainingDays ?? "?"}d remaining)`,
+      remaining: remainPct,
+      detail: [
+        `Used: ${used.toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${total.toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
+      ],
+      resetAt: group.NextCycleFlushTime
+        ? new Date(group.NextCycleFlushTime).toISOString()
+        : undefined,
+    });
+  }
+  if (!windows.length) return null;
+
+  const footer: string[] = [];
+  if (detail.EndTime) {
+    footer.push(
+      `Cycle:          ${new Date(detail.StartTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })} — ${new Date(detail.EndTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
+    );
+  }
+
+  return {
+    success: true,
+    cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+  };
+}
+
 async function queryQwenCloud(
   auth: QwenTokenPlanAuthData | undefined,
   ansi = false,
 ): Promise<QueryResult | null> {
+  void ansi;
   const cookies = loadQwenCloudCookies();
   if (!cookies) {
     if (!auth?.key) return null;
     return {
       success: false,
       error:
-        "QwenCloud Token Plan API key found, but quota requires a signed-in console session.\n" +
-        "Add the Cookie header to ~/.config/opencode/qwencloud-cookies.json.",
+        "QwenCloud API key found, but quota requires a signed-in console session.\n" +
+        "Sign in under Credentials → QwenCloud (or write qwencloud-cookies.json).",
     };
   }
 
-  // Step 1: get CSRF token from homepage
   const secToken = await qwencloudFetchSecToken(cookies);
   if (!secToken) {
     return {
       success: false,
       error:
         "Could not extract SEC_TOKEN from QwenCloud homepage.\n" +
-        "Your session cookies may have expired — re-copy them from the browser.",
+        "Your session cookies may have expired — re-capture sign-in under Credentials.",
     };
   }
 
   const baseHeaders = qwencloudHeaders(cookies);
 
   try {
+    // 1) Paid individual Token Plan (5h + weekly windows)
     const personal = await queryQwenCloudPersonal(cookies, secToken);
     if (personal) return personal;
 
-    // Step 2: call subscription + renewal in parallel
-    const params = new URLSearchParams({
-      product: "BssOpenAPI-V3",
-      action: "GetSeatSubscriptionSummary",
-      sec_token: secToken,
-      region: "ap-southeast-1",
-      params: JSON.stringify({ productCode: "sfm_tokenplanteams_dp_intl" }),
-    });
+    // 2) Paid team Token Plan (credit pool)
+    const team = await queryQwenCloudTeam(cookies, secToken, baseHeaders);
+    if (team) return team;
 
-    const [subRes, renewalRes] = await Promise.all([
-      fetchTimeout(
-        `${QWENCLOUD_BASE}/data/api.json?product=BssOpenAPI-V3&action=GetSeatSubscriptionSummary`,
-        {
-          method: "POST",
-          headers: { ...baseHeaders, "Content-Type": "application/x-www-form-urlencoded" },
-          body: params,
-        },
-      ),
-      fetchTimeout(
-        `${QWENCLOUD_BASE}/data/api.json?product=BssOpenApi&action=CheckTokenPlanAutoRenewal`,
-        {
-          method: "POST",
-          headers: { ...baseHeaders, "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            CommodityCode: "sfm_tokenplanteams_dp_intl",
-          }),
-        },
-      ),
-    ]);
-
-    // Parse subscription summary
-    let subData: QwenCloudSubSummaryResponse | null = null;
-    if (subRes.ok) {
-      try {
-        subData = (await subRes.json()) as QwenCloudSubSummaryResponse;
-      } catch { /* keep null */ }
-    }
-
-    // Parse auto-renewal
-    let autoRenewal: boolean | null = null;
-    if (renewalRes.ok) {
-      try {
-        const data = (await renewalRes.json()) as QwenCloudRenewalResponse;
-        if (data.Success) autoRenewal = data.Data.AutoRenewal === 1;
-      } catch { /* keep null */ }
-    }
-
-    if (!subData || subData.code !== "200" || !subData.data?.Data) {
-      if (!subRes.ok) {
-        const body = await subRes.text().catch(() => "");
-        throw new Error(`QwenCloud API error (${subRes.status}): ${body.slice(0, 200)}`);
-      }
-      return {
-        success: true,
-        cards: [{ header: ["Plan:           QwenCloud (no subscription data)"] }],
-      };
-    }
-
-    const detail = subData.data.Data;
-    const group = detail.SubscriptionGroupList?.[0];
-    const equity = group?.EquityList?.find((e) => e.EquityType === "CREDITS");
-
-    // Plan info
-    const seats = group?.SubscriptionTotalNumber ?? 1;
-    const spec = group?.SpecType ?? "standard";
-    const header: string[] = [
-      `Plan:           Token Plan Team Edition (${spec}, ${seats} seat${seats > 1 ? "s" : ""})`,
-    ];
-
-    // Auto-renewal
-    if (autoRenewal !== null) {
-      header.push(`Auto-renewal:   ${autoRenewal ? "enabled" : "disabled"}`);
-    }
-
-    const windows: QuotaWindow[] = [];
-    if (equity) {
-      const total = Number(equity.TotalValue);
-      const surplus = Number(equity.SurplusValue);
-      const used = total - surplus;
-      const remainPct = total > 0 ? Math.round((surplus / total) * 100) : 100;
-
-      windows.push({
-        label: `Credits (${detail.RemainingDays ?? "?"}d remaining)`,
-        remaining: remainPct,
-        detail: [`Used: ${used.toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${total.toLocaleString(undefined, { maximumFractionDigits: 0 })}`],
-        resetAt: group?.NextCycleFlushTime
-          ? new Date(group.NextCycleFlushTime).toISOString()
-          : undefined,
-      });
-    }
-
-    const footer: string[] = [];
-    if (detail.EndTime) {
-      footer.push(
-        `Cycle:          ${new Date(detail.StartTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })} — ${new Date(detail.EndTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
-      );
-    }
+    // 3) Free-tier model quotas (what most console accounts actually have)
+    const free = await queryQwenCloudFreeTier(cookies, secToken);
+    if (free) return free;
 
     return {
-      success: true,
-      cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+      success: false,
+      error:
+        "QwenCloud session is valid but no Token Plan or free-tier quotas were returned.\n" +
+        "Open home.qwencloud.com → Billing to confirm entitlements, then re-capture credentials.",
     };
   } catch (err) {
     return {
@@ -6809,6 +7340,7 @@ const PROVIDERS: Provider[] = [
   { id: "poe", title: "Poe Account Quota", query: (a, ansi) => queryPoe(a.poe, ansi) },
   { id: "qwencloud", title: "QwenCloud Token Plan", query: (a, ansi) => queryQwenCloud(a["qwen-token-plan"], ansi) },
   { id: "stepfun", title: "StepFun Token Plan", query: (_a, ansi) => queryStepFun(ansi) },
+  { id: "synthetic", title: "Synthetic", query: (a) => querySynthetic(a.synthetic) },
   { id: "xai", title: "xAI/Grok", query: (a) => queryXai(a["xai-oauth"] ?? a.xai) },
   { id: "zai", title: "Z.AI Coding Plan", query: (a, ansi) => queryZai(a["zai-coding-plan"], ansi) },
 ];
@@ -7378,11 +7910,39 @@ export function buildMyStatusViewModel(
   const providers: MyStatusViewProvider[] = cells.map((cell) => {
     let note: string | undefined;
     for (const line of cell.lines) {
-      const plain = line.replace(ANSI_RE, "");
+      const plain = line.replace(ANSI_RE, "").trim();
       if (plain.startsWith("cached")) {
         note = plain;
         break;
       }
+    }
+    // Surface non-meter status (e.g. Qwen "signed in, no active plan") so the
+    // desktop card is not a blank shell when windows are empty.
+    if (!note) {
+      for (const line of cell.lines) {
+        const plain = line.replace(ANSI_RE, "").trim();
+        if (
+          plain.length > 0 &&
+          !plain.startsWith("Plan:") &&
+          !plain.startsWith("Account:") &&
+          !plain.startsWith("──") &&
+          !/^\d+%/.test(plain) &&
+          !plain.startsWith("Resets in:") &&
+          !plain.startsWith("Used:")
+        ) {
+          // Prefer explicit note-like lines over progress bars / sparklines.
+          if (!/[█▉▊▋▌▍▎▏░]/.test(plain) && plain.length < 200) {
+            note = plain;
+            break;
+          }
+        }
+      }
+    }
+    if (!note) {
+      const planLine = cell.lines
+        .map((l) => l.replace(ANSI_RE, "").trim())
+        .find((l) => l.startsWith("Plan:"));
+      if (planLine && (cell.metrics?.length ?? 0) === 0) note = planLine.replace(/^Plan:\s*/, "");
     }
     return {
       name: cell.title,
@@ -7515,7 +8075,7 @@ export const MyStatusPlugin: Plugin = async () => ({
   tool: {
     mystatus: tool({
       description:
-        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Kimi for Coding, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,kimi,longcat,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
+        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Kimi for Coding, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, Synthetic, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,kimi,longcat,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,synthetic,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
       args: {
         format: tool.schema.string().optional(),
         threshold: tool.schema.number().optional(),

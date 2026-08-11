@@ -88,17 +88,31 @@ const COOKIE_PROVIDERS: readonly CookieProviderEntry[] = [
     displayName: "Ollama Cloud",
     fileName: "ollama-cookies.json",
     portalUrl: "https://ollama.com",
-    startUrl: "https://ollama.com",
-    allowedOrigins: ["https://ollama.com"],
+    startUrl: "https://ollama.com/signin",
+    allowedOrigins: [
+      "https://ollama.com",
+      "https://signin.ollama.com",
+      "https://auth.ollama.com",
+    ],
     idpOrigins: [
       "https://accounts.google.com",
+      "https://accounts.youtube.com",
+      "https://www.google.com",
+      "https://google.com",
       "https://github.com",
       "https://login.microsoftonline.com",
+      "https://login.live.com",
       "https://appleid.apple.com",
+      "https://api.workos.com",
+      "https://signin.workos.com",
+      "https://authkit.app",
+      "https://authkit.com",
+      "https://challenges.cloudflare.com",
     ],
     sentinelCookies: ["__Secure-session"],
     timeoutMs: 300_000,
-    helpText: "Log into https://ollama.com. The app captures your session.",
+    helpText:
+      "Log into https://ollama.com (WorkOS AuthKit / Google). The app captures your session.",
   },
   {
     id: "longcat",
@@ -123,8 +137,18 @@ const COOKIE_PROVIDERS: readonly CookieProviderEntry[] = [
     fileName: "qwencloud-cookies.json",
     portalUrl: "https://home.qwencloud.com",
     startUrl: "https://home.qwencloud.com",
-    allowedOrigins: ["https://home.qwencloud.com", "https://cs-data.qwencloud.com"],
-    idpOrigins: ["https://account.aliyun.com", "https://login.aliyun.com"],
+    allowedOrigins: [
+      "https://home.qwencloud.com",
+      "https://cs-data.qwencloud.com",
+      "https://chat.qwen.ai",
+      "https://www.qwen.ai",
+    ],
+    idpOrigins: [
+      "https://account.aliyun.com",
+      "https://login.aliyun.com",
+      "https://passport.aliyun.com",
+      "https://signin.aliyun.com",
+    ],
     sentinelCookies: ["login_qwencloud_ticket"],
     timeoutMs: 300_000,
     helpText: "Log into https://home.qwencloud.com. The app captures your session.",
@@ -246,7 +270,10 @@ export function CredentialsPane(): JSX.Element {
     }
     setCaptureState((s) => ({
       ...s,
-      [provider.id]: { status: "saving", message: "Waiting for sign-in…" },
+      [provider.id]: {
+        status: "saving",
+        message: "Complete sign-in in the login window…",
+      },
     }));
     const capture: CaptureResult = await bridge.capture({
       partitionId: `mystatus-${provider.id}`,

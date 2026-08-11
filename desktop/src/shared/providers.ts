@@ -1,7 +1,7 @@
 // Provider registry mirror for the renderer.
 //
-// PARITY: plugin/mystatus.ts:6777-6796 (the PROVIDERS registry) — the core's
-// array is module-private, so the Settings page hardcodes the same 18 ids
+// PARITY: plugin/mystatus.ts:7045-7065 (the PROVIDERS registry) — the core's
+// array is module-private, so the Settings page hardcodes the same 19 ids
 // here. The checkbox list is built from this list; unknown ids found in an
 // existing mystatus.json `providers.disabled` are preserved verbatim by the
 // settings form (never silently dropped). Re-verify if the core adds or
@@ -29,6 +29,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
   { id: "poe", title: "Poe" },
   { id: "qwencloud", title: "QwenCloud" },
   { id: "stepfun", title: "StepFun" },
+  { id: "synthetic", title: "Synthetic" },
   { id: "xai", title: "xAI / Grok" },
   { id: "zai", title: "Z.AI" },
 ];

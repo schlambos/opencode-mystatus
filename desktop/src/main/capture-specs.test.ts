@@ -220,6 +220,14 @@ describe("mistral", () => {
 
 describe("ollama", () => {
   const spec = getCaptureSpec("ollama")!;
+
+  it("allowlists WorkOS AuthKit + signin.ollama.com for Google SSO", () => {
+    expect(spec.startUrl).toBe("https://ollama.com/signin");
+    expect(spec.allowedOrigins).toContain("https://signin.ollama.com");
+    expect(spec.idpOrigins).toContain("https://api.workos.com");
+    expect(spec.idpOrigins).toContain("https://accounts.google.com");
+  });
+
   it("writes {cookie} when __Secure-session is present", () => {
     const cookies = withNoise(cookie("__Secure-session", "sess-1"));
     const result = spec.extract(cookies, undefined);
@@ -283,11 +291,11 @@ describe("qwencloud", () => {
     const result = spec.extract(cookies, undefined);
     expect(result.ok).toBe(true);
     if (result.ok && "json" in result) {
-      expect(result.json).toEqual({
-        ticket: "t-1",
-        aliyunPk: "pk-1",
-        isg: "isg-1",
-      });
+      expect(result.json.ticket).toBe("t-1");
+      expect(result.json.aliyunPk).toBe("pk-1");
+      expect(result.json.isg).toBe("isg-1");
+      expect(typeof result.json.cookie).toBe("string");
+      expect(String(result.json.cookie)).toContain("login_qwencloud_ticket=t-1");
     }
   });
 
@@ -303,12 +311,11 @@ describe("qwencloud", () => {
     const result = spec.extract(cookies, undefined);
     expect(result.ok).toBe(true);
     if (result.ok && "json" in result) {
-      expect(result.json).toEqual({
-        ticket: "t-2",
-        aliyunPk: "pk-2",
-        isg: "isg-2",
-        esmTicket: "esm-2",
-      });
+      expect(result.json.ticket).toBe("t-2");
+      expect(result.json.aliyunPk).toBe("pk-2");
+      expect(result.json.isg).toBe("isg-2");
+      expect(result.json.esmTicket).toBe("esm-2");
+      expect(String(result.json.cookie)).toContain("login_ESM_account_ticket=esm-2");
     }
   });
 

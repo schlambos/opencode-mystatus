@@ -118,11 +118,23 @@ function missingError(provider: string, names: readonly string[]): string {
 
 // Common federated IdP origins — included in idpOrigins so SSO logins do not
 // dead-end inside the capture window's navigation allowlist.
+// Google OAuth often hops accounts.youtube.com / www.google.com during consent.
+// WorkOS AuthKit (used by Ollama and others) routes via api.workos.com +
+// signin.workos.com before the provider-specific hosted UI.
 const COMMON_IDP_ORIGINS = [
   "https://accounts.google.com",
+  "https://accounts.youtube.com",
+  "https://www.google.com",
+  "https://google.com",
   "https://github.com",
   "https://login.microsoftonline.com",
+  "https://login.live.com",
   "https://appleid.apple.com",
+  "https://api.workos.com",
+  "https://signin.workos.com",
+  "https://authkit.app",
+  "https://authkit.com",
+  "https://challenges.cloudflare.com",
 ] as const;
 
 const DEFAULT_TIMEOUT_MS = 5 * 60_000; // 5 minutes — sign-in can be slow.
@@ -232,22 +244,25 @@ const mistral: ProviderCaptureSpec = {
   },
 };
 
-// (4) Ollama — ollama.com
+// (4) Ollama — ollama.com (WorkOS AuthKit at signin.ollama.com)
 // Plugin reads {cookie} with __Secure-session= (plugin/mystatus.ts:5549-5556).
+// Flow: ollama.com/signin → api.workos.com/user_management/authorize →
+// signin.ollama.com (Continue with Google) → accounts.google.com →
+// ollama.com/auth/callback (sets __Secure-session).
 const ollama: ProviderCaptureSpec = {
   id: "ollama",
   partitionId: "mystatus-ollama",
   displayName: "Ollama Cloud",
   fileName: "ollama-cookies.json",
   portalUrl: "https://ollama.com",
-  startUrl: "https://ollama.com",
-  allowedOrigins: ["https://ollama.com"],
+  startUrl: "https://ollama.com/signin",
+  allowedOrigins: ["https://ollama.com", "https://signin.ollama.com", "https://auth.ollama.com"],
   idpOrigins: [...COMMON_IDP_ORIGINS],
   sentinelCookies: ["__Secure-session"],
   timeoutMs: DEFAULT_TIMEOUT_MS,
   helpText:
-    "Log into https://ollama.com. The app captures your session " +
-    "(including the __Secure-session cookie) and writes ollama-cookies.json.",
+    "Log into https://ollama.com (WorkOS AuthKit). The app captures your " +
+    "session (including the __Secure-session cookie) and writes ollama-cookies.json.",
   extract: (cookies) => {
     const header = cookieHeader(cookies);
     if (!/__Secure-session=/.test(header)) {
@@ -297,8 +312,18 @@ const qwencloud: ProviderCaptureSpec = {
   fileName: "qwencloud-cookies.json",
   portalUrl: "https://home.qwencloud.com",
   startUrl: "https://home.qwencloud.com",
-  allowedOrigins: ["https://home.qwencloud.com", "https://cs-data.qwencloud.com"],
-  idpOrigins: ["https://account.aliyun.com", "https://login.aliyun.com"],
+  allowedOrigins: [
+    "https://home.qwencloud.com",
+    "https://cs-data.qwencloud.com",
+    "https://chat.qwen.ai",
+    "https://www.qwen.ai",
+  ],
+  idpOrigins: [
+    "https://account.aliyun.com",
+    "https://login.aliyun.com",
+    "https://passport.aliyun.com",
+    "https://signin.aliyun.com",
+  ],
   sentinelCookies: ["login_qwencloud_ticket"],
   timeoutMs: DEFAULT_TIMEOUT_MS,
   helpText:
@@ -320,6 +345,9 @@ const qwencloud: ProviderCaptureSpec = {
       ticket: ticket,
       aliyunPk: aliyunPk,
       isg: isg,
+      // Full header — some Qwen endpoints need extra session cookies beyond
+      // the three structured fields (plugin accepts either shape).
+      cookie: cookieHeader(cookies),
     };
     const esmTicket = cookieValue(cookies, "login_ESM_account_ticket");
     if (esmTicket) json.esmTicket = esmTicket;

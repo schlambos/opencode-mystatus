@@ -14,6 +14,7 @@
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
+ *   - Synthetic   (rolling requests + weekly credits)  auth.json → synthetic, SYNTHETIC_API_KEY, or synthetic-api-key.json
  *   - QwenCloud   (Token Plan)              qwencloud-cookies.json → dashboard API
  *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
  *   - AtlasCloud  (Coding Plan)             atlas-cookies.json → console API
@@ -1328,6 +1329,16 @@ async function queryGoogle(ansi = false) {
         return toolsResult;
     const allAccounts = await loadAntigravityAccountsMerged(cfg);
     if (allAccounts.length === 0) {
+        // Nothing configured: skip silently like any other unconfigured provider.
+        // Only surface an error when the user explicitly set up Antigravity Tools
+        // and it failed — then the failure is actionable, not noise.
+        const explicitlyConfigured = Boolean(cfg.antigravityTools ||
+            process.env.ANTIGRAVITY_TOOLS_BASE_URL ||
+            process.env.ANTIGRAVITY_TOOLS_API_KEY ||
+            process.env.ANTIGRAVITY_TOOLS_ADMIN_PASSWORD ||
+            process.env.ANTIGRAVITY_TOOLS_USAGE_HOURS);
+        if (!explicitlyConfigured)
+            return null;
         return {
             success: false,
             error: toolsResult?.error
@@ -2364,6 +2375,225 @@ async function queryPoe(auth, ansi = false) {
     }
 }
 // ============================================================
+// Synthetic usage API
+// ============================================================
+const SYNTHETIC_QUOTAS_URL = "https://api.synthetic.new/v2/quotas";
+function syntheticRecord(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+        ? value
+        : null;
+}
+function syntheticFiniteNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+function parseSyntheticDollars(value) {
+    if (typeof value !== "string")
+        return undefined;
+    const trimmed = value.trim();
+    if (!trimmed)
+        return undefined;
+    const withoutDollar = trimmed.startsWith("$") ? trimmed.slice(1).trim() : trimmed;
+    if (!withoutDollar)
+        return undefined;
+    const parsed = Number(withoutDollar);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+function parseSyntheticTimestamp(value) {
+    if (typeof value !== "string" || !value.trim())
+        return undefined;
+    const ms = Date.parse(value);
+    if (!Number.isFinite(ms))
+        return undefined;
+    try {
+        return new Date(ms).toISOString();
+    }
+    catch {
+        return undefined;
+    }
+}
+function parseSyntheticPercent(value) {
+    const percent = syntheticFiniteNumber(value);
+    return percent === undefined ? undefined : clampPercent(percent);
+}
+function parseSyntheticRegenPercent(value) {
+    const fraction = syntheticFiniteNumber(value);
+    // Synthetic reports tickPercent as a fraction (0.01 means 1%).
+    if (fraction === undefined || fraction < 0 || fraction > 1)
+        return undefined;
+    return Number((fraction * 100).toFixed(2));
+}
+function syntheticTimestampDetail(timestamp) {
+    return timestamp ? `Next regeneration: ${timestamp}` : undefined;
+}
+function syntheticRegenerationDetail(regenPercent, regenValue, timestamp, dollars) {
+    const details = ["Regeneration: tick"];
+    if (regenPercent !== undefined)
+        details.push(`+${regenPercent}%/tick`);
+    if (regenValue !== undefined) {
+        details.push(dollars ? `+$${regenValue.toFixed(2)}/tick` : `+${regenValue}/tick`);
+    }
+    const time = syntheticTimestampDetail(timestamp);
+    if (time)
+        details.push(time);
+    return details.join(" · ");
+}
+function syntheticRawQuotaDetail(remaining, max, dollars, unit) {
+    const format = dollars
+        ? (value) => `$${value.toFixed(2)}`
+        : (value) => String(value);
+    if (remaining !== undefined && max !== undefined) {
+        return `Raw quota: ${format(remaining)} / ${format(max)} ${unit}`;
+    }
+    if (remaining !== undefined)
+        return `Raw remaining: ${format(remaining)} ${unit}`;
+    if (max !== undefined)
+        return `Raw limit: ${format(max)} ${unit}`;
+    return undefined;
+}
+function parseSyntheticRollingWindow(raw) {
+    const value = syntheticRecord(raw);
+    if (!value)
+        return null;
+    const remaining = syntheticFiniteNumber(value.remaining);
+    const max = syntheticFiniteNumber(value.max);
+    if (remaining === undefined || max === undefined || max <= 0)
+        return null;
+    return {
+        kind: "regeneration",
+        remainingPercent: clampPercent((remaining / max) * 100),
+        quotaRemaining: remaining,
+        quotaMax: max,
+        regenPercent: parseSyntheticRegenPercent(value.tickPercent),
+        nextRegenAt: parseSyntheticTimestamp(value.nextTickAt),
+        limited: value.limited === true,
+    };
+}
+function parseSyntheticWeeklyWindow(raw) {
+    const value = syntheticRecord(raw);
+    if (!value)
+        return null;
+    const remaining = parseSyntheticDollars(value.remainingCredits);
+    const max = parseSyntheticDollars(value.maxCredits);
+    const serverPercent = parseSyntheticPercent(value.percentRemaining);
+    let remainingPercent = serverPercent;
+    if (remainingPercent === undefined && remaining !== undefined && max !== undefined && max > 0) {
+        remainingPercent = clampPercent((remaining / max) * 100);
+    }
+    if (remainingPercent === undefined)
+        return null;
+    return {
+        kind: "regeneration",
+        remainingPercent,
+        quotaRemaining: remaining,
+        quotaMax: max,
+        regenValue: parseSyntheticDollars(value.nextRegenCredits),
+        nextRegenAt: parseSyntheticTimestamp(value.nextRegenAt),
+        limited: value.limited === true,
+    };
+}
+function parseSyntheticSubscriptionWindow(raw) {
+    const subscription = syntheticRecord(raw);
+    if (!subscription)
+        return null;
+    const limit = syntheticFiniteNumber(subscription.limit);
+    const requests = syntheticFiniteNumber(subscription.requests);
+    if (limit === undefined || limit <= 0 || requests === undefined)
+        return null;
+    const used = Math.max(0, Math.min(limit, requests));
+    const remaining = limit - used;
+    return {
+        kind: "renewal",
+        remainingPercent: clampPercent((remaining / limit) * 100),
+        quotaRemaining: remaining,
+        quotaMax: limit,
+        renewalAt: parseSyntheticTimestamp(subscription.renewsAt),
+    };
+}
+function syntheticWindow(label, parsed, dollars, unit) {
+    const detail = [];
+    const rawQuota = syntheticRawQuotaDetail(parsed.quotaRemaining, parsed.quotaMax, dollars, unit);
+    if (rawQuota)
+        detail.push(rawQuota);
+    if (parsed.kind === "renewal") {
+        if (parsed.renewalAt)
+            detail.push(`Renewal: ${parsed.renewalAt}`);
+    }
+    else {
+        detail.push(syntheticRegenerationDetail(parsed.regenPercent, parsed.regenValue, parsed.nextRegenAt, dollars));
+    }
+    return {
+        label,
+        remaining: Math.round(clampPercent(parsed.remainingPercent)),
+        detail,
+        ...(parsed.limited ? { warn: "Limited; regeneration continues on each tick" } : {}),
+    };
+}
+function resolveSyntheticApiKey(auth) {
+    const authKey = auth?.key?.trim();
+    if (authKey)
+        return authKey;
+    const envKey = process.env.SYNTHETIC_API_KEY?.trim();
+    if (envKey)
+        return envKey;
+    const jsonPath = findReadable("synthetic-api-key.json", "config")
+        ?? join(opencodeConfigDir(), "synthetic-api-key.json");
+    if (!existsSync(jsonPath))
+        return null;
+    try {
+        const config = syntheticRecord(JSON.parse(readFileSync(jsonPath, "utf-8")));
+        const apiKey = config?.apiKey;
+        return typeof apiKey === "string" && apiKey.trim() ? apiKey.trim() : null;
+    }
+    catch {
+        return null;
+    }
+}
+async function querySynthetic(auth) {
+    const apiKey = resolveSyntheticApiKey(auth);
+    if (!apiKey)
+        return null;
+    try {
+        const response = await fetchTimeout(SYNTHETIC_QUOTAS_URL, {
+            method: "GET",
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                Accept: "application/json",
+                "User-Agent": "OpenCode-AllStatus/1.0",
+            },
+        });
+        if (!response.ok)
+            throw new Error(`Synthetic quotas API error (${response.status})`);
+        const payload = syntheticRecord(await response.json());
+        if (!payload) {
+            return { success: false, error: "Synthetic quotas API returned an unrecognized schema" };
+        }
+        const windows = [];
+        const rolling = parseSyntheticRollingWindow(payload.rollingFiveHourLimit);
+        if (rolling) {
+            windows.push(syntheticWindow("5h rolling requests", rolling, false, "requests"));
+        }
+        else {
+            const subscription = parseSyntheticSubscriptionWindow(payload.subscription);
+            if (subscription) {
+                windows.push(syntheticWindow("Subscription requests", subscription, false, "requests"));
+            }
+        }
+        const weekly = parseSyntheticWeeklyWindow(payload.weeklyTokenLimit);
+        if (weekly)
+            windows.push(syntheticWindow("Weekly credits", weekly, true, "credits"));
+        if (!windows.length) {
+            return { success: false, error: "Synthetic quotas API returned no recognized quota windows" };
+        }
+        return { success: true, cards: [{ windows }] };
+    }
+    catch (err) {
+        return {
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+        };
+    }
+}
+// ============================================================
 // Z.AI Coding Plan
 // ============================================================
 const ZAI_BASE_URL = "https://api.z.ai";
@@ -2502,11 +2732,28 @@ function kimiCodeNumber(value) {
     return Number.isFinite(parsed) ? parsed : undefined;
 }
 function kimiCodeWindow(label, detail) {
-    const limit = kimiCodeNumber(detail?.limit);
-    const remaining = kimiCodeNumber(detail?.remaining);
-    const used = kimiCodeNumber(detail?.used)
-        ?? (limit !== undefined && remaining !== undefined ? limit - remaining : undefined);
-    if (limit === undefined || limit <= 0 || remaining === undefined)
+    let remaining = kimiCodeNumber(detail?.remaining);
+    const used = kimiCodeNumber(detail?.used);
+    let limit = kimiCodeNumber(detail?.limit);
+    // Kimi omits fields inconsistently across windows:
+    //   weekly exhausted → { limit, used } with no remaining
+    //   5h full          → { limit, remaining } with no used
+    //   some shapes      → remaining present, limit missing/0
+    // Recover the third value from the other two whenever possible so a real
+    // 0% window is kept instead of dropped (which left only a 100% sibling and
+    // made the card badge read 100%).
+    if (limit === undefined && used !== undefined && remaining !== undefined) {
+        limit = used + remaining;
+    }
+    if ((limit === undefined || limit <= 0) && used !== undefined && remaining !== undefined) {
+        const recovered = used + remaining;
+        if (recovered > 0)
+            limit = recovered;
+    }
+    if (remaining === undefined && used !== undefined && limit !== undefined) {
+        remaining = Math.max(0, limit - used);
+    }
+    if (remaining === undefined || limit === undefined || limit <= 0)
         return null;
     return {
         label,
@@ -5175,6 +5422,7 @@ const PROVIDERS = [
     { id: "poe", title: "Poe Account Quota", query: (a, ansi) => queryPoe(a.poe, ansi) },
     { id: "qwencloud", title: "QwenCloud Token Plan", query: (a, ansi) => queryQwenCloud(a["qwen-token-plan"], ansi) },
     { id: "stepfun", title: "StepFun Token Plan", query: (_a, ansi) => queryStepFun(ansi) },
+    { id: "synthetic", title: "Synthetic", query: (a) => querySynthetic(a.synthetic) },
     { id: "xai", title: "xAI/Grok", query: (a) => queryXai(a["xai-oauth"] ?? a.xai) },
     { id: "zai", title: "Z.AI Coding Plan", query: (a, ansi) => queryZai(a["zai-coding-plan"], ansi) },
 ];
@@ -5697,7 +5945,7 @@ async function runMyStatus(args) {
 export const MyStatusPlugin = async () => ({
     tool: {
         mystatus: tool({
-            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Kimi for Coding, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,kimi,longcat,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
+            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Kimi for Coding, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, Synthetic, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,kimi,longcat,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,synthetic,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
             args: {
                 format: tool.schema.string().optional(),
                 threshold: tool.schema.number().optional(),

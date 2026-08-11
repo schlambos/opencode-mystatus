@@ -66,12 +66,15 @@
   },
 
   // Provider control. Antigravity Tools enriches the existing `google` id.
-  // Ids: openai, anthropic, google, copilot, opencode-go, ollama,
-  // longcat, poe, zai, xai, minimax, nanogpt, atlascloud, byteplus, mistral, qwencloud, stepfun.
+  // Ids: anthropic, atlascloud, byteplus, copilot, google, kimi, longcat,
+  // minimax, mistral, nanogpt, ollama, openai, opencode-go, poe, qwencloud,
+  // stepfun, synthetic, xai, zai.
   "providers": {
     // Hide providers entirely (also via the `exclude` arg):
+    // Example: ["synthetic", "xai"]
     "disabled": [],
-    // Preferred ordering before the sort runs (any omitted ids keep default order):
+    // Preferred ordering before the sort runs (any omitted ids keep default order),
+    // e.g. ["synthetic", "openai", "anthropic"]:
     "order": []
   }
 }

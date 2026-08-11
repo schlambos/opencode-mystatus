@@ -14,6 +14,7 @@
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
+ *   - Synthetic   (rolling requests + weekly credits)  auth.json → synthetic, SYNTHETIC_API_KEY, or synthetic-api-key.json
  *   - QwenCloud   (Token Plan)              qwencloud-cookies.json → dashboard API
  *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
  *   - AtlasCloud  (Coding Plan)             atlas-cookies.json → console API

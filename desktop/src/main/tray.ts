@@ -51,6 +51,8 @@ export function statusForModel(model: ViewModelResult): TrayStatus {
   let worst: TrayStatus = "green";
   for (const p of vm.providers) {
     const r = p.minRemaining;
+    // Core uses 101 as "no meters" sentinel — ignore for tray color.
+    if (!(r <= 100)) continue;
     if (r <= 0 || r < threshold) {
       return "red";
     }

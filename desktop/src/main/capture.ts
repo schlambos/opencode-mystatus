@@ -35,13 +35,83 @@ import type {
   CaptureSpec,
   CapturedCookie,
 } from "../shared/ipc.js";
+import { captureWithSystemBrowser } from "./capture-system-browser.js";
 
-// Current stable Chrome UA (no Electron token). Several portals reject the
-// default Electron UA, so this is set on the session before any navigation.
-const CHROME_UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-
+// Google (and other IdPs) reject the default Electron UA and Client Hints
+// ("This browser or app may not be secure"). Spoof a real Chrome profile that
+// matches the Chromium build embedded in this Electron runtime.
 const POLL_INTERVAL_MS = 2000;
+
+export interface ChromeBrowserProfile {
+  readonly userAgent: string;
+  readonly secChUa: string;
+  readonly secChUaMobile: "?0";
+  readonly secChUaPlatform: string;
+}
+
+/** Build a Chrome UA + Client Hints profile from the running Chromium version. */
+export function chromeBrowserProfile(
+  chromeVersion = typeof process !== "undefined" ? process.versions?.chrome : undefined,
+  platform = typeof process !== "undefined" ? process.platform : "darwin",
+): ChromeBrowserProfile {
+  const version = chromeVersion && chromeVersion.length > 0 ? chromeVersion : "150.0.0.0";
+  const major = version.split(".")[0] ?? "150";
+  const uaPlatform =
+    platform === "win32"
+      ? "Windows NT 10.0; Win64; x64"
+      : platform === "linux"
+        ? "X11; Linux x86_64"
+        : "Macintosh; Intel Mac OS X 10_15_7";
+  const chPlatform = platform === "win32" ? "Windows" : platform === "linux" ? "Linux" : "macOS";
+  return {
+    userAgent: `Mozilla/5.0 (${uaPlatform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`,
+    // Order/format mirrors desktop Chrome — must NOT include "Electron".
+    secChUa: `"Google Chrome";v="${major}", "Chromium";v="${major}", "Not A(Brand";v="24"`,
+    secChUaMobile: "?0",
+    secChUaPlatform: `"${chPlatform}"`,
+  };
+}
+
+/**
+ * Hide automation tells that Google checks before allowing account sign-in.
+ * Runs in page context; best-effort (page JS can still fingerprint Electron).
+ */
+const STEALTH_INIT_SCRIPT = `(() => {
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  } catch {}
+  try {
+    // Electron sometimes leaves an empty chrome.runtime; real Chrome has one.
+    window.chrome = window.chrome || {};
+    if (!window.chrome.runtime) window.chrome.runtime = {};
+  } catch {}
+})()`;
+
+function applyChromeSpoof(ses: Session, profile: ChromeBrowserProfile): void {
+  ses.setUserAgent(profile.userAgent);
+  // Override Client Hints on every request. Electron's defaults advertise
+  // "Electron" in sec-ch-ua even after setUserAgent — that alone triggers
+  // Google's embedded-browser block.
+  ses.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers = { ...details.requestHeaders };
+    headers["User-Agent"] = profile.userAgent;
+    headers["sec-ch-ua"] = profile.secChUa;
+    headers["sec-ch-ua-mobile"] = profile.secChUaMobile;
+    headers["sec-ch-ua-platform"] = profile.secChUaPlatform;
+    callback({ requestHeaders: headers });
+  });
+}
+
+function attachStealth(wc: WebContents): void {
+  const inject = (): void => {
+    void wc.executeJavaScript(STEALTH_INIT_SCRIPT, true).catch(() => {
+      // Frame may be gone; ignore.
+    });
+  };
+  // Early as possible on each navigation (main frame + subsequent loads).
+  wc.on("did-start-navigation", inject);
+  wc.on("dom-ready", inject);
+}
 
 export interface CaptureDeps {
   readonly fromPartition: (partition: string) => Session;
@@ -74,10 +144,37 @@ function originOf(url: string): string {
   }
 }
 
+/** about:blank / empty — OAuth libs often window.open('') then navigate. */
+function isBlankUrl(url: string): boolean {
+  const t = url.trim().toLowerCase();
+  return t === "" || t === "about:blank" || t === "about:srcdoc";
+}
+
 function isAllowed(url: string, allow: ReadonlySet<string>): boolean {
+  if (isBlankUrl(url)) return true;
   const o = originOf(url);
-  if (o === "") return false;
+  // new URL('about:blank').origin is the string "null"
+  if (o === "" || o === "null") return isBlankUrl(url);
   return allow.has(o);
+}
+
+const SECURE_POPUP_PREFS = {
+  sandbox: true,
+  contextIsolation: true,
+  nodeIntegration: false,
+} as const;
+
+function attachNavGuards(wc: WebContents, allow: ReadonlySet<string>): void {
+  const guard = (details: { url: string; preventDefault: () => void }): void => {
+    if (!isAllowed(details.url, allow)) {
+      details.preventDefault();
+    }
+  };
+  wc.on("will-navigate", guard);
+  wc.on("will-frame-navigate", guard);
+  // Server-side redirects (302 from /signin → WorkOS) are not always covered
+  // by will-navigate; block disallowed redirect targets explicitly.
+  wc.on("will-redirect", guard);
 }
 
 type ElectronCookie = {
@@ -128,9 +225,10 @@ export async function captureSession(
   deps: CaptureDeps,
 ): Promise<CaptureResult> {
   const allow = new Set<string>([...spec.allowedOrigins, ...spec.idpOrigins]);
+  const browserProfile = chromeBrowserProfile();
 
   const ses = deps.fromPartition(spec.partitionId);
-  ses.setUserAgent(CHROME_UA);
+  applyChromeSpoof(ses, browserProfile);
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
 
   const win = deps.createWindow({
@@ -146,6 +244,10 @@ export async function captureSession(
   });
 
   const wc: WebContents = win.webContents;
+  // Match session UA on the webContents too (some navigations read this).
+  if (typeof wc.setUserAgent === "function") {
+    wc.setUserAgent(browserProfile.userAgent);
+  }
   const state: SettleState = { settled: false, result: null };
   let finalUrl: string | undefined;
   let urlPatternMatched = false;
@@ -164,37 +266,51 @@ export async function captureSession(
   };
 
   // Navigation allowlist — prevent the capture window from wandering to
-  // arbitrary origins. Both will-navigate (main frame) and will-frame-navigate
-  // (any frame) are guarded so an iframe cannot escape either. Disallowed
-  // navigations are cancelled via preventDefault.
-  wc.on("will-navigate", (details) => {
-    if (!isAllowed(details.url, allow)) {
-      details.preventDefault();
-    }
-  });
-  wc.on("will-frame-navigate", (details) => {
-    if (!isAllowed(details.url, allow)) {
-      details.preventDefault();
-    }
-  });
+  // arbitrary origins. will-navigate + will-frame-navigate + will-redirect
+  // so SSO redirects (e.g. ollama.com/signin → api.workos.com) are covered.
+  attachNavGuards(wc, allow);
+  attachStealth(wc);
 
-  // OAuth popups: allow only with the SAME in-memory partition; deny all
-  // others so a popup cannot escape into the default session.
+  // OAuth popups: allow allowlisted origins (and about:blank bootstrap) with
+  // the SAME in-memory partition; deny everything else so a popup cannot
+  // escape into the default session. Child windows get the same nav guards.
   wc.setWindowOpenHandler((details) => {
     if (isAllowed(details.url, allow)) {
       return {
         action: "allow",
         overrideBrowserWindowOptions: {
+          width: 520,
+          height: 720,
+          autoHideMenuBar: true,
           webPreferences: {
             partition: spec.partitionId,
-            sandbox: true,
-            contextIsolation: true,
-            nodeIntegration: false,
+            ...SECURE_POPUP_PREFS,
           },
         },
       };
     }
     return { action: "deny" };
+  });
+  wc.on("did-create-window", (child) => {
+    if (typeof child.webContents.setUserAgent === "function") {
+      child.webContents.setUserAgent(browserProfile.userAgent);
+    }
+    attachNavGuards(child.webContents, allow);
+    attachStealth(child.webContents);
+    child.webContents.setWindowOpenHandler((details) => {
+      if (isAllowed(details.url, allow)) {
+        return {
+          action: "allow",
+          overrideBrowserWindowOptions: {
+            webPreferences: {
+              partition: spec.partitionId,
+              ...SECURE_POPUP_PREFS,
+            },
+          },
+        };
+      }
+      return { action: "deny" };
+    });
   });
 
   // Track navigations for finalUrl + optional urlPattern completion.
@@ -276,6 +392,16 @@ export async function captureSession(
     });
   });
 
+  // Navigate AFTER handlers are installed so the initial load is allowlisted
+  // and tracked. Without this the window stays blank (about:blank).
+  finalUrl = spec.startUrl;
+  void wc.loadURL(spec.startUrl).catch(() => {
+    // Load failures surface as a blank/error page; user can close or wait
+    // for timeout. Never reject captureSession.
+  });
+
+  if (!win.isDestroyed()) win.show();
+
   const winner = await Promise.race([
     completion.then((c) => ({ kind: "ok" as const, ...c })),
     timeout.then(() => ({ kind: "timeout" as const })),
@@ -320,6 +446,8 @@ const realDeps: CaptureDeps = {
     new BrowserWindow({
       width: opts.width,
       height: opts.height,
+      show: true,
+      autoHideMenuBar: true,
       webPreferences: opts.webPreferences,
     }),
   openExternal: (url) => shell.openExternal(url),
@@ -344,6 +472,10 @@ function drainQueue(): void {
  * IPC handler for mystatus:capture. Serializes capture requests so only ONE
  * capture window exists at a time; concurrent requests queue and run in
  * arrival order. Never rejects — errors arrive as a cancelled/timeout result.
+ *
+ * Prefers a real system Chromium browser (Chrome/Edge/Brave/Arc) because
+ * Google OAuth permanently blocks Electron embedded windows. Falls back to
+ * the Electron BrowserWindow path only when no system browser is installed.
  */
 export async function handleCapture(spec: CaptureRequest): Promise<CaptureResult> {
   // If a capture is in flight, wait for it to finish before starting ours.
@@ -355,6 +487,10 @@ export async function handleCapture(spec: CaptureRequest): Promise<CaptureResult
 
   captureInFlight = (async () => {
     try {
+      // System Chrome first — required for Google / WorkOS SSO (Ollama, etc.).
+      const systemResult = await captureWithSystemBrowser(spec);
+      if (systemResult !== null) return systemResult;
+      // No Chrome/Edge/Brave installed → Electron window (may fail Google).
       return await captureSession(spec, realDeps);
     } finally {
       captureInFlight = null;

@@ -2,11 +2,11 @@ import { useMemo, useState, type JSX } from "react";
 import { useStatusState } from "../lib/store";
 import { hiddenNameSet, hiddenProviders, setProviderHidden } from "../lib/hiddenProviders";
 import {
+  effectiveRemaining,
   formatAge,
   offTabWorstCue,
   resetCountdown,
   statusTone,
-  viewMinRemaining,
   type StatusTone,
 } from "../lib/status";
 import { windowTier, windowsForView, type Horizon } from "../lib/tiers";
@@ -118,8 +118,8 @@ function ProviderCard({
   fetchedAt: number | null;
   now: number;
 }): JSX.Element {
-  const viewMin = viewMinRemaining(windows) ?? provider.minRemaining;
-  const worst = statusTone(viewMin, threshold);
+  const viewMin = effectiveRemaining(windows, provider.minRemaining);
+  const worst = viewMin === null ? "ok" : statusTone(viewMin, threshold);
   const cue = offTabWorstCue(provider.windows, windows, windowTier);
   const staleHours =
     provider.stale !== undefined ? Math.max(0, Math.round(provider.stale.ageMs / 3600000)) : null;
@@ -143,10 +143,14 @@ function ProviderCard({
           </span>
         )}
         <span
-          className={`shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums ${pillClass[worst]} ${pctClass[worst]}`}
-          aria-label={`${viewMin}% remaining`}
+          className={`shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums ${
+            viewMin === null
+              ? "border border-ink-700 bg-ink-850 text-fog-500"
+              : `${pillClass[worst]} ${pctClass[worst]}`
+          }`}
+          aria-label={viewMin === null ? "no quota meters" : `${viewMin}% remaining`}
         >
-          {viewMin}%
+          {viewMin === null ? "—" : `${viewMin}%`}
         </span>
         <button
           type="button"
@@ -159,6 +163,12 @@ function ProviderCard({
         </button>
       </header>
 
+      {provider.note !== undefined && provider.note !== "" && (
+        <p className="mb-1.5 truncate font-mono text-[10px] text-fog-500" title={provider.note}>
+          {provider.note}
+        </p>
+      )}
+
       {cue !== null && (
         <p className="mb-1.5 font-mono text-[10px] text-fog-500" data-testid="off-tab-cue">
           <span className={pctClass[statusTone(cue.remaining, threshold)]}>{cue.remaining}%</span>
@@ -169,9 +179,13 @@ function ProviderCard({
       )}
 
       <ul className="flex flex-col gap-1">
-        {windows.map((w) => (
-          <Pill key={w.label} window={w} threshold={threshold} fetchedAt={fetchedAt} now={now} />
-        ))}
+        {windows.length > 0 ? (
+          windows.map((w) => (
+            <Pill key={w.label} window={w} threshold={threshold} fetchedAt={fetchedAt} now={now} />
+          ))
+        ) : (
+          <li className="text-[11px] text-fog-600">No quota windows in the latest sync.</li>
+        )}
       </ul>
     </section>
   );
@@ -194,14 +208,16 @@ export function DashboardPane(): JSX.Element {
         provider,
         windows: windowsForTab(provider.windows, view),
       }))
-      .filter((c) => c.windows.length > 0)
+      // Keep providers that returned a card even when the active tab has no
+      // tier windows (e.g. Qwen signed-in but API returned no quota meters).
+      // On horizon tabs, still prefer cards that have windows for that tier;
+      // on "all", always show every non-hidden provider.
+      .filter((c) => view === "all" || c.windows.length > 0 || c.provider.windows.length === 0)
       .sort((a, b) => {
-        const aMin = viewMinRemaining(a.windows) ?? a.provider.minRemaining;
-        const bMin = viewMinRemaining(b.windows) ?? b.provider.minRemaining;
-        if (a.provider.minRemaining !== b.provider.minRemaining) {
-          return a.provider.minRemaining - b.provider.minRemaining;
-        }
-        return aMin - bMin;
+        const aMin = effectiveRemaining(a.windows, a.provider.minRemaining) ?? 101;
+        const bMin = effectiveRemaining(b.windows, b.provider.minRemaining) ?? 101;
+        if (aMin !== bMin) return aMin - bMin;
+        return a.provider.name.localeCompare(b.provider.name);
       });
   }, [model, config, tab]);
 
@@ -209,7 +225,8 @@ export function DashboardPane(): JSX.Element {
     if (model === null) return { all: 0, ok: 0, warn: 0, low: 0, dead: 0 };
     const counts = { all: cards.length, ok: 0, warn: 0, low: 0, dead: 0 };
     for (const c of cards) {
-      const vm = viewMinRemaining(c.windows) ?? c.provider.minRemaining;
+      const vm = effectiveRemaining(c.windows, c.provider.minRemaining);
+      if (vm === null) continue;
       counts[statusTone(vm, model.threshold)] += 1;
     }
     return counts;
@@ -219,8 +236,11 @@ export function DashboardPane(): JSX.Element {
     if (model === null) return [];
     const q = query.trim().toLowerCase();
     return cards.filter((c) => {
-      const vm = viewMinRemaining(c.windows) ?? c.provider.minRemaining;
-      if (tierFilter !== "all" && statusTone(vm, model.threshold) !== tierFilter) return false;
+      const vm = effectiveRemaining(c.windows, c.provider.minRemaining);
+      if (tierFilter !== "all") {
+        if (vm === null) return false;
+        if (statusTone(vm, model.threshold) !== tierFilter) return false;
+      }
       if (q !== "" && !c.provider.name.toLowerCase().includes(q)) return false;
       return true;
     });

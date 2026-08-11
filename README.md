@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>All your AI usage, in one glance.</strong><br>
-  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — sixteen providers, one command.
+  A unified quota &amp; spend dashboard for <a href="https://opencode.ai">OpenCode</a> — nineteen providers, one command.
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@ Subscriptions pile up — ChatGPT, Claude, Gemini, Copilot, Grok, and a handful 
 ## Why you'll want it
 
 - **Never get surprised by a limit again.** See what's running low *before* it blocks you, with projected "time to empty" estimates.
-- **One place for everything.** Sixteen providers, multiple accounts each, in a single scrollable view.
+- **One place for everything.** Nineteen providers, multiple accounts each, in a single scrollable view.
 - **Zero busywork for OAuth and Antigravity Tools.** Signed-in OpenCode accounts are picked up automatically, and a local Antigravity Tools install is discovered from `~/.antigravity_tools/gui_config.json`; cookie-based providers (AtlasCloud, BytePlus, LongCat, Ollama, QwenCloud, StepFun, OpenCode Go+Zen) need a one-time browser session capture.
 - **Built for the terminal.** Responsive cards that size to your window, color-coded bars, and a summary up top.
 
@@ -460,6 +460,7 @@ All session tokens expire periodically — re-capture and overwrite when the car
 | **BytePlus** | Ark Coding Plan | Plan details + rolling / weekly / monthly windows |
 | **GitHub Copilot** | Individual / Business / Enterprise | Current monthly AI-credit usage for PAT-backed individual plans, pooled-organization usage without a fabricated per-user remainder, legacy premium requests, and every OAuth quota snapshot |
 | **Google** | Antigravity / Google AI Pro | With Antigravity Tools: Gemini + Claude/GPT 5-hour and weekly quota, reset times, account status, and proxy token/request usage. Falls back to auth-plugin Gemini Pro / Flash / Claude / GPT-OSS quota. |
+| **Kimi for Coding** | Kimi for Coding | Weekly and rolling 5-hour quota windows, reset times, and the reported parallel-request limit |
 | **LongCat** | API token quota (`ak_…` in `opencode.json`) | Account email, active API key count, **free quota** (blocks inference when empty), **total tokens** (incl. fuel packs), fuel-package expiry |
 | **MiniMax** | Token Plan | Unified 5-hour + weekly plan windows (with compatibility for older named capability buckets) |
 | **Mistral** | Vibe plan | Monthly Vibe budget and reset per configured account |
@@ -470,6 +471,7 @@ All session tokens expire periodically — re-capture and overwrite when the car
 | **Poe** | Subscription or pay-go | Authoritative total points/USD balance and grants; a monthly percentage only when the API separately reports plan-only points |
 | **QwenCloud** | Token Plan (Team Edition) | Credits remaining + cycle dates |
 | **StepFun** | Step Plan (Flash Mini/Plus/Pro/Max) | Plan details + the 5-hour pool and any weekly pool actually returned by the dashboard API |
+| **Synthetic** | API key | Rolling/weekly quota fields, with a documented subscription fallback when rolling data is unavailable |
 | **xAI / Grok** | SuperGrok | Shared weekly usage pool, reset time, per-product breakdown (API, Build, Chat, Imagine, Voice), and extra-usage credits |
 | **Z.AI** | GLM Coding Plan | 5-hour + weekly prompt pools and distinctly labeled monthly MCP/tool-call quotas with model/tool breakdowns |
 
@@ -687,7 +689,7 @@ All options are optional and can be set per-call or as [defaults in your config]
 | `fresh` | boolean | `false` | Bypass the cache and force a live fetch |
 | `format` | `ansi` · `json` | `ansi` | `json` returns machine-readable output |
 
-Provider ids: `anthropic`, `atlascloud`, `byteplus`, `copilot`, `google`, `longcat`, `minimax`, `mistral`, `nanogpt`, `ollama`, `openai`, `opencode-go`, `poe`, `qwencloud`, `stepfun`, `xai`, `zai`.
+Provider ids: `anthropic`, `atlascloud`, `byteplus`, `copilot`, `google`, `kimi`, `longcat`, `minimax`, `mistral`, `nanogpt`, `ollama`, `openai`, `opencode-go`, `poe`, `qwencloud`, `stepfun`, `synthetic`, `xai`, `zai`.
 
 ## Configuration
 
@@ -703,8 +705,8 @@ Most setups need **no configuration at all**. To set persistent defaults, create
   "historyMax": 60,         // trend snapshots to retain
   "historyMinIntervalSec": 60,
   "providers": {
-    "disabled": [],         // e.g. ["xai", "longcat"]
-    "order": []             // preferred ordering before sort
+    "disabled": [],         // e.g. ["synthetic", "xai", "longcat"]
+    "order": []             // preferred ordering before sort (e.g. ["synthetic", "openai"])
   },
   "antigravityTools": {
     "enabled": true,        // auto-discovers ~/.antigravity_tools/gui_config.json
@@ -991,6 +993,24 @@ The current public Step Plan advertises a 5-hour prompt pool. The dashboard resp
 </details>
 
 <details>
+<summary><strong>Synthetic</strong> — API key</summary>
+
+<br>
+
+Resolved in priority order: `auth.json` → `synthetic` (populated when you use a Synthetic model in OpenCode), then `SYNTHETIC_API_KEY`, then `~/.config/opencode/synthetic-api-key.json` (`{ "apiKey": "..." }`).
+
+```bash
+export SYNTHETIC_API_KEY="..."
+```
+
+```json
+{ "apiKey": "..." }
+```
+
+Quota checks use `api.synthetic.new/v2/quotas` and do not consume allowance; see the [official Synthetic quota documentation](https://dev.synthetic.new/docs/synthetic/quotas). The rolling 5-hour and weekly fields are undocumented extensions, so they are parsed defensively only when present and valid. Their timestamps are incremental regeneration events, not full quota resets. The documented `subscription.limit`, `subscription.requests`, and valid `subscription.renewsAt` fields are a fallback only when rolling data cannot be parsed; they represent a separate accounting surface, not the rolling quota accounting.
+</details>
+
+<details>
 <summary><strong>xAI / Grok</strong> — zero-config (+ optional `grok login`)</summary>
 
 <br>
@@ -1021,7 +1041,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 
 <br>
 
-**Read (never modified):** `~/.local/share/opencode/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), optional `~/.antigravity_tools/gui_config.json`, and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `qwencloud-cookies.json`, `byteplus-cookies.json`, `atlas-cookies.json`, `mistral-cookies.json`, `ollama-cookies.json`, `longcat-cookies.json` under `~/.config/opencode/`.
+**Read (never modified):** `~/.local/share/opencode/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), optional `~/.antigravity_tools/gui_config.json`, and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `synthetic-api-key.json`, `qwencloud-cookies.json`, `byteplus-cookies.json`, `atlas-cookies.json`, `mistral-cookies.json`, `ollama-cookies.json`, `longcat-cookies.json` under `~/.config/opencode/`.
 
 | Provider | Endpoint(s) |
 |---|---|
@@ -1030,6 +1050,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 | BytePlus | `console.byteplus.com/api/...` |
 | GitHub Copilot | `api.github.com/copilot_internal/*`, `api.github.com/users/*/settings/billing/...` |
 | Google / Antigravity Tools | Local/configured Antigravity Tools `/health`, `/api/accounts`, `/api/stats/token/{summary,by-account,by-model}`; fallback: `cloudcode-pa.googleapis.com/...:{loadCodeAssist,retrieveUserQuota}`, `oauth2.googleapis.com/token` |
+| Kimi for Coding | `api.kimi.com/coding/v1/usages` |
 | MiniMax | `api.minimax.io/v1/token_plan/remains` |
 | Mistral | `vibe.mistral.ai/api/...` |
 | NanoGPT | `nano-gpt.com/api/check-balance`, `nano-gpt.com/api/subscription/v1/usage` |
@@ -1040,10 +1061,11 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 | Poe | `api.poe.com/usage/current_balance` |
 | QwenCloud | `home.qwencloud.com/data/api.json?...GetSeatSubscriptionSummary` |
 | StepFun | `platform.stepfun.ai/api/.../Dashboard/QueryStepPlanRateLimit`, `.../GetStepPlanStatus` |
+| Synthetic | `api.synthetic.new/v2/quotas` |
 | xAI / Grok | `cli-chat-proxy.grok.com/v1/billing`, `api.x.ai/v1/models` |
 | Z.AI | `api.z.ai/api/biz/subscription/list`, `api.z.ai/api/monitor/usage/quota/limit` |
 
-Some usage endpoints are internal/undocumented and may change without notice; the plugin degrades gracefully when one is unavailable.
+Synthetic quota checks do not consume allowance; see the [official quota documentation](https://dev.synthetic.new/docs/synthetic/quotas). Its rolling 5-hour and weekly fields are undocumented extensions parsed defensively; their timestamps are incremental regeneration events, not full quota resets. The documented `subscription.limit`, `subscription.requests`, and valid `subscription.renewsAt` fields are a fallback only when rolling data cannot be parsed and represent a separate accounting surface. Some usage endpoints are internal/undocumented and may change without notice; the plugin degrades gracefully when one is unavailable.
 </details>
 
 ## Development
@@ -1064,7 +1086,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Credits
 
-Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, AtlasCloud (Coding Plan), BytePlus (Ark Coding Plan), GitHub Copilot, LongCat API, MiniMax, Mistral (Vibe Usage), NanoGPT, Ollama Cloud, OpenCode Go+Zen, Poe, multi-account Google, QwenCloud, StepFun, xAI/Grok, and Z.AI.
+Originally a fork of [vbgate/opencode-mystatus](https://github.com/vbgate/opencode-mystatus), since rebuilt and extended well beyond the original: a structured quota model, responsive single-column cards, a summary view, urgency sorting, usage trends with projections, caching/retry resilience, and support for Anthropic, AtlasCloud (Coding Plan), BytePlus (Ark Coding Plan), GitHub Copilot, Kimi for Coding, LongCat API, MiniMax, Mistral (Vibe Usage), NanoGPT, Ollama Cloud, OpenCode Go+Zen, Poe, multi-account Google, QwenCloud, StepFun, Synthetic, xAI/Grok, and Z.AI.
 
 ## License
 
