@@ -49,7 +49,7 @@ function parseArgs(argv: string[]): Record<string, unknown> {
 function showHelp(): void {
   console.log(`Usage: mystatus [options]
 
-Query AI platform quota usage. Displays a card-based overview of
+Query AI platform quota usage. Displays a problems-first overview of
 remaining quota, usage stats, and reset countdowns for all configured
 AI providers.
 
@@ -76,8 +76,8 @@ Watch mode keys: 1/2/3 or Tab views, e issues, x hide/show provider,
                  d density (auto/detail/compact), j/k or arrows scroll,
                  space/b page, g/G top/bottom, r refresh, q quit
 
-Providers: anthropic,atlascloud,byteplus,copilot,google,longcat,minimax,mistral,
-           nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,xai,zai`);
+Providers: anthropic,atlascloud,byteplus,copilot,google,kimi,longcat,minimax,mistral,
+           muse,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,synthetic,xai,zai`);
 }
 
 const rawArgv = process.argv.slice(2).filter((a) => a !== "--");

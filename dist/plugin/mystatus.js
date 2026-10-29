@@ -6269,7 +6269,7 @@ function compactCardLines(cell, contentW, ansi, trend) {
 function renderBox(title, lines, innerW) {
     return renderCard({ title, lines }, innerW, false);
 }
-function renderCompactStatus(prepared, termWidth, layout, ansi) {
+function renderCompactStatus(prepared, termWidth, layout, ansi, showSummary = true) {
     const { cells, threshold, issues, failures } = prepared;
     const trend = makeCompactTrend(prepared.series, prepared.trendMode, ansi);
     const dim = (text) => (ansi ? `${ANSI_DIM}${text}${ANSI_RESET}` : text);
@@ -6325,10 +6325,9 @@ function renderCompactStatus(prepared, termWidth, layout, ansi) {
         const oldest = formatDuration(Math.floor((stale[0].ageMs ?? 0) / 1000));
         summary.push(`\u26a0\ufe0f Stale: ${stale.length} (oldest ${oldest})`);
     }
-    const out = [
-        ...renderBox("mystatus", summary.map((line) => truncateW(line, fullContentW)), fullInnerW),
-        "",
-    ];
+    const out = showSummary
+        ? [...renderBox("mystatus", summary.map((line) => truncateW(line, fullContentW)), fullInnerW), ""]
+        : [];
     // ── Problem cards ────────────────────────────────────────
     const rendered = problem.map((cell) => cell.view
         ? renderBox(compactTitle(cell.view), compactCardLines(cell, cardContentW, ansi, trend), cardInnerW)
@@ -7065,7 +7064,7 @@ export function formatMyStatus(snapshot, args, opts = {}) {
         return cellsToJson(cells, alerts, errors, issues, health);
     }
     if ((cfg.view ?? "compact") !== "classic") {
-        return renderCompactStatus(prepared, termWidth, layoutMode, useAnsi);
+        return renderCompactStatus(prepared, termWidth, layoutMode, useAnsi, showSummary);
     }
     const renderCells = [...cells];
     if (showSummary) {
@@ -7099,7 +7098,7 @@ async function runMyStatus(args) {
 export const MyStatusPlugin = async () => ({
     tool: {
         mystatus: tool({
-            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Meta Muse Code, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Kimi for Coding, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, Synthetic, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,kimi,longcat,minimax,mistral,muse,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,synthetic,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
+            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Meta Muse Code, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Kimi for Coding, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, Synthetic, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is problems-first: a summary (status counts + soonest recovery), one compact card per provider with an exhausted, low, or under-50% limit (one row per limit: bar, percent, reset countdown, trend when it moved), then a one-line-per-provider 'All clear' list; two columns from ~110 columns. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so the layout sizes to the terminal and never wraps. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,kimi,longcat,minimax,mistral,muse,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,synthetic,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
             args: {
                 format: tool.schema.string().optional(),
                 threshold: tool.schema.number().optional(),
