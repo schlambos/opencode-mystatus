@@ -71,6 +71,7 @@ interface QueryResult {
 }
 type LayoutMode = "auto" | "single" | "double";
 interface MyStatusConfig {
+    view?: "compact" | "classic";
     width?: number;
     layout?: LayoutMode;
     sort?: "urgency" | "name" | "reset";
@@ -103,6 +104,8 @@ export declare function loadConfig(): MyStatusConfig;
 export declare function saveConfig(patch: Partial<MyStatusConfig>): void;
 export interface RanProvider {
     title: string;
+    /** Short display name (compact view); `title` remains the stable key. */
+    name?: string;
     result: QueryResult | null;
 }
 export interface MyStatusArgs {

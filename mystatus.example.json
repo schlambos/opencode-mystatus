@@ -13,6 +13,11 @@
   // COLUMNS env, then a safe default (100).
   // "width": 100,
 
+  // Output style: "compact" (problems first, one row per limit, healthy
+  // providers collapsed into "All clear") or "classic" (one card per
+  // provider with full detail lines).
+  "view": "compact",
+
   // Card layout: "auto" (two columns when width >= ~66), "single", or "double".
   "layout": "auto",
 

@@ -2799,15 +2799,15 @@ function syntheticTimestampDetail(timestamp) {
     return timestamp ? `Next regeneration: ${timestamp}` : undefined;
 }
 function syntheticRegenerationDetail(regenPercent, regenValue, timestamp, dollars) {
-    const details = ["Regeneration: tick"];
+    const amounts = [];
     if (regenPercent !== undefined)
-        details.push(`+${regenPercent}%/tick`);
+        amounts.push(`+${regenPercent}%`);
     if (regenValue !== undefined) {
-        details.push(dollars ? `+$${regenValue.toFixed(2)}/tick` : `+${regenValue}/tick`);
+        amounts.push(dollars ? `+$${regenValue.toFixed(2)}` : `+${regenValue}`);
     }
-    const time = syntheticTimestampDetail(timestamp);
-    if (time)
-        details.push(time);
+    const details = [amounts.length ? `Regenerates ${amounts.join(" / ")} per tick` : "Regenerates per tick"];
+    if (timestamp)
+        details.push(`next tick ${timestamp}`);
     return details.join(" · ");
 }
 function syntheticRawQuotaDetail(remaining, max, dollars, unit) {
@@ -5676,6 +5676,45 @@ async function queryNanoGpt(auth, ansi = false) {
     }
     return { success: false, error: errors.join("\n\n") };
 }
+// Fold "Key: value" header lines into a subtitle (Account) plus short meta
+// values, so the compact card spends one line on identity instead of four.
+function compactMeta(header, subtitle) {
+    const meta = [];
+    let sub = subtitle;
+    for (const raw of header ?? []) {
+        const line = raw.replace(ANSI_RE, "").trim();
+        if (!line)
+            continue;
+        const m = /^([A-Za-z][\w /+.-]{0,23}):\s+(.+)$/.exec(line);
+        if (!m) {
+            meta.push(line);
+            continue;
+        }
+        const key = m[1].trim().toLowerCase();
+        const value = m[2].trim();
+        if (key === "account") {
+            if (!sub)
+                sub = value;
+            else if (value.toLowerCase() !== sub.toLowerCase())
+                meta.push(value);
+        }
+        else if (key === "source") {
+            meta.push(`via ${value}`);
+        }
+        else if (key === "status") {
+            const rest = value.replace(/^enabled\s*(\u00b7\s*)?/i, "").trim();
+            if (rest)
+                meta.push(rest);
+        }
+        else if (key === "plan" || key === "organization" || key === "quota") {
+            meta.push(value);
+        }
+        else {
+            meta.push(`${m[1].trim()}: ${value}`);
+        }
+    }
+    return { subtitle: sub, meta };
+}
 function shortProvider(title) {
     return title.replace(/ (Account Quota|Coding Plan)$/i, "");
 }
@@ -5723,10 +5762,19 @@ function windowReset(w) {
     return {};
 }
 // Render a structured card into grid-cell lines + window metrics.
-function cardToCell(card, providerTitle, ansi, trend) {
+function cardToCell(card, providerTitle, ansi, trend, displayName) {
     const title = card.subtitle ? cellTitle(providerTitle, card.subtitle) : providerTitle;
     const lines = [];
     const metrics = [];
+    const identity = compactMeta(card.header, card.subtitle);
+    const view = {
+        name: displayName ?? shortProvider(providerTitle),
+        subtitle: identity.subtitle,
+        meta: identity.meta,
+        note: card.note,
+        windows: [],
+        footer: card.footer ?? [],
+    };
     if (card.note)
         lines.push(ansi ? `${ANSI_DIM}${card.note}${ANSI_RESET}` : card.note);
     if (card.header?.length)
@@ -5762,20 +5810,31 @@ function cardToCell(card, providerTitle, ansi, trend) {
             lines.push(...w.extra);
         if (w.label)
             metrics.push({ cellTitle: title, label: metricLabel, remaining: remain, resetMs });
+        view.windows.push({
+            section: w.sectionHeader,
+            label: w.label,
+            metricLabel,
+            remaining: remain,
+            suffix: w.suffix,
+            warn: w.warn,
+            detail: [...(w.detail ?? []), ...(w.extra ?? [])],
+            resetText,
+            resetMs,
+        });
     }
     if (card.footer?.length) {
         if (lines.length > 0)
             lines.push("");
         lines.push(...card.footer);
     }
-    return { title, lines, metrics, stale: card.stale };
+    return { title, lines, metrics, stale: card.stale, view };
 }
-function collect(result, providerTitle, cells, failures, ansi, trend) {
+function collect(result, providerTitle, cells, failures, ansi, trend, displayName) {
     if (!result)
         return;
     if (result.success && result.cards?.length) {
         for (const card of result.cards) {
-            cells.push(cardToCell(card, providerTitle, ansi, trend));
+            cells.push(cardToCell(card, providerTitle, ansi, trend, displayName));
         }
         return;
     }
@@ -5801,7 +5860,7 @@ function collect(result, providerTitle, cells, failures, ansi, trend) {
         }
     }
     else if (result.error) {
-        failures.push({ title: providerTitle, detail: result.error });
+        failures.push({ title: providerTitle, name: displayName, detail: result.error });
     }
 }
 // ============================================================
@@ -5987,7 +6046,7 @@ function resolveLayout(explicit, cfg) {
     return "auto";
 }
 // Render one card as an array of terminal lines (header, body, footer).
-function renderCard(cell, innerW) {
+function renderCard(cell, innerW, rescaleBars = true) {
     const contentW = innerW - PAD_X * 2;
     const lines = [];
     const blankRow = BOX.v + " ".repeat(innerW) + BOX.v;
@@ -6001,7 +6060,7 @@ function renderCard(cell, innerW) {
         BOX.tr);
     lines.push(blankRow);
     for (const raw of cell.lines) {
-        const line = fitBar(raw, contentW);
+        const line = rescaleBars ? fitBar(raw, contentW) : raw;
         lines.push(BOX.v + " ".repeat(PAD_X) + padLine(line, contentW) + " ".repeat(PAD_X) + BOX.v);
     }
     lines.push(blankRow);
@@ -6054,6 +6113,287 @@ function renderGrid(cells, termWidth, layout = "auto") {
         }
     }
     return out.join("\n");
+}
+// ============================================================
+// Compact view (default one-shot output)
+// ============================================================
+//
+// One row per quota window, problems first. Providers with an exhausted, low,
+// or under-50% window keep a card; providers whose every window is at or above
+// 50% collapse to one row in "All clear". Trend sparklines appear only when a
+// window actually moved. `"view": "classic"` in mystatus.json restores the
+// original card grid; JSON output, the live TUI, and the desktop app are
+// unaffected.
+const COMPACT_TWO_COL_MIN = 110; // two compact columns need ~52 interior cols each
+const COMPACT_BAR_MIN = 6;
+const COMPACT_BAR_MAX = 24;
+const COMPACT_RESET_W = 12; // "↻ 6d 23h 59m"
+const ISO_TS_RE = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+// Delta + short sparkline, or null when the recent history is flat.
+function makeCompactTrend(series, mode, ansi) {
+    if (mode === "off")
+        return () => null;
+    return (cellTitle, label, remaining) => {
+        const hist = series.get(`${cellTitle}::${label}`) ?? [];
+        if (!hist.length)
+            return null;
+        const recent = [...hist.map((point) => point.value), remaining].slice(-6);
+        if (Math.max(...recent) - Math.min(...recent) < 2)
+            return null; // rounding jitter, not movement
+        const delta = remaining - hist[hist.length - 1].value;
+        const head = delta > 5 ? "\u2191reset" : delta >= 1 ? `\u25b2${delta}%` : delta <= -1 ? `\u25bc${-delta}%` : "";
+        const spark = sparkline(recent, ansi);
+        return head ? `${head} ${spark}` : spark;
+    };
+}
+// Provider detail text often carries raw ISO timestamps; show them relative.
+function relativizeTimestamps(text) {
+    return text.replace(ISO_TS_RE, (iso) => {
+        const ms = Date.parse(iso);
+        if (!Number.isFinite(ms))
+            return iso;
+        const diff = ms - Date.now();
+        if (Math.abs(diff) < 60_000)
+            return "now";
+        const span = formatDuration(Math.floor(Math.abs(diff) / 1000));
+        return diff > 0 ? `in ${span}` : `${span} ago`;
+    });
+}
+function compactBar(remaining, width, ansi) {
+    const filled = Math.round((clampPercent(remaining) / 100) * width);
+    const bar = "\u2588".repeat(filled) + "\u2591".repeat(Math.max(0, width - filled));
+    return ansi ? `${colorForPercent(remaining)}${bar}${ANSI_RESET}` : bar;
+}
+function padStartW(s, w) {
+    return " ".repeat(Math.max(0, w - displayWidth(stripAnsi(s)))) + s;
+}
+function padEndW(s, w) {
+    return s + " ".repeat(Math.max(0, w - displayWidth(stripAnsi(s))));
+}
+// Join items with " · " and wrap onto at most `maxLines` lines of width `w`.
+function wrapJoined(items, w, maxLines = 2) {
+    const lines = [];
+    let current = "";
+    for (const item of items.filter(Boolean)) {
+        const next = current ? `${current} \u00b7 ${item}` : item;
+        if (displayWidth(next) <= w || !current) {
+            current = next;
+        }
+        else {
+            lines.push(current);
+            current = item;
+        }
+    }
+    if (current)
+        lines.push(current);
+    if (lines.length <= maxLines)
+        return lines;
+    const kept = lines.slice(0, maxLines);
+    kept[maxLines - 1] = truncateW(`${kept[maxLines - 1]} \u00b7 ${lines.slice(maxLines).join(" \u00b7 ")}`, w);
+    return kept;
+}
+function compactTitle(view) {
+    return view.subtitle ? `${view.name} \u00b7 ${view.subtitle}` : view.name;
+}
+function compactLevel(cell, threshold) {
+    const min = cellMinRemaining(cell);
+    if (min > 100)
+        return "info";
+    if (min <= 0)
+        return "exhausted";
+    if (min < threshold)
+        return "low";
+    if (min < 50)
+        return "watch";
+    return "ok";
+}
+function compactCardLines(cell, contentW, ansi, trend) {
+    const view = cell.view;
+    const dim = (text) => (ansi ? `${ANSI_DIM}${text}${ANSI_RESET}` : text);
+    const lines = [];
+    if (cell.stale) {
+        const note = `\u26a0\ufe0f ${view.note ?? "stale"}`;
+        lines.push(ansi ? `${ANSI_YELLOW}${note}${ANSI_RESET}` : note);
+    }
+    const meta = [...(!cell.stale && view.note ? [view.note] : []), ...view.meta];
+    for (const line of wrapJoined(meta, contentW))
+        lines.push(dim(line));
+    const windows = view.windows;
+    if (windows.length) {
+        const pctTexts = windows.map((w) => w.suffix ?? `${w.remaining}%`);
+        const resetTexts = windows.map((w) => (w.resetText ? `\u21bb ${w.resetText}` : ""));
+        const trends = windows.map((w) => trend(cell.title, w.metricLabel, w.remaining));
+        const pctW = Math.max(4, ...pctTexts.map((t) => displayWidth(t)));
+        const longestReset = Math.max(0, ...resetTexts.map((t) => displayWidth(t)));
+        const resetW = longestReset ? Math.max(COMPACT_RESET_W, longestReset) : 0;
+        const trendW = Math.max(0, ...trends.map((t) => (t ? displayWidth(stripAnsi(t)) : 0)));
+        const naturalLabelW = Math.max(1, ...windows.map((w) => displayWidth(w.label)));
+        const labelW = Math.min(naturalLabelW, Math.max(10, Math.floor(contentW * 0.4)));
+        // emoji(2) + space + label + space + bar + space + pct + reset + trend
+        const fixed = (withTrend) => 3 + labelW + 2 + pctW + (resetW ? 2 + resetW : 0) + (withTrend && trendW ? 2 + trendW : 0);
+        const showTrend = trendW > 0 && contentW - fixed(true) >= COMPACT_BAR_MIN;
+        const barW = Math.max(COMPACT_BAR_MIN, Math.min(COMPACT_BAR_MAX, contentW - fixed(showTrend)));
+        if (lines.length)
+            lines.push("");
+        windows.forEach((w, i) => {
+            if (w.section)
+                lines.push(dim(`\u2500\u2500 ${w.section}`));
+            let row = `${emojiForPercent(w.remaining)} ${padLine(w.label, labelW)} ` +
+                `${compactBar(w.remaining, barW, ansi)} ${padStartW(pctTexts[i], pctW)}`;
+            if (resetW)
+                row += `  ${padEndW(resetTexts[i], resetW)}`;
+            if (showTrend && trends[i])
+                row += `  ${trends[i]}`;
+            lines.push(row.replace(/\s+$/, ""));
+            if (w.warn)
+                lines.push(`   ${w.warn}`);
+            // Raw counts/renewal lines are noise on a full window.
+            if (w.remaining < 100) {
+                for (const detail of w.detail) {
+                    if (w.resetText && /^(renewal|resets?(?: in| at)?):/i.test(detail.trim()))
+                        continue;
+                    lines.push(dim(`   ${relativizeTimestamps(detail.replace(ANSI_RE, "").trim())}`));
+                }
+            }
+        });
+    }
+    if (view.footer.length) {
+        lines.push("");
+        for (const line of view.footer)
+            lines.push(dim(relativizeTimestamps(line.replace(ANSI_RE, ""))));
+    }
+    if (!windows.length && !view.footer.length && !lines.length)
+        lines.push(dim("No quota data."));
+    return lines;
+}
+function renderBox(title, lines, innerW) {
+    return renderCard({ title, lines }, innerW, false);
+}
+function renderCompactStatus(prepared, termWidth, layout, ansi) {
+    const { cells, threshold, issues, failures } = prepared;
+    const trend = makeCompactTrend(prepared.series, prepared.trendMode, ansi);
+    const dim = (text) => (ansi ? `${ANSI_DIM}${text}${ANSI_RESET}` : text);
+    const colCount = layout === "single" || termWidth < COMPACT_TWO_COL_MIN ? 1 : 2;
+    const cardInnerW = columnInnerW(termWidth, colCount);
+    const fullInnerW = colCount === 2 ? 2 * (cardInnerW + 2) + GUTTER_W - 2 : cardInnerW;
+    const cardContentW = cardInnerW - PAD_X * 2;
+    const fullContentW = fullInnerW - PAD_X * 2;
+    const levels = new Map(cells.map((cell) => [cell, compactLevel(cell, threshold)]));
+    const problem = cells.filter((cell) => {
+        const level = levels.get(cell);
+        return !cell.view || cell.stale || level === "exhausted" || level === "low" || level === "watch";
+    });
+    const clear = cells.filter((cell) => !problem.includes(cell));
+    const count = (level) => cells.filter((cell) => levels.get(cell) === level).length;
+    // ── Summary ──────────────────────────────────────────────
+    const tally = [
+        `${cells.length} account${cells.length === 1 ? "" : "s"}`,
+        count("exhausted") ? `\ud83d\udfe5 ${count("exhausted")} exhausted` : "",
+        count("low") ? `\ud83d\udfe7 ${count("low")} low` : "",
+        count("watch") ? `\ud83d\udfe8 ${count("watch")} under 50%` : "",
+        count("ok") ? `\ud83d\udfe9 ${count("ok")} ok` : "",
+    ].filter(Boolean);
+    const summary = wrapJoined(tally, fullContentW, 3);
+    // Soonest recovery: exhausted/low windows first, then anything under 50%.
+    const soonestBelow = (limit) => {
+        let best;
+        for (const cell of cells) {
+            for (const w of cell.view?.windows ?? []) {
+                if (w.remaining >= limit || typeof w.resetMs !== "number" || w.resetMs < 60_000)
+                    continue;
+                if (!best || w.resetMs < (best.w.resetMs ?? Infinity))
+                    best = { cell, w };
+            }
+        }
+        return best;
+    };
+    const recovery = soonestBelow(threshold) ?? soonestBelow(50);
+    if (recovery?.cell.view) {
+        const when = formatDuration(Math.floor(recovery.w.resetMs / 1000));
+        summary.push(...wrapJoined([
+            `Next recovery: ${recovery.cell.view.name}`,
+            recovery.cell.view.subtitle ?? "",
+            `${recovery.w.label} ${recovery.w.remaining}% \u2192 resets in ${when}`,
+        ], fullContentW));
+    }
+    if (failures.length) {
+        const names = failures.map((failure) => failure.name ?? shortProvider(failure.title));
+        summary.push(`\u274c Failed: ${names.join(", ")}`);
+    }
+    const stale = issues.filter((issue) => issue.kind === "stale");
+    if (stale.length) {
+        const oldest = formatDuration(Math.floor((stale[0].ageMs ?? 0) / 1000));
+        summary.push(`\u26a0\ufe0f Stale: ${stale.length} (oldest ${oldest})`);
+    }
+    const out = [
+        ...renderBox("mystatus", summary.map((line) => truncateW(line, fullContentW)), fullInnerW),
+        "",
+    ];
+    // ── Problem cards ────────────────────────────────────────
+    const rendered = problem.map((cell) => cell.view
+        ? renderBox(compactTitle(cell.view), compactCardLines(cell, cardContentW, ansi, trend), cardInnerW)
+        : renderCard(cell, cardInnerW));
+    if (colCount === 1) {
+        for (const card of rendered)
+            out.push(...card, "");
+    }
+    else {
+        for (let i = 0; i < rendered.length; i += 2) {
+            const left = rendered[i];
+            const right = rendered[i + 1];
+            if (!right) {
+                out.push(...left, "");
+                continue;
+            }
+            const target = Math.max(left.length, right.length);
+            out.push(...joinCardRows(extendCardHeight(left, target, cardInnerW), extendCardHeight(right, target, cardInnerW), GUTTER), "");
+        }
+    }
+    // ── All clear ────────────────────────────────────────────
+    if (clear.length) {
+        const rows = clear.map((cell) => {
+            const view = cell.view;
+            const windows = view.windows;
+            const lowest = windows.reduce((min, w) => (!min || w.remaining < min.remaining ? w : min), undefined);
+            const soonest = windows
+                .filter((w) => typeof w.resetMs === "number" && w.resetMs > 0)
+                .sort((a, b) => a.resetMs - b.resetMs)[0];
+            let status;
+            if (!lowest)
+                status = view.meta[0] ?? view.footer[0]?.replace(ANSI_RE, "") ?? "";
+            else if (windows.every((w) => w.remaining >= 100))
+                status = "100%";
+            else
+                status = `${lowest.remaining}% ${lowest.label}`;
+            return {
+                icon: lowest ? emojiForPercent(lowest.remaining) : "\u2022 ",
+                title: compactTitle(view),
+                status,
+                reset: soonest?.resetText ? `\u21bb ${soonest.resetText}` : "",
+            };
+        });
+        const resetW = Math.max(0, ...rows.map((row) => displayWidth(row.reset)));
+        const statusW = Math.min(Math.max(0, ...rows.map((row) => displayWidth(row.status))), Math.max(12, Math.floor(fullContentW * 0.4)));
+        const titleW = Math.min(Math.max(0, ...rows.map((row) => displayWidth(row.title))), Math.max(10, fullContentW - 3 - 2 - statusW - (resetW ? 2 + resetW : 0)));
+        const lines = rows.map((row) => {
+            let line = `${row.icon} ${padLine(row.title, titleW)}  ${padLine(row.status, statusW)}`;
+            if (resetW)
+                line += `  ${dim(padEndW(row.reset, resetW))}`;
+            return line.replace(/\s+$/, "");
+        });
+        out.push(...renderBox(`All clear (${clear.length})`, lines, fullInnerW), "");
+    }
+    // ── Failures ─────────────────────────────────────────────
+    if (failures.length) {
+        out.push("\u274c Failed to query:");
+        for (const failure of failures) {
+            const [first, ...rest] = failure.detail.split("\n").map((line) => line.trim()).filter(Boolean);
+            out.push(`  ${failure.name ?? shortProvider(failure.title)}: ${first ?? "unknown error"}`);
+            for (const line of rest)
+                out.push(dim(`    ${line}`));
+        }
+    }
+    return out.join("\n").trimEnd();
 }
 function configFile(name) {
     // mystatus state (config / cache / history) lives at the legacy global
@@ -6176,6 +6516,30 @@ const PROVIDERS = [
     { id: "xai", title: "xAI/Grok", query: (a) => queryXai(a["xai-oauth"] ?? a.xai) },
     { id: "zai", title: "Z.AI Coding Plan", query: (a, ansi) => queryZai(a["zai-coding-plan"], ansi) },
 ];
+// Short, uniform names for the compact view's card titles. Display only:
+// `title` stays the stable key for trend history and hidden providers.
+const PROVIDER_NAMES = {
+    anthropic: "Anthropic",
+    atlascloud: "AtlasCloud",
+    byteplus: "BytePlus",
+    copilot: "Copilot",
+    google: "Google",
+    kimi: "Kimi",
+    longcat: "LongCat",
+    minimax: "MiniMax",
+    mistral: "Mistral",
+    muse: "Muse",
+    nanogpt: "NanoGPT",
+    openai: "OpenAI",
+    ollama: "Ollama",
+    "opencode-go": "OpenCode Go",
+    poe: "Poe",
+    qwencloud: "QwenCloud",
+    stepfun: "StepFun",
+    synthetic: "Synthetic",
+    xai: "Grok",
+    zai: "Z.AI",
+};
 function splitIds(s) {
     return (s ?? "")
         .split(",")
@@ -6256,31 +6620,33 @@ async function runProvider(p, auth, ansi, cache, ttlMs, fresh, deadlineMs) {
     const ageNote = (ts) => `cached${formatCachedAgeMinutes(ts)}`;
     const reuseMs = Math.max(fresh ? 0 : ttlMs, p.minIntervalMs ?? 0);
     if (reuseMs > 0 && cached && Date.now() - cached.ts < reuseMs) {
-        return { title: p.title, result: noteCards(cached.result, ageNote(cached.ts)) };
+        return { title: p.title, name: PROVIDER_NAMES[p.id], result: noteCards(cached.result, ageNote(cached.ts)) };
     }
     try {
         const result = await withDeadline(p.query(auth, ansi), deadlineMs);
         if (result === null)
-            return { title: p.title, result: null };
+            return { title: p.title, name: PROVIDER_NAMES[p.id], result: null };
         if (result.success && result.cards) {
             cache[p.id] = { ts: Date.now(), result };
-            return { title: p.title, result };
+            return { title: p.title, name: PROVIDER_NAMES[p.id], result };
         }
         // Live attempt errored → fall back to a previous good snapshot if we have one.
         if (cached?.result.success) {
-            return { title: p.title, result: staleCards(cached.result, cached.ts, result.error) };
+            return { title: p.title, name: PROVIDER_NAMES[p.id], result: staleCards(cached.result, cached.ts, result.error) };
         }
-        return { title: p.title, result };
+        return { title: p.title, name: PROVIDER_NAMES[p.id], result };
     }
     catch (err) {
         if (cached?.result.success) {
             return {
                 title: p.title,
+                name: PROVIDER_NAMES[p.id],
                 result: staleCards(cached.result, cached.ts, err instanceof Error ? err.message : String(err)),
             };
         }
         return {
             title: p.title,
+            name: PROVIDER_NAMES[p.id],
             result: { success: false, error: err instanceof Error ? err.message : String(err) },
         };
     }
@@ -6509,16 +6875,17 @@ function prepareStatusView(snapshot, args, opts = {}) {
     const sortMode = (args.sort ?? cfg.sort ?? "urgency");
     const trendMode = (isJson ? "off" : (args.trend ?? cfg.trend ?? "compact"));
     const history = loadHistory();
-    const trend = makeTrendFn(buildSeries(history), trendMode, useAnsi, now);
+    const series = buildSeries(history);
+    const trend = makeTrendFn(series, trendMode, useAnsi, now);
     const cells = [];
     const failures = [];
     const unconfigured = [];
-    for (const { title, result } of snapshot.ran) {
+    for (const { title, name, result } of snapshot.ran) {
         if (result === null) {
             unconfigured.push(title);
             continue;
         }
-        collect(result, title, cells, failures, useAnsi, trend);
+        collect(result, title, cells, failures, useAnsi, trend, name);
     }
     const errors = failures.map((f) => `${f.title}:\n${f.detail}`);
     if (cells.length === 0) {
@@ -6548,6 +6915,9 @@ function prepareStatusView(snapshot, args, opts = {}) {
             failed: failures.length,
             unconfigured: unconfigured.length,
         },
+        failures,
+        series,
+        trendMode,
     };
 }
 /** Build structured view data for the live TUI dashboard. */
@@ -6693,6 +7063,9 @@ export function formatMyStatus(snapshot, args, opts = {}) {
     const { cells, errors, metrics, alerts, threshold, issues, health } = prepared;
     if (isJson) {
         return cellsToJson(cells, alerts, errors, issues, health);
+    }
+    if ((cfg.view ?? "compact") !== "classic") {
+        return renderCompactStatus(prepared, termWidth, layoutMode, useAnsi);
     }
     const renderCells = [...cells];
     if (showSummary) {
