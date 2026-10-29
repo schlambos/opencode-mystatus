@@ -2,8 +2,8 @@
  * allstatus.ts — All-in-one AI quota status plugin for OpenCode
  *
  * Platforms:
- *   - OpenAI      (ChatGPT Plus/Team/Pro)    auth.json → openai
- *   - Anthropic   (Claude.ai)               auth.json → anthropic
+ *   - OpenAI      (ChatGPT Plus/Team/Pro)    opencode.db/auth.json → openai (Codex-client login) or ~/.codex/auth.json
+ *   - Anthropic   (Claude.ai)               opencode.db/auth.json → anthropic, else Claude Code login (keychain / ~/.claude/.credentials.json)
  *   - Google      (Antigravity quota/usage)  Antigravity Tools API → antigravity-accounts.json fallback
  *   - GitHub Copilot                        auth.json → github-copilot (+ optional PAT)
  *   - OpenCode Go+Zen (merged cell)         shared dashboard config (workspaceId + authCookie)
@@ -14,12 +14,17 @@
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
- *   - Synthetic   (rolling requests + weekly credits)  auth.json → synthetic, SYNTHETIC_API_KEY, or synthetic-api-key.json
+ *   - Synthetic   (requests + weekly plan + search)  auth.json → synthetic, SYNTHETIC_API_KEY, or synthetic-api-key.json
+ *   - Meta Muse Code (5-hour + weekly)      opencode.db → muse (opencode-muse plugin) or ~/.config/muse/auth.json
  *   - QwenCloud   (Token Plan)              qwencloud-cookies.json → dashboard API
  *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
  *   - AtlasCloud  (Coding Plan)             atlas-cookies.json → console API
  *   - Ollama      (Cloud Pro/Max)             ollama-cookies.json → settings SSR
  *   - LongCat     (API token quota)           longcat-cookies.json → platform API
+ *
+ * Credentials: OpenCode V2 keeps connections in <data>/opencode.db (`credential`
+ * table); V1 used <data>/auth.json. Both are read and merged; "auth.json → x"
+ * above means the integration id `x` in either store.
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)
@@ -30,6 +35,8 @@
  */
 import { tool } from "@opencode-ai/plugin";
 import { readFile } from "fs/promises";
+import { execFileSync } from "child_process";
+import { createHash } from "crypto";
 import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
@@ -266,9 +273,107 @@ function stableCredHash(cred) {
     }
     return `raw:${JSON.stringify(c).slice(0, 96)}`;
 }
+async function dynamicImport(spec) {
+    return import(/* @vite-ignore */ spec);
+}
+async function querySqliteReadonly(path, sql) {
+    try {
+        const { Database } = await dynamicImport("bun:sqlite");
+        const db = new Database(path, { readonly: true });
+        try {
+            return db.query(sql).all();
+        }
+        catch {
+            return [];
+        }
+        finally {
+            db.close();
+        }
+    }
+    catch {
+        // not running under bun
+    }
+    try {
+        const { DatabaseSync } = await dynamicImport("node:sqlite");
+        const db = new DatabaseSync(path, { readOnly: true });
+        try {
+            return db.prepare(sql).all();
+        }
+        catch {
+            return [];
+        }
+        finally {
+            db.close();
+        }
+    }
+    catch {
+        // node:sqlite unavailable
+    }
+    try {
+        const out = execFileSync("sqlite3", ["-readonly", "-json", path, sql], {
+            encoding: "utf-8",
+            timeout: 5_000,
+            stdio: ["ignore", "pipe", "ignore"],
+        });
+        return out.trim() ? JSON.parse(out) : [];
+    }
+    catch {
+        return [];
+    }
+}
+let opencodeCredentialsMemo = null;
+function loadOpencodeCredentials() {
+    if (opencodeCredentialsMemo && Date.now() - opencodeCredentialsMemo.ts < 5_000) {
+        return opencodeCredentialsMemo.rows;
+    }
+    const rows = (async () => {
+        const out = [];
+        for (const path of searchPaths("opencode.db", "data")) {
+            const rows = await querySqliteReadonly(path, "select integration_id, active, value, time_updated from credential");
+            for (const row of rows) {
+                if (typeof row.integration_id !== "string" || typeof row.value !== "string")
+                    continue;
+                try {
+                    const value = JSON.parse(row.value);
+                    if (!value || typeof value !== "object")
+                        continue;
+                    out.push({
+                        integration: row.integration_id,
+                        active: Number(row.active) === 1,
+                        updated: Number(row.time_updated) || 0,
+                        value: value,
+                    });
+                }
+                catch {
+                    // malformed credential value — skip
+                }
+            }
+        }
+        return out;
+    })();
+    opencodeCredentialsMemo = { ts: Date.now(), rows };
+    return rows;
+}
+/** V2 credentials for one integration, active connection first, then newest. */
+async function opencodeCredentialsFor(integration) {
+    return (await loadOpencodeCredentials())
+        .filter((row) => row.integration === integration)
+        .sort((a, b) => Number(b.active) - Number(a.active) || b.updated - a.updated);
+}
+// V2 stores API keys as {type:"key"}; the per-provider readers below were
+// written against auth.json's {type:"api"} shape.
+function normalizeOpencodeCredential(value) {
+    return value.type === "key" ? { ...value, type: "api" } : value;
+}
 async function loadAuthMerged() {
     const paths = searchPaths("auth.json", "data");
     const merged = {};
+    for (const row of await loadOpencodeCredentials()) {
+        if (merged[row.integration])
+            continue;
+        const [preferred] = await opencodeCredentialsFor(row.integration);
+        merged[row.integration] = normalizeOpencodeCredential(preferred.value);
+    }
     // Per-provider freshness merge: for the same provider id across multiple
     // auth.json sources (profiles + legacy), keep the entry with the latest
     // `expires`. Prevents a stale legacy ~/.local/share copy from shadowing
@@ -329,6 +434,13 @@ async function collectGoogleAuthRefreshTokens() {
         catch {
             // skip
         }
+    }
+    // opencode-antigravity-auth on OpenCode V2 keeps one `google` connection per
+    // account (all of them rotate, not just the active one).
+    for (const row of await opencodeCredentialsFor("google")) {
+        const token = googleRefreshFromCred(row.value);
+        if (token)
+            tokens.add(token);
     }
     return tokens;
 }
@@ -467,30 +579,110 @@ function openAIAdditionalLimitName(limit, index) {
     }
     return `Additional quota ${index + 1}`;
 }
-async function queryOpenAI(auth, ansi = false) {
-    if (!auth || auth.type !== "oauth" || !auth.access)
-        return null;
-    if (auth.expires && auth.expires < Date.now())
-        return { success: false, error: "\u26a0\ufe0f OpenAI token expired. Use an OpenAI model in OpenCode to refresh." };
+// OpenCode V2's default "Sign in with ChatGPT" method (chatgpt-token-sharing,
+// oaiapp_* clients) issues tokens scoped to api.openai.com inference only;
+// chatgpt.com/backend-api/wham/usage rejects them (401 no_matching_rule) and
+// no other route reports their limits. Codex-client tokens (OpenCode's legacy
+// "Codex browser" method, or the Codex CLI's ~/.codex/auth.json) still read
+// the ChatGPT plan usage.
+const OPENAI_TOKEN_SHARING_METHOD = "chatgpt-token-sharing";
+function isOpenAITokenSharing(auth) {
+    if (auth.methodID === OPENAI_TOKEN_SHARING_METHOD)
+        return true;
+    const clientId = parseJwtPayload(auth.access ?? "")?.client_id;
+    return typeof clientId === "string" && clientId.startsWith("oaiapp_");
+}
+function openAITokenClaims(access) {
+    const payload = parseJwtPayload(access);
+    return {
+        email: payload?.["https://api.openai.com/profile"]?.email ?? null,
+        accountId: payload?.["https://api.openai.com/auth"]
+            ?.chatgpt_account_id ?? null,
+        exp: typeof payload?.exp === "number" ? payload.exp * 1000 : undefined,
+    };
+}
+// Read-only: the Codex CLI rotates its refresh token, so refreshing here would
+// sign the CLI out. An expired token is reported instead.
+function loadCodexCliToken() {
+    const path = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json");
     try {
-        const payload = parseJwtPayload(auth.access);
-        const email = payload?.["https://api.openai.com/profile"]?.email ?? null;
-        const accountId = payload?.["https://api.openai.com/auth"]
-            ?.chatgpt_account_id ?? null;
+        const data = JSON.parse(readFileSync(path, "utf-8"));
+        const access = data.tokens?.access_token;
+        if (!access)
+            return null;
+        const claims = openAITokenClaims(access);
+        const idEmail = parseJwtPayload(data.tokens?.id_token ?? "")?.email;
+        return {
+            access,
+            accountId: data.tokens?.account_id ?? claims.accountId,
+            email: claims.email ?? (typeof idEmail === "string" ? idEmail : null),
+            expires: claims.exp,
+            source: "Codex CLI login",
+            expiredHint: "Run `codex` once to refresh its login.",
+        };
+    }
+    catch {
+        return null;
+    }
+}
+async function queryOpenAI(auth, ansi = false) {
+    const native = auth?.type === "oauth" && auth.access ? auth : undefined;
+    const tokenSharing = native ? isOpenAITokenSharing(native) : false;
+    const tokens = [];
+    if (native && !tokenSharing) {
+        tokens.push({
+            ...openAITokenClaims(native.access),
+            access: native.access,
+            expires: native.expires,
+            expiredHint: "Use an OpenAI model in OpenCode to refresh.",
+        });
+    }
+    const codex = loadCodexCliToken();
+    if (codex)
+        tokens.push(codex);
+    if (!tokens.length) {
+        if (!tokenSharing)
+            return null;
+        return {
+            success: false,
+            error: "OpenCode's \"Sign in with ChatGPT\" (token sharing) login cannot read ChatGPT usage.\n" +
+                "Sign in to the Codex CLI (`codex login`) so mystatus can read ~/.codex/auth.json.",
+        };
+    }
+    const failures = [];
+    for (const token of tokens) {
+        if (token.expires && token.expires < Date.now()) {
+            const via = token.source ? ` (${token.source})` : "";
+            failures.push(`\u26a0\ufe0f OpenAI token expired${via}. ${token.expiredHint}`);
+            continue;
+        }
+        const result = await queryOpenAIUsage(token, ansi);
+        if (result.success)
+            return result;
+        if (result.error)
+            failures.push(result.error);
+    }
+    return { success: false, error: failures.join("\n") };
+}
+async function queryOpenAIUsage(token, ansi = false) {
+    try {
         const headers = {
-            Authorization: `Bearer ${auth.access}`,
+            Authorization: `Bearer ${token.access}`,
             "User-Agent": "OpenCode-AllStatus/1.0",
         };
-        if (accountId)
-            headers["ChatGPT-Account-Id"] = accountId;
+        if (token.accountId)
+            headers["ChatGPT-Account-Id"] = token.accountId;
         const res = await fetchTimeout("https://chatgpt.com/backend-api/wham/usage", { headers });
-        if (!res.ok)
-            throw new Error(`OpenAI API error (${res.status})`);
+        if (!res.ok) {
+            throw new Error(`OpenAI API error (${res.status})${token.source ? ` via ${token.source}` : ""}`);
+        }
         const data = (await res.json());
         const header = [
-            `Account:        ${data.email ?? email ?? "unknown"}`,
+            `Account:        ${data.email ?? token.email ?? "unknown"}`,
             `Plan:           ChatGPT ${data.plan_type ?? "unknown"}`,
         ];
+        if (token.source)
+            header.push(`Source:         ${token.source}`);
         const credits = data.credits;
         if (credits) {
             if (credits.unlimited) {
@@ -713,22 +905,115 @@ async function refreshAnthropicToken(refreshToken) {
         return null;
     }
 }
-async function queryAnthropic(auth, ansi = false) {
-    if (!auth || auth.type !== "oauth")
+function parseClaudeCodeCredentials(raw) {
+    const oauth = JSON.parse(raw).claudeAiOauth;
+    if (!oauth || typeof oauth.accessToken !== "string" || !oauth.accessToken)
         return null;
-    let accessToken = auth.access;
-    if (!accessToken || (auth.expires && auth.expires < Date.now())) {
-        if (!auth.refresh) {
-            return { success: false, error: "\u26a0\ufe0f Anthropic token expired and no refresh token available." };
+    return {
+        accessToken: oauth.accessToken,
+        expiresAt: typeof oauth.expiresAt === "number" ? oauth.expiresAt : undefined,
+        subscriptionType: typeof oauth.subscriptionType === "string" ? oauth.subscriptionType : undefined,
+    };
+}
+function loadClaudeCodeCredentials() {
+    const configDir = process.env.CLAUDE_CONFIG_DIR;
+    try {
+        const file = join(configDir || join(homedir(), ".claude"), ".credentials.json");
+        if (existsSync(file)) {
+            const creds = parseClaudeCodeCredentials(readFileSync(file, "utf-8"));
+            if (creds)
+                return creds;
         }
-        const refreshed = await refreshAnthropicToken(auth.refresh);
-        if (!refreshed) {
+    }
+    catch {
+        // fall through to the keychain
+    }
+    if (process.platform !== "darwin")
+        return null;
+    const services = ["Claude Code-credentials"];
+    if (configDir) {
+        const hash = createHash("sha256").update(configDir).digest("hex").slice(0, 8);
+        services.unshift(`Claude Code-credentials-${hash}`);
+    }
+    for (const service of services) {
+        try {
+            const raw = execFileSync("security", ["find-generic-password", "-s", service, "-w"], {
+                encoding: "utf-8",
+                timeout: 5_000,
+                stdio: ["ignore", "pipe", "ignore"],
+            });
+            const creds = parseClaudeCodeCredentials(raw.trim());
+            if (creds)
+                return creds;
+        }
+        catch {
+            // item missing or keychain locked
+        }
+    }
+    return null;
+}
+function titleWords(value) {
+    return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
+}
+function anthropicPlanLabel(profile, subscriptionType) {
+    const orgType = profile?.organization?.organization_type?.replace(/^claude_/, "");
+    let plan = orgType
+        ? `Claude ${titleWords(orgType)}`
+        : profile?.account?.has_claude_max
+            ? "Claude Max"
+            : profile?.account?.has_claude_pro
+                ? "Claude Pro"
+                : subscriptionType
+                    ? `Claude ${titleWords(subscriptionType)}`
+                    : "Claude Pro/Max";
+    const multiplier = /max_(\d+x)/i.exec(profile?.organization?.rate_limit_tier ?? "")?.[1];
+    if (multiplier && !/max/i.test(plan))
+        plan += ` (Max ${multiplier})`;
+    else if (multiplier)
+        plan += ` ${multiplier}`;
+    return plan;
+}
+async function fetchAnthropicProfile(headers) {
+    try {
+        const res = await fetchTimeout("https://api.anthropic.com/api/oauth/profile", { method: "GET", headers }, 8_000, 0);
+        return res.ok ? (await res.json()) : null;
+    }
+    catch {
+        return null;
+    }
+}
+async function queryAnthropic(auth, ansi = false) {
+    const native = auth?.type === "oauth" ? auth : undefined;
+    const claudeCode = native ? null : loadClaudeCodeCredentials();
+    if (!native && !claudeCode)
+        return null;
+    let accessToken;
+    let source;
+    if (native) {
+        accessToken = native.access;
+        if (!accessToken || (native.expires && native.expires < Date.now())) {
+            if (!native.refresh) {
+                return { success: false, error: "\u26a0\ufe0f Anthropic token expired and no refresh token available." };
+            }
+            const refreshed = await refreshAnthropicToken(native.refresh);
+            if (!refreshed) {
+                return {
+                    success: false,
+                    error: "\u26a0\ufe0f Anthropic token expired \u2014 refresh failed.\nRe-authenticate with Anthropic in OpenCode to get a fresh token.",
+                };
+            }
+            accessToken = refreshed;
+        }
+    }
+    else if (claudeCode) {
+        if (claudeCode.expiresAt && claudeCode.expiresAt < Date.now()) {
             return {
                 success: false,
-                error: "\u26a0\ufe0f Anthropic token expired \u2014 refresh failed.\nRe-authenticate with Anthropic in OpenCode to get a fresh token.",
+                error: "\u26a0\ufe0f Claude Code login expired. Run `claude` once to refresh it.",
             };
         }
-        accessToken = refreshed;
+        accessToken = claudeCode.accessToken;
+        source = "Claude Code login";
     }
     try {
         const headers = {
@@ -737,13 +1022,25 @@ async function queryAnthropic(auth, ansi = false) {
             "User-Agent": ANTHROPIC_USER_AGENT,
             "Content-Type": "application/json",
         };
-        const res = await fetchTimeout("https://api.anthropic.com/api/oauth/usage", { method: "GET", headers });
+        const [res, profile] = await Promise.all([
+            fetchTimeout("https://api.anthropic.com/api/oauth/usage", { method: "GET", headers }),
+            fetchAnthropicProfile(headers),
+        ]);
         if (!res.ok) {
             const body = await res.text().catch(() => "");
             throw new Error(`Anthropic API error (${res.status}): ${body.slice(0, 300)}`);
         }
         const data = (await res.json());
-        const header = ["Account:        Claude Pro/Max"];
+        const header = [
+            `Account:        ${profile?.account?.email ?? "Claude"}`,
+            `Plan:           ${anthropicPlanLabel(profile, claudeCode?.subscriptionType)}`,
+        ];
+        if (profile?.organization?.name && profile.organization.organization_type !== "claude_max"
+            && profile.organization.organization_type !== "claude_pro") {
+            header.push(`Organization:   ${profile.organization.name}`);
+        }
+        if (source)
+            header.push(`Source:         ${source}`);
         const windows = [];
         for (const limit of data.limits ?? []) {
             const window = anthropicLimitWindow(limit);
@@ -1049,6 +1346,73 @@ function resolveAntigravityToolsSettings(cfg) {
         includeUsage: configured?.includeUsage !== false,
     };
 }
+// Antigravity Tools proxies wired into opencode.json as custom
+// OpenAI-compatible providers (V2 `providers.<id>.settings`, V1
+// `provider.<id>.options`). Each is tried with its own configured key, which
+// opencode already sends to that same origin.
+function opencodeJsonAntigravityEndpoints(base, cfg) {
+    const out = [];
+    for (const dir of candidateDirs("config")) {
+        for (const name of ["opencode.json", "opencode.jsonc"]) {
+            const path = join(dir, name);
+            if (!existsSync(path))
+                continue;
+            let config;
+            try {
+                config = JSON.parse(stripJsonComments(readFileSync(path, "utf-8")));
+            }
+            catch {
+                continue;
+            }
+            const providers = {
+                ...(config.provider ?? {}),
+                ...(config.providers ?? {}),
+            };
+            for (const [id, raw] of Object.entries(providers)) {
+                const provider = (raw ?? {});
+                if (!/antigravity/i.test(`${id} ${provider.name ?? ""}`))
+                    continue;
+                const settings = provider.settings ?? provider.options;
+                const baseUrl = settings?.baseURL ? normalizeAntigravityToolsBaseUrl(settings.baseURL) : null;
+                if (!baseUrl || out.some((endpoint) => endpoint.baseUrl === baseUrl))
+                    continue;
+                const apiKey = typeof settings?.apiKey === "string" && !settings.apiKey.startsWith("{")
+                    ? settings.apiKey
+                    : undefined;
+                out.push({
+                    baseUrl,
+                    credentials: apiKey ? [apiKey] : [],
+                    usageHours: base?.usageHours ?? 168,
+                    includeUsage: base?.includeUsage ?? cfg.antigravityTools?.includeUsage !== false,
+                });
+            }
+        }
+    }
+    return out;
+}
+function antigravityToolsCandidates(cfg) {
+    if (cfg.antigravityTools?.enabled === false)
+        return [];
+    const primary = resolveAntigravityToolsSettings(cfg);
+    // An explicit base URL (env or mystatus.json) pins the instance.
+    if (process.env.ANTIGRAVITY_TOOLS_BASE_URL || cfg.antigravityTools?.baseUrl) {
+        return primary ? [primary] : [];
+    }
+    const candidates = primary ? [primary] : [];
+    for (const endpoint of opencodeJsonAntigravityEndpoints(primary, cfg)) {
+        const same = candidates.find((candidate) => candidate.baseUrl === endpoint.baseUrl);
+        if (same) {
+            for (const credential of endpoint.credentials) {
+                if (!same.credentials.includes(credential))
+                    same.credentials.push(credential);
+            }
+        }
+        else {
+            candidates.push(endpoint);
+        }
+    }
+    return candidates;
+}
 function antigravityToolsHeaders(credential) {
     const headers = {
         Accept: "application/json",
@@ -1219,16 +1583,23 @@ function antigravityToolsStatusWarning(account) {
     return undefined;
 }
 async function queryAntigravityTools(cfg) {
-    const settings = resolveAntigravityToolsSettings(cfg);
-    if (!settings)
+    const candidates = antigravityToolsCandidates(cfg);
+    if (!candidates.length)
         return null;
     let client;
-    try {
-        client = await connectAntigravityTools(settings);
+    const connectErrors = [];
+    for (const candidate of candidates) {
+        try {
+            client = await connectAntigravityTools(candidate);
+            break;
+        }
+        catch (err) {
+            connectErrors.push(err instanceof Error ? err.message : String(err));
+        }
     }
-    catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+    if (!client)
+        return { success: false, error: connectErrors.join("\n") };
+    const settings = client.settings;
     const hoursQuery = `?hours=${settings.usageHours}`;
     const [health, summary, accountStats, modelStats] = await Promise.all([
         fetchAntigravityToolsOptional(client, ["/health"]),
@@ -1351,8 +1722,7 @@ async function queryGoogle(ansi = false) {
         const accounts = allAccounts.filter((a) => a.email && a.enabled !== false);
         if (!accounts.length)
             return { success: true, output: "No enabled Google accounts found." };
-        const cards = [];
-        for (const account of accounts) {
+        const cards = await Promise.all(accounts.map(async (account) => {
             const ua = account.fingerprint?.userAgent ?? "antigravity/1.23.2 windows/amd64";
             const windows = [];
             let cachedNote;
@@ -1394,15 +1764,15 @@ async function queryGoogle(ansi = false) {
                     }
                 }
             }
-            cards.push({
+            return {
                 subtitle: account.email,
                 note: cachedNote,
                 windows: windows.length ? windows : undefined,
                 footer: windows.length
                     ? undefined
                     : ["No quota data available for this account."],
-            });
-        }
+            };
+        }));
         if (!cards.length) {
             return { success: true, output: "No quota data available for Google accounts." };
         }
@@ -2491,6 +2861,24 @@ function parseSyntheticWeeklyWindow(raw) {
         limited: value.limited === true,
     };
 }
+// Current /v2/quotas plan pool: a server-computed percentage that regenerates
+// by `nextRegenPercent` percentage points on each tick.
+function parseSyntheticPlanWeeklyWindow(raw) {
+    const value = syntheticRecord(raw);
+    if (!value)
+        return null;
+    const remainingPercent = parseSyntheticPercent(value.percentRemaining);
+    if (remainingPercent === undefined)
+        return null;
+    const regen = syntheticFiniteNumber(value.nextRegenPercent);
+    return {
+        kind: "regeneration",
+        remainingPercent,
+        regenPercent: regen !== undefined && regen >= 0 ? Number(regen.toFixed(2)) : undefined,
+        nextRegenAt: parseSyntheticTimestamp(value.nextRegenAt),
+        limited: value.limited === true,
+    };
+}
 function parseSyntheticSubscriptionWindow(raw) {
     const subscription = syntheticRecord(raw);
     if (!subscription)
@@ -2524,6 +2912,7 @@ function syntheticWindow(label, parsed, dollars, unit) {
     return {
         label,
         remaining: Math.round(clampPercent(parsed.remainingPercent)),
+        resetAt: parsed.kind === "renewal" ? parsed.renewalAt : undefined,
         detail,
         ...(parsed.limited ? { warn: "Limited; regeneration continues on each tick" } : {}),
     };
@@ -2579,8 +2968,17 @@ async function querySynthetic(auth) {
             }
         }
         const weekly = parseSyntheticWeeklyWindow(payload.weeklyTokenLimit);
-        if (weekly)
+        if (weekly) {
             windows.push(syntheticWindow("Weekly credits", weekly, true, "credits"));
+        }
+        else {
+            const plan = parseSyntheticPlanWeeklyWindow(payload.planWeeklyLimit);
+            if (plan)
+                windows.push(syntheticWindow("Weekly plan limit", plan, false, ""));
+        }
+        const search = parseSyntheticSubscriptionWindow(syntheticRecord(payload.search)?.hourly);
+        if (search)
+            windows.push(syntheticWindow("Search (hourly)", search, false, "requests"));
         if (!windows.length) {
             return { success: false, error: "Synthetic quotas API returned no recognized quota windows" };
         }
@@ -2592,6 +2990,141 @@ async function querySynthetic(auth) {
             error: err instanceof Error ? err.message : String(err),
         };
     }
+}
+// ============================================================
+// Meta Muse Code  (POST api.meta.ai/muse-code/key)
+//
+// Muse has no read-only usage route. Its plan usage (rolling 5-hour window +
+// weekly) is only returned by the key-mint endpoint that the opencode-muse
+// plugin and `muse` CLI call to exchange their device-flow token for a 24-hour
+// API key. Each call mints a new key (existing keys stay valid), so the
+// provider is throttled to one live call per MUSE_MIN_INTERVAL_MS through the
+// provider cache, even when `fresh` is requested.
+//
+//   Credentials: OpenCode V2 `muse` connections (refresh = device-flow token),
+//                then the muse CLI's ~/.config/muse/auth.json (MUSE_AUTH_PATH).
+// ============================================================
+const MUSE_MINT_URL = "https://api.meta.ai/muse-code/key";
+const MUSE_ACCOUNT_URL = "https://accountscenter.meta.com/muse_code/";
+const MUSE_MIN_INTERVAL_MS = 15 * 60_000;
+function museCliAuthPath() {
+    if (process.env.MUSE_AUTH_PATH)
+        return process.env.MUSE_AUTH_PATH;
+    return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "muse", "auth.json");
+}
+async function loadMuseLogins() {
+    const logins = [];
+    const seen = new Set();
+    // Several connections can exist for one account after re-logins; keep the
+    // active/newest one per email.
+    for (const row of await opencodeCredentialsFor("muse")) {
+        const value = row.value;
+        if (value.type !== "oauth" || typeof value.refresh !== "string" || !value.refresh)
+            continue;
+        const email = typeof value.metadata?.email === "string" ? value.metadata.email : undefined;
+        const key = (email ?? value.refresh).toLowerCase();
+        if (seen.has(key))
+            continue;
+        seen.add(key);
+        logins.push({
+            token: value.refresh,
+            email,
+            tier: typeof value.metadata?.tier === "string" ? value.metadata.tier : undefined,
+            source: "OpenCode",
+        });
+    }
+    if (logins.length)
+        return logins;
+    try {
+        const cli = JSON.parse(readFileSync(museCliAuthPath(), "utf-8"));
+        const meta = cli.providers?.meta;
+        if (meta?.mechanism === "oauth" && meta.access_token) {
+            logins.push({ token: meta.access_token, source: "muse CLI" });
+        }
+    }
+    catch {
+        // no muse CLI login
+    }
+    return logins;
+}
+function museWindow(label, window) {
+    if (typeof window?.used_percent !== "number" || !Number.isFinite(window.used_percent))
+        return null;
+    return {
+        label,
+        remaining: Math.round(clampPercent(100 - window.used_percent)),
+        resetAt: epochToIso(window.resets_at),
+    };
+}
+function museWindowLabel(window) {
+    const mins = window?.window_duration_mins;
+    if (typeof mins !== "number" || !Number.isFinite(mins) || mins <= 0)
+        return "Rolling window";
+    if (mins % 60 === 0)
+        return `${mins / 60}-hour limit`;
+    return `${mins}-minute limit`;
+}
+async function queryMuseLogin(login) {
+    const res = await fetchTimeout(MUSE_MINT_URL, {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${login.token}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            "User-Agent": "opencode-muse/0.1.0",
+        },
+        body: "{}",
+    }, 15_000, 0);
+    if (res.status === 401 || res.status === 403) {
+        throw new Error(`Muse login is no longer valid (${res.status}). Run \`opencode auth login\`, choose Muse, and approve the device code.`);
+    }
+    if (!res.ok)
+        throw new Error(`Muse API error (${res.status})`);
+    const data = (await res.json());
+    const header = [`Account:        ${data.user_email ?? login.email ?? "unknown"}`];
+    const tier = data.subs_tier_name ?? login.tier;
+    if (tier)
+        header.push(`Plan:           ${tier}`);
+    if (login.source !== "OpenCode")
+        header.push(`Source:         ${login.source}`);
+    const windows = [
+        museWindow(museWindowLabel(data.subs_usage?.window), data.subs_usage?.window),
+        museWindow("Weekly limit", data.subs_usage?.weekly),
+    ].filter((window) => window !== null);
+    const footer = [];
+    if (data.require_payment || data.is_subs_active === false) {
+        footer.push(`\u26a0\ufe0f Subscription needs attention: ${data.action_url ?? MUSE_ACCOUNT_URL}`);
+    }
+    if (!windows.length)
+        footer.push("No usage data returned for this subscription.");
+    return {
+        subtitle: data.user_email ?? login.email,
+        header,
+        windows: windows.length ? windows : undefined,
+        footer: footer.length ? footer : undefined,
+    };
+}
+async function queryMuse() {
+    const logins = await loadMuseLogins();
+    if (!logins.length)
+        return null;
+    const results = await Promise.allSettled(logins.map((login) => queryMuseLogin(login)));
+    const cards = [];
+    const errors = [];
+    results.forEach((result, index) => {
+        if (result.status === "fulfilled")
+            cards.push(result.value);
+        else {
+            const label = logins[index].email ?? logins[index].source;
+            errors.push(`${label}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+        }
+    });
+    if (!cards.length)
+        return { success: false, error: errors.join("\n") };
+    if (errors.length) {
+        cards[0].footer = [...(cards[0].footer ?? []), ...errors.map((error) => `\u26a0\ufe0f ${error}`)];
+    }
+    return { success: true, cards };
 }
 // ============================================================
 // Z.AI Coding Plan
@@ -3514,22 +4047,54 @@ function qwencloudPersonalPayload(value) {
     const root = value;
     return root.data?.DataV2?.data?.data ?? null;
 }
+/** Solo Token Plan commodity code used by the live console SPA. */
+const QWENCLOUD_SOLO_COMMODITY = "sfm_tokenplansolo_public_intl";
+const QWENCLOUD_TEAM_COMMODITY = "sfm_tokenplanteams_dp_intl";
+/** Free-tier commodity families listed by the billing SPA. */
+const QWENCLOUD_FREETIER_COMMODITIES = [
+    "sfm_inferenceglobal_public_intl",
+    "sfm_inferenceOmni_public_intl",
+    "sfm_inferenceQwenAudio_public_intl",
+    "sfm_inferenceFunAudio_public_intl",
+    "sfm_inferenceWan_public_intl",
+    "sfm_inferenceDomain_public_intl",
+    "sfm_inferenceVector_public_intl",
+    "sfm_inferenceThirdParty_public_intl",
+    "sfm_inferenceHH_public_intl",
+];
+function qwenParseJavaDate(value) {
+    if (!value)
+        return undefined;
+    // Aliyun returns "Sun Aug 30 00:00:00 CST 2026". V8 often fails on CST/CDT;
+    // treat China Standard Time as UTC+8.
+    const normalized = value
+        .replace(/\bCST\b/g, "GMT+0800")
+        .replace(/\bCDT\b/g, "GMT+0800");
+    const ms = Date.parse(normalized);
+    if (!Number.isFinite(ms))
+        return undefined;
+    // Ignore already-elapsed cycle ends for reset countdowns.
+    if (ms <= Date.now())
+        return undefined;
+    return ms;
+}
 async function qwencloudPersonalRequest(endpoint, cookies, secToken) {
     const api = `zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/${endpoint}`;
-    const params = {
-        Api: api,
-        Data: {
-            cornerstoneParam: {
-                domain: "home.qwencloud.com",
-                consoleSite: "QWENCLOUD",
-                console: "ONE_CONSOLE",
-                xsp_lang: "en-US",
-                protocol: "V2",
-                productCode: "p_efm",
-            },
+    const data = {
+        cornerstoneParam: {
+            domain: "home.qwencloud.com",
+            consoleSite: "QWENCLOUD",
+            console: "ONE_CONSOLE",
+            xsp_lang: "en-US",
+            protocol: "V2",
+            productCode: "p_efm",
         },
-        V: "1.0",
     };
+    // Live SPA always sends the solo commodity on subscription lookups.
+    if (endpoint === "subscription") {
+        data.commodityCode = QWENCLOUD_SOLO_COMMODITY;
+    }
+    const params = { Api: api, Data: data, V: "1.0" };
     const query = new URLSearchParams({
         product: "sfm_bailian",
         action: "IntlBroadScopeAspnGateway",
@@ -3609,116 +4174,297 @@ async function queryQwenCloudPersonal(cookies, secToken) {
         cards: [{ header, windows, footer: footer.length ? footer : undefined }],
     };
 }
+function qwenIsTokenUnit(unit) {
+    if (!unit)
+        return false;
+    const u = unit.toLowerCase();
+    return u.includes("token") || u.includes("word");
+}
+/**
+ * Free-tier path used by the live billing SPA when no paid Token Plan exists:
+ *   1) freetier/ListBailianFreetier → template codes
+ *   2) BssOpenAPI-V3/DescribeFqInstance → InitCapacity / CurrCapacity per model
+ */
+async function queryQwenCloudFreeTier(cookies, secToken) {
+    const headers = {
+        ...qwencloudHeaders(cookies),
+        "Content-Type": "application/x-www-form-urlencoded",
+    };
+    const listRes = await fetchTimeout(`${QWENCLOUD_BASE}/data/api.json?product=freetier&action=ListBailianFreetier`, {
+        method: "POST",
+        headers,
+        body: new URLSearchParams({
+            product: "freetier",
+            action: "ListBailianFreetier",
+            sec_token: secToken,
+            region: "ap-southeast-1",
+            params: JSON.stringify({ CommodityList: [...QWENCLOUD_FREETIER_COMMODITIES] }),
+        }),
+    });
+    if (!listRes.ok)
+        return null;
+    const listJson = (await listRes.json());
+    const templates = (listJson.data?.Data ?? [])
+        .map((t) => t.TemplateCode)
+        .filter((c) => typeof c === "string" && c.length > 0);
+    if (!templates.length)
+        return null;
+    const instances = [];
+    for (let i = 0; i < templates.length; i += 20) {
+        const chunk = templates.slice(i, i + 20);
+        const res = await fetchTimeout(`${QWENCLOUD_BASE}/data/api.json?product=BssOpenAPI-V3&action=DescribeFqInstance`, {
+            method: "POST",
+            headers,
+            body: new URLSearchParams({
+                product: "BssOpenAPI-V3",
+                action: "DescribeFqInstance",
+                sec_token: secToken,
+                region: "ap-southeast-1",
+                params: JSON.stringify({
+                    TemplateCodes: chunk,
+                    PageSize: 80,
+                    CurrentPage: 1,
+                }),
+            }),
+        });
+        if (!res.ok)
+            continue;
+        try {
+            const json = (await res.json());
+            if (Array.isArray(json.data?.Data))
+                instances.push(...json.data.Data);
+        }
+        catch {
+            // skip chunk
+        }
+    }
+    if (!instances.length)
+        return null;
+    // Aggregate token/word free quotas + surface the lowest individual models.
+    let tokenInit = 0;
+    let tokenCurr = 0;
+    let soonestReset;
+    const modelRows = [];
+    for (const inst of instances) {
+        const init = Number(inst.InitCapacity?.BaseValue ?? 0);
+        const currRaw = Number(inst.CurrCapacity?.BaseValue ?? 0);
+        const unit = inst.CurrCapacity?.ShowUnit || inst.InitCapacity?.ShowUnit || "";
+        const status = (inst.Status ?? "unknown").toLowerCase();
+        // Exhausted instances report CurrCapacity 0 — still count them.
+        const curr = status === "exhaust" ? 0 : currRaw;
+        if (!(init > 0) && !(curr >= 0 && status === "exhaust"))
+            continue;
+        const resetMs = qwenParseJavaDate(inst.CurrentCycleEndTime ?? inst.EndTime);
+        if (typeof resetMs === "number") {
+            soonestReset =
+                soonestReset === undefined ? resetMs : Math.min(soonestReset, resetMs);
+        }
+        if (qwenIsTokenUnit(unit)) {
+            tokenInit += init;
+            tokenCurr += curr;
+        }
+        const name = inst.Template?.Name ||
+            inst.Template?.Code?.replace(/^sfm_inference/, "").replace(/_public_intl.*/, "") ||
+            inst.InstanceName ||
+            "model";
+        const remaining = init > 0 ? Math.round((curr / init) * 100) : status === "exhaust" ? 0 : 100;
+        modelRows.push({
+            name,
+            remaining: Math.max(0, Math.min(100, remaining)),
+            init,
+            curr,
+            unit,
+            resetMs,
+            status,
+        });
+    }
+    if (!modelRows.length && tokenInit <= 0)
+        return null;
+    const windows = [];
+    if (tokenInit > 0) {
+        const remainPct = Math.round((tokenCurr / tokenInit) * 100);
+        windows.push({
+            label: "Free tokens (all models)",
+            remaining: Math.max(0, Math.min(100, remainPct)),
+            resetAt: soonestReset !== undefined ? new Date(soonestReset).toISOString() : undefined,
+            detail: [
+                `Remaining: ${tokenCurr.toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${tokenInit.toLocaleString(undefined, { maximumFractionDigits: 0 })} base units`,
+            ],
+        });
+    }
+    // Show the tightest model quotas (exhausted first, then lowest remaining).
+    const notable = [...modelRows]
+        .sort((a, b) => {
+        if (a.remaining !== b.remaining)
+            return a.remaining - b.remaining;
+        return a.name.localeCompare(b.name);
+    })
+        .filter((r, idx, arr) => r.remaining < 100 || r.status === "exhaust" || idx < 6)
+        .slice(0, 8);
+    // Avoid duplicating the aggregate when every model is 100%.
+    const showModels = notable.some((r) => r.remaining < 100) || windows.length === 0
+        ? notable
+        : notable.slice(0, 3);
+    for (const row of showModels) {
+        const used = Math.max(0, row.init - row.curr);
+        windows.push({
+            label: row.name,
+            remaining: row.remaining,
+            resetAt: row.resetMs !== undefined ? new Date(row.resetMs).toISOString() : undefined,
+            detail: [
+                `${row.status === "exhaust" ? "Exhausted" : "Remaining"}: ${row.curr.toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${row.init.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${row.unit || "units"}` +
+                    (used > 0 ? ` · used ${used.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : ""),
+            ],
+        });
+    }
+    if (!windows.length)
+        return null;
+    const exhausted = modelRows.filter((r) => r.remaining <= 0 || r.status === "exhaust").length;
+    const header = [
+        `Plan:           Free tier (${modelRows.length} model quota${modelRows.length === 1 ? "" : "s"})`,
+    ];
+    if (exhausted > 0)
+        header.push(`Exhausted:      ${exhausted} model${exhausted === 1 ? "" : "s"}`);
+    const footer = [];
+    if (soonestReset !== undefined) {
+        footer.push(`Cycle ends:     ${new Date(soonestReset).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+        })}`);
+    }
+    return {
+        success: true,
+        cards: [{
+                header,
+                windows,
+                footer: footer.length ? footer : undefined,
+                note: exhausted > 0 ? `${exhausted} free-tier model quota(s) exhausted` : undefined,
+            }],
+    };
+}
+async function queryQwenCloudTeam(cookies, secToken, baseHeaders) {
+    const params = new URLSearchParams({
+        product: "BssOpenAPI-V3",
+        action: "GetSeatSubscriptionSummary",
+        sec_token: secToken,
+        region: "ap-southeast-1",
+        params: JSON.stringify({ productCode: QWENCLOUD_TEAM_COMMODITY }),
+    });
+    const [subRes, renewalRes] = await Promise.all([
+        fetchTimeout(`${QWENCLOUD_BASE}/data/api.json?product=BssOpenAPI-V3&action=GetSeatSubscriptionSummary`, {
+            method: "POST",
+            headers: { ...baseHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+            body: params,
+        }),
+        fetchTimeout(`${QWENCLOUD_BASE}/data/api.json?product=BssOpenApi&action=CheckTokenPlanAutoRenewal`, {
+            method: "POST",
+            headers: { ...baseHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                CommodityCode: QWENCLOUD_TEAM_COMMODITY,
+            }),
+        }),
+    ]);
+    if (!subRes.ok)
+        return null;
+    let subData = null;
+    try {
+        subData = (await subRes.json());
+    }
+    catch {
+        return null;
+    }
+    let autoRenewal = null;
+    if (renewalRes.ok) {
+        try {
+            const data = (await renewalRes.json());
+            if (data.Success)
+                autoRenewal = data.Data.AutoRenewal === 1;
+        }
+        catch {
+            /* keep null */
+        }
+    }
+    // Team API returns code 200 with Data: {} when there is no team plan.
+    const detail = subData?.code === "200" ? subData.data?.Data : undefined;
+    const group = detail?.SubscriptionGroupList?.[0];
+    if (!detail || !group)
+        return null;
+    const equity = group.EquityList?.find((e) => e.EquityType === "CREDITS");
+    const seats = group.SubscriptionTotalNumber ?? 1;
+    const spec = group.SpecType ?? "standard";
+    const header = [
+        `Plan:           Token Plan Team Edition (${spec}, ${seats} seat${seats > 1 ? "s" : ""})`,
+    ];
+    if (autoRenewal !== null) {
+        header.push(`Auto-renewal:   ${autoRenewal ? "enabled" : "disabled"}`);
+    }
+    const windows = [];
+    if (equity) {
+        const total = Number(equity.TotalValue);
+        const surplus = Number(equity.SurplusValue);
+        const used = total - surplus;
+        const remainPct = total > 0 ? Math.round((surplus / total) * 100) : 100;
+        windows.push({
+            label: `Credits (${detail.RemainingDays ?? "?"}d remaining)`,
+            remaining: remainPct,
+            detail: [
+                `Used: ${used.toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${total.toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
+            ],
+            resetAt: group.NextCycleFlushTime
+                ? new Date(group.NextCycleFlushTime).toISOString()
+                : undefined,
+        });
+    }
+    if (!windows.length)
+        return null;
+    const footer = [];
+    if (detail.EndTime) {
+        footer.push(`Cycle:          ${new Date(detail.StartTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })} — ${new Date(detail.EndTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`);
+    }
+    return {
+        success: true,
+        cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+    };
+}
 async function queryQwenCloud(auth, ansi = false) {
+    void ansi;
     const cookies = loadQwenCloudCookies();
     if (!cookies) {
         if (!auth?.key)
             return null;
         return {
             success: false,
-            error: "QwenCloud Token Plan API key found, but quota requires a signed-in console session.\n" +
-                "Add the Cookie header to ~/.config/opencode/qwencloud-cookies.json.",
+            error: "QwenCloud API key found, but quota requires a signed-in console session.\n" +
+                "Sign in under Credentials → QwenCloud (or write qwencloud-cookies.json).",
         };
     }
-    // Step 1: get CSRF token from homepage
     const secToken = await qwencloudFetchSecToken(cookies);
     if (!secToken) {
         return {
             success: false,
             error: "Could not extract SEC_TOKEN from QwenCloud homepage.\n" +
-                "Your session cookies may have expired — re-copy them from the browser.",
+                "Your session cookies may have expired — re-capture sign-in under Credentials.",
         };
     }
     const baseHeaders = qwencloudHeaders(cookies);
     try {
+        // 1) Paid individual Token Plan (5h + weekly windows)
         const personal = await queryQwenCloudPersonal(cookies, secToken);
         if (personal)
             return personal;
-        // Step 2: call subscription + renewal in parallel
-        const params = new URLSearchParams({
-            product: "BssOpenAPI-V3",
-            action: "GetSeatSubscriptionSummary",
-            sec_token: secToken,
-            region: "ap-southeast-1",
-            params: JSON.stringify({ productCode: "sfm_tokenplanteams_dp_intl" }),
-        });
-        const [subRes, renewalRes] = await Promise.all([
-            fetchTimeout(`${QWENCLOUD_BASE}/data/api.json?product=BssOpenAPI-V3&action=GetSeatSubscriptionSummary`, {
-                method: "POST",
-                headers: { ...baseHeaders, "Content-Type": "application/x-www-form-urlencoded" },
-                body: params,
-            }),
-            fetchTimeout(`${QWENCLOUD_BASE}/data/api.json?product=BssOpenApi&action=CheckTokenPlanAutoRenewal`, {
-                method: "POST",
-                headers: { ...baseHeaders, "Content-Type": "application/x-www-form-urlencoded" },
-                body: new URLSearchParams({
-                    CommodityCode: "sfm_tokenplanteams_dp_intl",
-                }),
-            }),
-        ]);
-        // Parse subscription summary
-        let subData = null;
-        if (subRes.ok) {
-            try {
-                subData = (await subRes.json());
-            }
-            catch { /* keep null */ }
-        }
-        // Parse auto-renewal
-        let autoRenewal = null;
-        if (renewalRes.ok) {
-            try {
-                const data = (await renewalRes.json());
-                if (data.Success)
-                    autoRenewal = data.Data.AutoRenewal === 1;
-            }
-            catch { /* keep null */ }
-        }
-        if (!subData || subData.code !== "200" || !subData.data?.Data) {
-            if (!subRes.ok) {
-                const body = await subRes.text().catch(() => "");
-                throw new Error(`QwenCloud API error (${subRes.status}): ${body.slice(0, 200)}`);
-            }
-            return {
-                success: true,
-                cards: [{ header: ["Plan:           QwenCloud (no subscription data)"] }],
-            };
-        }
-        const detail = subData.data.Data;
-        const group = detail.SubscriptionGroupList?.[0];
-        const equity = group?.EquityList?.find((e) => e.EquityType === "CREDITS");
-        // Plan info
-        const seats = group?.SubscriptionTotalNumber ?? 1;
-        const spec = group?.SpecType ?? "standard";
-        const header = [
-            `Plan:           Token Plan Team Edition (${spec}, ${seats} seat${seats > 1 ? "s" : ""})`,
-        ];
-        // Auto-renewal
-        if (autoRenewal !== null) {
-            header.push(`Auto-renewal:   ${autoRenewal ? "enabled" : "disabled"}`);
-        }
-        const windows = [];
-        if (equity) {
-            const total = Number(equity.TotalValue);
-            const surplus = Number(equity.SurplusValue);
-            const used = total - surplus;
-            const remainPct = total > 0 ? Math.round((surplus / total) * 100) : 100;
-            windows.push({
-                label: `Credits (${detail.RemainingDays ?? "?"}d remaining)`,
-                remaining: remainPct,
-                detail: [`Used: ${used.toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${total.toLocaleString(undefined, { maximumFractionDigits: 0 })}`],
-                resetAt: group?.NextCycleFlushTime
-                    ? new Date(group.NextCycleFlushTime).toISOString()
-                    : undefined,
-            });
-        }
-        const footer = [];
-        if (detail.EndTime) {
-            footer.push(`Cycle:          ${new Date(detail.StartTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })} — ${new Date(detail.EndTime).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`);
-        }
+        // 2) Paid team Token Plan (credit pool)
+        const team = await queryQwenCloudTeam(cookies, secToken, baseHeaders);
+        if (team)
+            return team;
+        // 3) Free-tier model quotas (what most console accounts actually have)
+        const free = await queryQwenCloudFreeTier(cookies, secToken);
+        if (free)
+            return free;
         return {
-            success: true,
-            cards: [{ header, windows, footer: footer.length ? footer : undefined }],
+            success: false,
+            error: "QwenCloud session is valid but no Token Plan or free-tier quotas were returned.\n" +
+                "Open home.qwencloud.com → Billing to confirm entitlements, then re-capture credentials.",
         };
     }
     catch (err) {
@@ -5415,6 +6161,7 @@ const PROVIDERS = [
     { id: "longcat", title: "LongCat API Quota", query: (_a, ansi) => queryLongCat(ansi) },
     { id: "minimax", title: "MiniMax Token Plan", query: (a, ansi) => queryMiniMax(a["minimax-coding-plan"], ansi) },
     { id: "mistral", title: "Mistral Vibe Usage", query: (_a, ansi) => queryMistral(_a, ansi) },
+    { id: "muse", title: "Meta Muse Code", query: () => queryMuse(), minIntervalMs: MUSE_MIN_INTERVAL_MS },
     { id: "nanogpt", title: "NanoGPT Account Quota", query: (a, ansi) => queryNanoGpt(a["nano-gpt"], ansi) },
     { id: "openai", title: "OpenAI Account Quota", query: (a, ansi) => queryOpenAI(a.openai, ansi) },
     { id: "ollama", title: "Ollama Cloud", query: (_a, ansi) => queryOllama(_a, ansi) },
@@ -5463,10 +6210,13 @@ function saveCache(cache) {
     }
 }
 function withDeadline(p, ms) {
+    let timer;
     return Promise.race([
         p,
-        new Promise((_, reject) => setTimeout(() => reject(new Error(`exceeded ${ms / 1000}s deadline`)), ms)),
-    ]);
+        new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`exceeded ${ms / 1000}s deadline`)), ms);
+        }),
+    ]).finally(() => clearTimeout(timer));
 }
 function noteCards(result, note) {
     if (!result.cards)
@@ -5501,7 +6251,8 @@ function staleCards(result, ts, reason) {
 async function runProvider(p, auth, ansi, cache, ttlMs, fresh, deadlineMs) {
     const cached = cache[p.id];
     const ageNote = (ts) => `cached${formatCachedAgeMinutes(ts)}`;
-    if (!fresh && ttlMs > 0 && cached && Date.now() - cached.ts < ttlMs) {
+    const reuseMs = Math.max(fresh ? 0 : ttlMs, p.minIntervalMs ?? 0);
+    if (reuseMs > 0 && cached && Date.now() - cached.ts < reuseMs) {
         return { title: p.title, result: noteCards(cached.result, ageNote(cached.ts)) };
     }
     try {
@@ -5830,11 +6581,38 @@ export function buildMyStatusViewModel(snapshot, args, opts = {}) {
     const providers = cells.map((cell) => {
         let note;
         for (const line of cell.lines) {
-            const plain = line.replace(ANSI_RE, "");
+            const plain = line.replace(ANSI_RE, "").trim();
             if (plain.startsWith("cached")) {
                 note = plain;
                 break;
             }
+        }
+        // Surface non-meter status (e.g. Qwen "signed in, no active plan") so the
+        // desktop card is not a blank shell when windows are empty.
+        if (!note) {
+            for (const line of cell.lines) {
+                const plain = line.replace(ANSI_RE, "").trim();
+                if (plain.length > 0 &&
+                    !plain.startsWith("Plan:") &&
+                    !plain.startsWith("Account:") &&
+                    !plain.startsWith("──") &&
+                    !/^\d+%/.test(plain) &&
+                    !plain.startsWith("Resets in:") &&
+                    !plain.startsWith("Used:")) {
+                    // Prefer explicit note-like lines over progress bars / sparklines.
+                    if (!/[█▉▊▋▌▍▎▏░]/.test(plain) && plain.length < 200) {
+                        note = plain;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!note) {
+            const planLine = cell.lines
+                .map((l) => l.replace(ANSI_RE, "").trim())
+                .find((l) => l.startsWith("Plan:"));
+            if (planLine && (cell.metrics?.length ?? 0) === 0)
+                note = planLine.replace(/^Plan:\s*/, "");
         }
         return {
             name: cell.title,
@@ -5886,14 +6664,14 @@ export async function queryMyStatus(args) {
     const ran = await Promise.all(providers.map((p) => runProvider(p, auth, useAnsi, cache, cacheTtlMs, fresh, 15_000)));
     saveCache(cache);
     // Local/dashboard providers (including Antigravity Tools) do not require an
-    // OpenCode auth.json. Preserve the old guidance only when every selected
+    // OpenCode credential store. Preserve the old guidance only when every selected
     // provider was skipped specifically because no native auth was available.
     if (authMissing && ran.every(({ result }) => result === null)) {
-        const tried = candidateDirs("data").map((d) => join(d, "auth.json"));
+        const tried = candidateDirs("data").flatMap((d) => [join(d, "opencode.db"), join(d, "auth.json")]);
         return {
             ran,
             fetchedAt: Date.now(),
-            authError: `\u274c No auth.json found in any opencode profile.\nLooked at: ${tried.join(", ")}`,
+            authError: `\u274c No OpenCode credentials found in any opencode profile.\nLooked at: ${tried.join(", ")}`,
         };
     }
     return { ran, fetchedAt: Date.now() };
@@ -5945,7 +6723,7 @@ async function runMyStatus(args) {
 export const MyStatusPlugin = async () => ({
     tool: {
         mystatus: tool({
-            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Kimi for Coding, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, Synthetic, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,kimi,longcat,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,synthetic,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
+            description: "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Meta Muse Code, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Kimi for Coding, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, Synthetic, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,kimi,longcat,minimax,mistral,muse,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,synthetic,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
             args: {
                 format: tool.schema.string().optional(),
                 threshold: tool.schema.number().optional(),

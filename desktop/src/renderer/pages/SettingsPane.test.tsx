@@ -162,7 +162,7 @@ describe("SettingsPane", () => {
     expect(screen.getByTestId("provider-toggle-xai")).toHaveProperty("checked", false);
     expect(screen.getByTestId("provider-toggle-anthropic")).toHaveProperty("checked", true);
     expect(screen.getByTestId("provider-toggle-synthetic")).toHaveProperty("checked", true);
-    expect(screen.getAllByTestId(/^provider-toggle-/)).toHaveLength(19);
+    expect(screen.getAllByTestId(/^provider-toggle-/)).toHaveLength(20);
     expect(screen.getByTestId("providers-enabled-count").textContent).toBe("18/19 enabled");
     expect(screen.getByTestId("settings-footer").textContent).toContain(CONFIG_PATH);
     expect(screen.getByTestId("comments-warning")).toBeDefined();

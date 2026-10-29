@@ -2,8 +2,8 @@
  * allstatus.ts — All-in-one AI quota status plugin for OpenCode
  *
  * Platforms:
- *   - OpenAI      (ChatGPT Plus/Team/Pro)    auth.json → openai
- *   - Anthropic   (Claude.ai)               auth.json → anthropic
+ *   - OpenAI      (ChatGPT Plus/Team/Pro)    opencode.db/auth.json → openai (Codex-client login) or ~/.codex/auth.json
+ *   - Anthropic   (Claude.ai)               opencode.db/auth.json → anthropic, else Claude Code login (keychain / ~/.claude/.credentials.json)
  *   - Google      (Antigravity quota/usage)  Antigravity Tools API → antigravity-accounts.json fallback
  *   - GitHub Copilot                        auth.json → github-copilot (+ optional PAT)
  *   - OpenCode Go+Zen (merged cell)         shared dashboard config (workspaceId + authCookie)
@@ -14,12 +14,17 @@
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
- *   - Synthetic   (rolling requests + weekly credits)  auth.json → synthetic, SYNTHETIC_API_KEY, or synthetic-api-key.json
+ *   - Synthetic   (requests + weekly plan + search)  auth.json → synthetic, SYNTHETIC_API_KEY, or synthetic-api-key.json
+ *   - Meta Muse Code (5-hour + weekly)      opencode.db → muse (opencode-muse plugin) or ~/.config/muse/auth.json
  *   - QwenCloud   (Token Plan)              qwencloud-cookies.json → dashboard API
  *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
  *   - AtlasCloud  (Coding Plan)             atlas-cookies.json → console API
  *   - Ollama      (Cloud Pro/Max)             ollama-cookies.json → settings SSR
  *   - LongCat     (API token quota)           longcat-cookies.json → platform API
+ *
+ * Credentials: OpenCode V2 keeps connections in <data>/opencode.db (`credential`
+ * table); V1 used <data>/auth.json. Both are read and merged; "auth.json → x"
+ * above means the integration id `x` in either store.
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)

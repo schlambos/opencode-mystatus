@@ -464,6 +464,7 @@ All session tokens expire periodically — re-capture and overwrite when the car
 | **LongCat** | API token quota (`ak_…` in `opencode.json`) | Account email, active API key count, **free quota** (blocks inference when empty), **total tokens** (incl. fuel packs), fuel-package expiry |
 | **MiniMax** | Token Plan | Unified 5-hour + weekly plan windows (with compatibility for older named capability buckets) |
 | **Mistral** | Vibe plan | Monthly Vibe budget and reset per configured account |
+| **Meta Muse Code** | Everyday / High / Power / Maximum Usage | Rolling 5-hour and weekly usage windows, reset times, plan tier, and payment/subscription warnings |
 | **NanoGPT** | Balance + subscription | USD/XNO balance plus every returned legacy daily/monthly operation pool and newer weekly-token/daily-image pool |
 | **OpenAI** | ChatGPT Plus / Team / Pro | General, code-review, and named model/product quotas (for example GPT-5.3-Codex-Spark), reset credits, credit balance/message estimates, and spend controls |
 | **Ollama** | Cloud Pro / Max | Session & weekly GPU-time windows, per-model request breakdown, renewal date |
@@ -471,11 +472,13 @@ All session tokens expire periodically — re-capture and overwrite when the car
 | **Poe** | Subscription or pay-go | Authoritative total points/USD balance and grants; a monthly percentage only when the API separately reports plan-only points |
 | **QwenCloud** | Token Plan (Team Edition) | Credits remaining + cycle dates |
 | **StepFun** | Step Plan (Flash Mini/Plus/Pro/Max) | Plan details + the 5-hour pool and any weekly pool actually returned by the dashboard API |
-| **Synthetic** | API key | Rolling/weekly quota fields, with a documented subscription fallback when rolling data is unavailable |
+| **Synthetic** | API key | Subscription requests, weekly plan limit with regeneration ticks, and hourly search requests (older rolling/weekly-credit fields still parsed) |
 | **xAI / Grok** | SuperGrok | Shared weekly usage pool, reset time, per-product breakdown (API, Build, Chat, Imagine, Voice), and extra-usage credits |
 | **Z.AI** | GLM Coding Plan | 5-hour + weekly prompt pools and distinctly labeled monthly MCP/tool-call quotas with model/tool breakdowns |
 
 Providers you aren't signed into are skipped silently — you only ever see what's relevant to you.
+
+**Not covered:** a plain Meta API key (`meta` integration) and other pay-as-you-go API keys have no usage endpoint, so they get no card.
 
 
 ## Installation
@@ -663,7 +666,7 @@ This symlinks `mystatus` and `usage` into `~/.local/bin/` (or a target of your c
 ### Requirements
 
 - [bun](https://bun.sh) — the CLI wrapper imports the plugin source directly via `bin/mystatus-cli.ts`.
-- Your credentials are read from OpenCode's standard locations (`~/.local/share/opencode/auth.json`, `~/.config/opencode/mystatus.json`, etc.) — no extra setup needed if you've already signed into providers.
+- Your credentials are read from OpenCode's standard locations — the V2 credential store (`~/.local/share/opencode/opencode.db`, opened read-only), the V1 `auth.json`, and `~/.config/opencode/mystatus.json` etc. — so no extra setup is needed if you've already signed into providers. Integrations connected through plugins (`opencode-antigravity-auth`, `opencode-muse`, `@openchamber/opencode-claude`) are picked up too.
 
 ## Usage
 
@@ -729,7 +732,7 @@ Anything authenticated inside OpenCode is detected automatically. The collapsibl
 
 <br>
 
-Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Refreshes the Claude Code OAuth token and queries `api.anthropic.com/api/oauth/usage`. The current structured `limits[]` response is rendered dynamically, including scoped model limits such as **7-day (Fable)**. The canonical `spend` object is also used for usage-credit balance, extra-usage caps, and spend percentage; the older fixed-window and `extra_usage` shapes remain supported.
+Uses OpenCode's `anthropic` credential when one exists (refreshing it if expired). Otherwise it reads Claude Code's own login — the macOS keychain item `Claude Code-credentials`, or `~/.claude/.credentials.json` elsewhere (`CLAUDE_CONFIG_DIR` respected) — which is where plugins such as `@openchamber/opencode-claude` leave authentication. That token is never refreshed by mystatus (Claude Code rotates its refresh token); if it has expired, run `claude` once. Queries `api.anthropic.com/api/oauth/usage` plus `/api/oauth/profile` for the account email, plan, and organization. The current structured `limits[]` response is rendered dynamically, including scoped model limits such as **7-day (Fable)**. The canonical `spend` object is also used for usage-credit balance, extra-usage caps, and spend percentage; the older fixed-window and `extra_usage` shapes remain supported.
 </details>
 
 <details>
@@ -838,6 +841,16 @@ For multiple organizations/accounts, use `{ "accounts": [ { "alias": "...", "coo
 </details>
 
 <details>
+<summary><strong>Meta Muse Code</strong> — zero-config</summary>
+
+<br>
+
+Uses the `muse` connection created by the `opencode-muse` plugin (`opencode auth login` → Muse), falling back to the `muse` CLI login at `~/.config/muse/auth.json` (`MUSE_AUTH_PATH` / `XDG_CONFIG_HOME` respected). Multiple connections for the same account are collapsed to the active one.
+
+Muse has no read-only usage endpoint: plan usage is returned only by `POST api.meta.ai/muse-code/key`, the call the plugin and CLI use to mint their 24-hour API key. mystatus makes the same call and renders `subs_usage.window` (rolling 5-hour) and `subs_usage.weekly`, with reset times and the plan tier. Because each call mints a new key (existing keys stay valid), live checks are limited to one per 15 minutes; in between, the cached card is shown with its age.
+</details>
+
+<details>
 <summary><strong>NanoGPT</strong> — zero-config</summary>
 
 <br>
@@ -850,7 +863,7 @@ Reads native `auth.json` `nano-gpt` keys and `opencode-nanogpt-multi-auth`'s `~/
 
 <br>
 
-Reads its credentials straight from OpenCode's `auth.json` once you've signed into the provider. Calls `chatgpt.com/backend-api/wham/usage`; reports plan, credits, and all returned quota buckets. The general Codex limit, `code_review_rate_limit`, and every backend-named `additional_rate_limits` entry (for example **GPT-5.3-Codex-Spark**) get independent windows, reset timers, trends, and alerts. Available/applicable reset credits, approximate local/cloud message ranges, and spend-control state are included when present.
+OpenCode V2's default **Sign in with ChatGPT** method uses ChatGPT *token sharing* (`chatgpt-token-sharing`, `oaiapp_…` client). Those tokens only authorize inference on `api.openai.com/v1`; `wham/usage` rejects them (`401 no_matching_rule`) and OpenAI exposes no other usage route for them. mystatus therefore uses, in order: an OpenCode `openai` credential from the legacy **Codex browser** method, then the Codex CLI login in `~/.codex/auth.json` (`CODEX_HOME` respected). Run `codex login` once if you only have a token-sharing login. The Codex token is read-only here — if it has expired, run `codex` to refresh it. Calls `chatgpt.com/backend-api/wham/usage`; reports plan, credits, and all returned quota buckets. The general Codex limit, `code_review_rate_limit`, and every backend-named `additional_rate_limits` entry (for example **GPT-5.3-Codex-Spark**) get independent windows, reset timers, trends, and alerts. Available/applicable reset credits, approximate local/cloud message ranges, and spend-control state are included when present.
 </details>
 
 <details>
@@ -1007,7 +1020,7 @@ export SYNTHETIC_API_KEY="..."
 { "apiKey": "..." }
 ```
 
-Quota checks use `api.synthetic.new/v2/quotas` and do not consume allowance; see the [official Synthetic quota documentation](https://dev.synthetic.new/docs/synthetic/quotas). The rolling 5-hour and weekly fields are undocumented extensions, so they are parsed defensively only when present and valid. Their timestamps are incremental regeneration events, not full quota resets. The documented `subscription.limit`, `subscription.requests`, and valid `subscription.renewsAt` fields are a fallback only when rolling data cannot be parsed; they represent a separate accounting surface, not the rolling quota accounting.
+Quota checks use `api.synthetic.new/v2/quotas` and do not consume allowance; see the [official Synthetic quota documentation](https://dev.synthetic.new/docs/synthetic/quotas). The current response reports `subscription` (requests per renewal window), `planWeeklyLimit` (`percentRemaining`, regenerating by `nextRegenPercent` points at each `nextRegenAt` tick), and `search.hourly`; all three are rendered. The older rolling 5-hour and weekly-credit fields are undocumented extensions, so they are parsed defensively only when present and valid. Their timestamps are incremental regeneration events, not full quota resets. The documented `subscription.limit`, `subscription.requests`, and valid `subscription.renewsAt` fields are a fallback only when rolling data cannot be parsed; they represent a separate accounting surface, not the rolling quota accounting.
 </details>
 
 <details>
@@ -1030,7 +1043,7 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 
 ## Security &amp; privacy
 
-`mystatus` is **read-only** for your accounts and contacts each provider's own API only.
+`mystatus` is **read-only** for your accounts and contacts each provider's own API only. One exception: Meta Muse Code reports usage only from its key-mint endpoint, so each Muse check mints a fresh 24-hour API key (existing keys stay valid). mystatus throttles that to once per 15 minutes, even with `fresh`.
 
 - Credentials are read locally and sent **only** to their respective provider.
 - The only files it *writes* are local, non-sensitive helpers in `~/.config/opencode/`: a small cache (`mystatus-cache.json`) and trend history (`mystatus-history.json`).
@@ -1041,18 +1054,19 @@ Reads its credentials straight from OpenCode's `auth.json` once you've signed in
 
 <br>
 
-**Read (never modified):** `~/.local/share/opencode/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), optional `~/.antigravity_tools/gui_config.json`, and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `synthetic-api-key.json`, `qwencloud-cookies.json`, `byteplus-cookies.json`, `atlas-cookies.json`, `mistral-cookies.json`, `ollama-cookies.json`, `longcat-cookies.json` under `~/.config/opencode/`.
+**Read (never modified):** `~/.local/share/opencode/opencode.db` (`credential` table, read-only), `~/.local/share/opencode/auth.json`, `opencode.json` (Antigravity proxy providers), optional `~/.codex/auth.json` (Codex CLI), Claude Code's login (`Claude Code-credentials` keychain item or `~/.claude/.credentials.json`), optional `~/.config/muse/auth.json`, optional `~/.grok/auth.json` (consumer Grok token written by `grok login`), optional `~/.antigravity_tools/gui_config.json`, and the optional `antigravity-accounts.json`, `opencode-go.json`, `copilot-quota-token.json`, `poe-api-key.json`, `stepfun-cookies.json`, `synthetic-api-key.json`, `qwencloud-cookies.json`, `byteplus-cookies.json`, `atlas-cookies.json`, `mistral-cookies.json`, `ollama-cookies.json`, `longcat-cookies.json` under `~/.config/opencode/`.
 
 | Provider | Endpoint(s) |
 |---|---|
-| Anthropic | `api.anthropic.com/api/oauth/usage`, `console.anthropic.com/v1/oauth/token` |
+| Anthropic | `api.anthropic.com/api/oauth/usage`, `api.anthropic.com/api/oauth/profile`, `console.anthropic.com/v1/oauth/token` (OpenCode credential only) |
 | AtlasCloud | `console.atlascloud.ai/api/v1/current-user`, `.../codeplan/get`, `.../codeplan/costs` |
 | BytePlus | `console.byteplus.com/api/...` |
 | GitHub Copilot | `api.github.com/copilot_internal/*`, `api.github.com/users/*/settings/billing/...` |
-| Google / Antigravity Tools | Local/configured Antigravity Tools `/health`, `/api/accounts`, `/api/stats/token/{summary,by-account,by-model}`; fallback: `cloudcode-pa.googleapis.com/...:{loadCodeAssist,retrieveUserQuota}`, `oauth2.googleapis.com/token` |
+| Google / Antigravity Tools | Local, configured, or `opencode.json`-declared Antigravity Tools `/health`, `/api/accounts`, `/api/stats/token/{summary,by-account,by-model}`; fallback: `cloudcode-pa.googleapis.com/...:{loadCodeAssist,retrieveUserQuota}`, `oauth2.googleapis.com/token` |
 | Kimi for Coding | `api.kimi.com/coding/v1/usages` |
 | MiniMax | `api.minimax.io/v1/token_plan/remains` |
 | Mistral | `vibe.mistral.ai/api/...` |
+| Meta Muse Code | `POST api.meta.ai/muse-code/key` (mints a key; throttled to 15 min) |
 | NanoGPT | `nano-gpt.com/api/check-balance`, `nano-gpt.com/api/subscription/v1/usage` |
 | OpenAI | `chatgpt.com/backend-api/wham/usage` |
 | Ollama | `ollama.com/settings`, `ollama.com/settings/billing` |

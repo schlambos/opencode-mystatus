@@ -1,7 +1,7 @@
 // Provider registry mirror for the renderer.
 //
-// PARITY: plugin/mystatus.ts:7045-7065 (the PROVIDERS registry) — the core's
-// array is module-private, so the Settings page hardcodes the same 19 ids
+// PARITY: plugin/mystatus.ts PROVIDERS registry — the core's
+// array is module-private, so the Settings page hardcodes the same 20 ids
 // here. The checkbox list is built from this list; unknown ids found in an
 // existing mystatus.json `providers.disabled` are preserved verbatim by the
 // settings form (never silently dropped). Re-verify if the core adds or
@@ -22,6 +22,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
   { id: "longcat", title: "LongCat" },
   { id: "minimax", title: "MiniMax" },
   { id: "mistral", title: "Mistral" },
+  { id: "muse", title: "Meta Muse Code" },
   { id: "nanogpt", title: "NanoGPT" },
   { id: "openai", title: "OpenAI" },
   { id: "ollama", title: "Ollama" },

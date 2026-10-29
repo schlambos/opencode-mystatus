@@ -2,8 +2,8 @@
  * allstatus.ts — All-in-one AI quota status plugin for OpenCode
  *
  * Platforms:
- *   - OpenAI      (ChatGPT Plus/Team/Pro)    auth.json → openai
- *   - Anthropic   (Claude.ai)               auth.json → anthropic
+ *   - OpenAI      (ChatGPT Plus/Team/Pro)    opencode.db/auth.json → openai (Codex-client login) or ~/.codex/auth.json
+ *   - Anthropic   (Claude.ai)               opencode.db/auth.json → anthropic, else Claude Code login (keychain / ~/.claude/.credentials.json)
  *   - Google      (Antigravity quota/usage)  Antigravity Tools API → antigravity-accounts.json fallback
  *   - GitHub Copilot                        auth.json → github-copilot (+ optional PAT)
  *   - OpenCode Go+Zen (merged cell)         shared dashboard config (workspaceId + authCookie)
@@ -14,12 +14,17 @@
  *   - MiniMax     (Token Plan)              auth.json → minimax-coding-plan (Anthropic-compatible)
  *   - NanoGPT     (balance + subscription)  auth.json → nano-gpt OR nanogpt-keys.json
  *   - StepFun     (Token Plan)              stepfun-cookies.json → dashboard API
- *   - Synthetic   (rolling requests + weekly credits)  auth.json → synthetic, SYNTHETIC_API_KEY, or synthetic-api-key.json
+ *   - Synthetic   (requests + weekly plan + search)  auth.json → synthetic, SYNTHETIC_API_KEY, or synthetic-api-key.json
+ *   - Meta Muse Code (5-hour + weekly)      opencode.db → muse (opencode-muse plugin) or ~/.config/muse/auth.json
  *   - QwenCloud   (Token Plan)              qwencloud-cookies.json → dashboard API
  *   - BytePlus    (Ark Coding Plan)         byteplus-cookies.json → console API
  *   - AtlasCloud  (Coding Plan)             atlas-cookies.json → console API
  *   - Ollama      (Cloud Pro/Max)             ollama-cookies.json → settings SSR
  *   - LongCat     (API token quota)           longcat-cookies.json → platform API
+ *
+ * Credentials: OpenCode V2 keeps connections in <data>/opencode.db (`credential`
+ * table); V1 used <data>/auth.json. Both are read and merged; "auth.json → x"
+ * above means the integration id `x` in either store.
  *
  * Features:
  *   - ANSI color-coded progress bars (red/yellow/green)
@@ -31,6 +36,8 @@
 
 import { type Plugin, tool } from "@opencode-ai/plugin";
 import { readFile } from "fs/promises";
+import { execFileSync } from "child_process";
+import { createHash } from "crypto";
 import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
@@ -446,9 +453,128 @@ function stableCredHash(cred: unknown): string {
   return `raw:${JSON.stringify(c).slice(0, 96)}`;
 }
 
+// ─────────────────────────────────────────────────────────────
+// OpenCode V2 credential store
+//
+// OpenCode V2 no longer writes auth.json: connected integrations live in the
+// `credential` table of <data>/opencode.db as one JSON value per connection
+// ({type:"oauth",access,refresh,expires,methodID,metadata} or
+// {type:"key",key}). Several connections may exist per integration (e.g. one
+// per Antigravity Google account); `active` marks the one OpenCode uses.
+// The database is opened read-only. Drivers are tried in runtime order:
+// bun:sqlite (OpenCode V2 + CLI), node:sqlite (Electron/Node ≥22.5), then the
+// sqlite3 CLI.
+// ─────────────────────────────────────────────────────────────
+
+interface OpencodeCredentialRow {
+  integration: string;
+  active: boolean;
+  updated: number;
+  value: Record<string, unknown>;
+}
+
+type SqliteRow = Record<string, unknown>;
+
+async function dynamicImport(spec: string): Promise<any> {
+  return import(/* @vite-ignore */ spec);
+}
+
+async function querySqliteReadonly(path: string, sql: string): Promise<SqliteRow[]> {
+  try {
+    const { Database } = await dynamicImport("bun:sqlite");
+    const db = new Database(path, { readonly: true });
+    try {
+      return db.query(sql).all() as SqliteRow[];
+    } catch {
+      return [];
+    } finally {
+      db.close();
+    }
+  } catch {
+    // not running under bun
+  }
+  try {
+    const { DatabaseSync } = await dynamicImport("node:sqlite");
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      return db.prepare(sql).all() as SqliteRow[];
+    } catch {
+      return [];
+    } finally {
+      db.close();
+    }
+  } catch {
+    // node:sqlite unavailable
+  }
+  try {
+    const out = execFileSync("sqlite3", ["-readonly", "-json", path, sql], {
+      encoding: "utf-8",
+      timeout: 5_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out.trim() ? (JSON.parse(out) as SqliteRow[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+let opencodeCredentialsMemo: { ts: number; rows: Promise<OpencodeCredentialRow[]> } | null = null;
+
+function loadOpencodeCredentials(): Promise<OpencodeCredentialRow[]> {
+  if (opencodeCredentialsMemo && Date.now() - opencodeCredentialsMemo.ts < 5_000) {
+    return opencodeCredentialsMemo.rows;
+  }
+  const rows = (async () => {
+    const out: OpencodeCredentialRow[] = [];
+    for (const path of searchPaths("opencode.db", "data")) {
+      const rows = await querySqliteReadonly(
+        path,
+        "select integration_id, active, value, time_updated from credential",
+      );
+      for (const row of rows) {
+        if (typeof row.integration_id !== "string" || typeof row.value !== "string") continue;
+        try {
+          const value = JSON.parse(row.value) as unknown;
+          if (!value || typeof value !== "object") continue;
+          out.push({
+            integration: row.integration_id,
+            active: Number(row.active) === 1,
+            updated: Number(row.time_updated) || 0,
+            value: value as Record<string, unknown>,
+          });
+        } catch {
+          // malformed credential value — skip
+        }
+      }
+    }
+    return out;
+  })();
+  opencodeCredentialsMemo = { ts: Date.now(), rows };
+  return rows;
+}
+
+/** V2 credentials for one integration, active connection first, then newest. */
+async function opencodeCredentialsFor(integration: string): Promise<OpencodeCredentialRow[]> {
+  return (await loadOpencodeCredentials())
+    .filter((row) => row.integration === integration)
+    .sort((a, b) => Number(b.active) - Number(a.active) || b.updated - a.updated);
+}
+
+// V2 stores API keys as {type:"key"}; the per-provider readers below were
+// written against auth.json's {type:"api"} shape.
+function normalizeOpencodeCredential(value: Record<string, unknown>): Record<string, unknown> {
+  return value.type === "key" ? { ...value, type: "api" } : value;
+}
+
 async function loadAuthMerged(): Promise<AuthData> {
   const paths = searchPaths("auth.json", "data");
   const merged: Record<string, unknown> = {};
+
+  for (const row of await loadOpencodeCredentials()) {
+    if (merged[row.integration]) continue;
+    const [preferred] = await opencodeCredentialsFor(row.integration);
+    merged[row.integration] = normalizeOpencodeCredential(preferred.value);
+  }
 
   // Per-provider freshness merge: for the same provider id across multiple
   // auth.json sources (profiles + legacy), keep the entry with the latest
@@ -506,6 +632,12 @@ async function collectGoogleAuthRefreshTokens(): Promise<Set<string>> {
     } catch {
       // skip
     }
+  }
+  // opencode-antigravity-auth on OpenCode V2 keeps one `google` connection per
+  // account (all of them rotate, not just the active one).
+  for (const row of await opencodeCredentialsFor("google")) {
+    const token = googleRefreshFromCred(row.value);
+    if (token) tokens.add(token);
   }
   return tokens;
 }
@@ -708,34 +840,126 @@ function openAIAdditionalLimitName(limit: OpenAIAdditionalRateLimit, index: numb
   return `Additional quota ${index + 1}`;
 }
 
-async function queryOpenAI(auth: OpenAIAuthData | undefined, ansi = false): Promise<QueryResult | null> {
-  if (!auth || auth.type !== "oauth" || !auth.access) return null;
-  if (auth.expires && auth.expires < Date.now())
-    return { success: false, error: "\u26a0\ufe0f OpenAI token expired. Use an OpenAI model in OpenCode to refresh." };
+// OpenCode V2's default "Sign in with ChatGPT" method (chatgpt-token-sharing,
+// oaiapp_* clients) issues tokens scoped to api.openai.com inference only;
+// chatgpt.com/backend-api/wham/usage rejects them (401 no_matching_rule) and
+// no other route reports their limits. Codex-client tokens (OpenCode's legacy
+// "Codex browser" method, or the Codex CLI's ~/.codex/auth.json) still read
+// the ChatGPT plan usage.
+const OPENAI_TOKEN_SHARING_METHOD = "chatgpt-token-sharing";
 
-  try {
-    const payload = parseJwtPayload(auth.access);
-    const email =
-      (payload?.["https://api.openai.com/profile"] as { email?: string } | undefined)?.email ?? null;
-    const accountId =
+interface OpenAIUsageToken {
+  access: string;
+  accountId: string | null;
+  email: string | null;
+  expires?: number;
+  source?: string; // shown when the token did not come from OpenCode's own login
+  expiredHint: string;
+}
+
+function isOpenAITokenSharing(auth: OpenAIAuthData & { methodID?: unknown }): boolean {
+  if (auth.methodID === OPENAI_TOKEN_SHARING_METHOD) return true;
+  const clientId = parseJwtPayload(auth.access ?? "")?.client_id;
+  return typeof clientId === "string" && clientId.startsWith("oaiapp_");
+}
+
+function openAITokenClaims(access: string): Pick<OpenAIUsageToken, "accountId" | "email"> & { exp?: number } {
+  const payload = parseJwtPayload(access);
+  return {
+    email:
+      (payload?.["https://api.openai.com/profile"] as { email?: string } | undefined)?.email ?? null,
+    accountId:
       (payload?.["https://api.openai.com/auth"] as { chatgpt_account_id?: string } | undefined)
-        ?.chatgpt_account_id ?? null;
+        ?.chatgpt_account_id ?? null,
+    exp: typeof payload?.exp === "number" ? payload.exp * 1000 : undefined,
+  };
+}
 
+// Read-only: the Codex CLI rotates its refresh token, so refreshing here would
+// sign the CLI out. An expired token is reported instead.
+function loadCodexCliToken(): OpenAIUsageToken | null {
+  const path = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json");
+  try {
+    const data = JSON.parse(readFileSync(path, "utf-8")) as {
+      tokens?: { access_token?: string; account_id?: string; id_token?: string };
+    };
+    const access = data.tokens?.access_token;
+    if (!access) return null;
+    const claims = openAITokenClaims(access);
+    const idEmail = parseJwtPayload(data.tokens?.id_token ?? "")?.email;
+    return {
+      access,
+      accountId: data.tokens?.account_id ?? claims.accountId,
+      email: claims.email ?? (typeof idEmail === "string" ? idEmail : null),
+      expires: claims.exp,
+      source: "Codex CLI login",
+      expiredHint: "Run `codex` once to refresh its login.",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function queryOpenAI(auth: OpenAIAuthData | undefined, ansi = false): Promise<QueryResult | null> {
+  const native = auth?.type === "oauth" && auth.access ? auth : undefined;
+  const tokenSharing = native ? isOpenAITokenSharing(native) : false;
+
+  const tokens: OpenAIUsageToken[] = [];
+  if (native && !tokenSharing) {
+    tokens.push({
+      ...openAITokenClaims(native.access!),
+      access: native.access!,
+      expires: native.expires,
+      expiredHint: "Use an OpenAI model in OpenCode to refresh.",
+    });
+  }
+  const codex = loadCodexCliToken();
+  if (codex) tokens.push(codex);
+
+  if (!tokens.length) {
+    if (!tokenSharing) return null;
+    return {
+      success: false,
+      error:
+        "OpenCode's \"Sign in with ChatGPT\" (token sharing) login cannot read ChatGPT usage.\n" +
+        "Sign in to the Codex CLI (`codex login`) so mystatus can read ~/.codex/auth.json.",
+    };
+  }
+
+  const failures: string[] = [];
+  for (const token of tokens) {
+    if (token.expires && token.expires < Date.now()) {
+      const via = token.source ? ` (${token.source})` : "";
+      failures.push(`\u26a0\ufe0f OpenAI token expired${via}. ${token.expiredHint}`);
+      continue;
+    }
+    const result = await queryOpenAIUsage(token, ansi);
+    if (result.success) return result;
+    if (result.error) failures.push(result.error);
+  }
+  return { success: false, error: failures.join("\n") };
+}
+
+async function queryOpenAIUsage(token: OpenAIUsageToken, ansi = false): Promise<QueryResult> {
+  try {
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${auth.access}`,
+      Authorization: `Bearer ${token.access}`,
       "User-Agent": "OpenCode-AllStatus/1.0",
     };
-    if (accountId) headers["ChatGPT-Account-Id"] = accountId;
+    if (token.accountId) headers["ChatGPT-Account-Id"] = token.accountId;
 
     const res = await fetchTimeout("https://chatgpt.com/backend-api/wham/usage", { headers });
-    if (!res.ok) throw new Error(`OpenAI API error (${res.status})`);
+    if (!res.ok) {
+      throw new Error(`OpenAI API error (${res.status})${token.source ? ` via ${token.source}` : ""}`);
+    }
 
     const data = (await res.json()) as OpenAIUsage;
 
     const header: string[] = [
-      `Account:        ${data.email ?? email ?? "unknown"}`,
+      `Account:        ${data.email ?? token.email ?? "unknown"}`,
       `Plan:           ChatGPT ${data.plan_type ?? "unknown"}`,
     ];
+    if (token.source) header.push(`Source:         ${token.source}`);
 
     const credits = data.credits;
     if (credits) {
@@ -1046,23 +1270,134 @@ async function refreshAnthropicToken(refreshToken: string): Promise<string | nul
   }
 }
 
-async function queryAnthropic(auth: AnthropicAuthData | undefined, ansi = false): Promise<QueryResult | null> {
-  if (!auth || auth.type !== "oauth") return null;
+// Claude Code's own login. OpenCode plugins such as @openchamber/opencode-claude
+// delegate auth to the Claude Code CLI instead of storing an `anthropic`
+// credential, so this is the only token on those setups. macOS keeps it in the
+// login keychain ("Claude Code-credentials", suffixed with a config-dir hash
+// when CLAUDE_CONFIG_DIR is set); other platforms use <config>/.credentials.json.
+// Read-only: Claude Code rotates its refresh token, so refreshing here would
+// sign the CLI out.
+interface ClaudeCodeCredentials {
+  accessToken: string;
+  expiresAt?: number;
+  subscriptionType?: string;
+}
 
-  let accessToken = auth.access;
+function parseClaudeCodeCredentials(raw: string): ClaudeCodeCredentials | null {
+  const oauth = (JSON.parse(raw) as { claudeAiOauth?: Record<string, unknown> }).claudeAiOauth;
+  if (!oauth || typeof oauth.accessToken !== "string" || !oauth.accessToken) return null;
+  return {
+    accessToken: oauth.accessToken,
+    expiresAt: typeof oauth.expiresAt === "number" ? oauth.expiresAt : undefined,
+    subscriptionType: typeof oauth.subscriptionType === "string" ? oauth.subscriptionType : undefined,
+  };
+}
 
-  if (!accessToken || (auth.expires && auth.expires < Date.now())) {
-    if (!auth.refresh) {
-      return { success: false, error: "\u26a0\ufe0f Anthropic token expired and no refresh token available." };
+function loadClaudeCodeCredentials(): ClaudeCodeCredentials | null {
+  const configDir = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    const file = join(configDir || join(homedir(), ".claude"), ".credentials.json");
+    if (existsSync(file)) {
+      const creds = parseClaudeCodeCredentials(readFileSync(file, "utf-8"));
+      if (creds) return creds;
     }
-    const refreshed = await refreshAnthropicToken(auth.refresh);
-    if (!refreshed) {
+  } catch {
+    // fall through to the keychain
+  }
+  if (process.platform !== "darwin") return null;
+  const services = ["Claude Code-credentials"];
+  if (configDir) {
+    const hash = createHash("sha256").update(configDir).digest("hex").slice(0, 8);
+    services.unshift(`Claude Code-credentials-${hash}`);
+  }
+  for (const service of services) {
+    try {
+      const raw = execFileSync("security", ["find-generic-password", "-s", service, "-w"], {
+        encoding: "utf-8",
+        timeout: 5_000,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const creds = parseClaudeCodeCredentials(raw.trim());
+      if (creds) return creds;
+    } catch {
+      // item missing or keychain locked
+    }
+  }
+  return null;
+}
+
+interface AnthropicProfile {
+  account?: { email?: string; has_claude_max?: boolean; has_claude_pro?: boolean };
+  organization?: { name?: string; organization_type?: string; rate_limit_tier?: string };
+}
+
+function titleWords(value: string): string {
+  return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function anthropicPlanLabel(profile: AnthropicProfile | null, subscriptionType?: string): string {
+  const orgType = profile?.organization?.organization_type?.replace(/^claude_/, "");
+  let plan = orgType
+    ? `Claude ${titleWords(orgType)}`
+    : profile?.account?.has_claude_max
+      ? "Claude Max"
+      : profile?.account?.has_claude_pro
+        ? "Claude Pro"
+        : subscriptionType
+          ? `Claude ${titleWords(subscriptionType)}`
+          : "Claude Pro/Max";
+  const multiplier = /max_(\d+x)/i.exec(profile?.organization?.rate_limit_tier ?? "")?.[1];
+  if (multiplier && !/max/i.test(plan)) plan += ` (Max ${multiplier})`;
+  else if (multiplier) plan += ` ${multiplier}`;
+  return plan;
+}
+
+async function fetchAnthropicProfile(headers: Record<string, string>): Promise<AnthropicProfile | null> {
+  try {
+    const res = await fetchTimeout(
+      "https://api.anthropic.com/api/oauth/profile",
+      { method: "GET", headers },
+      8_000,
+      0,
+    );
+    return res.ok ? ((await res.json()) as AnthropicProfile) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function queryAnthropic(auth: AnthropicAuthData | undefined, ansi = false): Promise<QueryResult | null> {
+  const native = auth?.type === "oauth" ? auth : undefined;
+  const claudeCode = native ? null : loadClaudeCodeCredentials();
+  if (!native && !claudeCode) return null;
+
+  let accessToken: string | undefined;
+  let source: string | undefined;
+
+  if (native) {
+    accessToken = native.access;
+    if (!accessToken || (native.expires && native.expires < Date.now())) {
+      if (!native.refresh) {
+        return { success: false, error: "\u26a0\ufe0f Anthropic token expired and no refresh token available." };
+      }
+      const refreshed = await refreshAnthropicToken(native.refresh);
+      if (!refreshed) {
+        return {
+          success: false,
+          error: "\u26a0\ufe0f Anthropic token expired \u2014 refresh failed.\nRe-authenticate with Anthropic in OpenCode to get a fresh token.",
+        };
+      }
+      accessToken = refreshed;
+    }
+  } else if (claudeCode) {
+    if (claudeCode.expiresAt && claudeCode.expiresAt < Date.now()) {
       return {
         success: false,
-        error: "\u26a0\ufe0f Anthropic token expired \u2014 refresh failed.\nRe-authenticate with Anthropic in OpenCode to get a fresh token.",
+        error: "\u26a0\ufe0f Claude Code login expired. Run `claude` once to refresh it.",
       };
     }
-    accessToken = refreshed;
+    accessToken = claudeCode.accessToken;
+    source = "Claude Code login";
   }
 
   try {
@@ -1073,10 +1408,10 @@ async function queryAnthropic(auth: AnthropicAuthData | undefined, ansi = false)
       "Content-Type": "application/json",
     };
 
-    const res = await fetchTimeout(
-      "https://api.anthropic.com/api/oauth/usage",
-      { method: "GET", headers },
-    );
+    const [res, profile] = await Promise.all([
+      fetchTimeout("https://api.anthropic.com/api/oauth/usage", { method: "GET", headers }),
+      fetchAnthropicProfile(headers),
+    ]);
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
@@ -1085,7 +1420,15 @@ async function queryAnthropic(auth: AnthropicAuthData | undefined, ansi = false)
 
     const data = (await res.json()) as AnthropicUsageResponse;
 
-    const header = ["Account:        Claude Pro/Max"];
+    const header = [
+      `Account:        ${profile?.account?.email ?? "Claude"}`,
+      `Plan:           ${anthropicPlanLabel(profile, claudeCode?.subscriptionType)}`,
+    ];
+    if (profile?.organization?.name && profile.organization.organization_type !== "claude_max"
+      && profile.organization.organization_type !== "claude_pro") {
+      header.push(`Organization:   ${profile.organization.name}`);
+    }
+    if (source) header.push(`Source:         ${source}`);
     const windows: QuotaWindow[] = [];
 
     for (const limit of data.limits ?? []) {
@@ -1549,6 +1892,75 @@ function resolveAntigravityToolsSettings(cfg: MyStatusConfig): AntigravityToolsS
   };
 }
 
+// Antigravity Tools proxies wired into opencode.json as custom
+// OpenAI-compatible providers (V2 `providers.<id>.settings`, V1
+// `provider.<id>.options`). Each is tried with its own configured key, which
+// opencode already sends to that same origin.
+function opencodeJsonAntigravityEndpoints(
+  base: AntigravityToolsSettings | null,
+  cfg: MyStatusConfig,
+): AntigravityToolsSettings[] {
+  const out: AntigravityToolsSettings[] = [];
+  for (const dir of candidateDirs("config")) {
+    for (const name of ["opencode.json", "opencode.jsonc"]) {
+      const path = join(dir, name);
+      if (!existsSync(path)) continue;
+      let config: Record<string, unknown>;
+      try {
+        config = JSON.parse(stripJsonComments(readFileSync(path, "utf-8"))) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const providers = {
+        ...((config.provider ?? {}) as Record<string, unknown>),
+        ...((config.providers ?? {}) as Record<string, unknown>),
+      };
+      for (const [id, raw] of Object.entries(providers)) {
+        const provider = (raw ?? {}) as {
+          name?: string;
+          settings?: { baseURL?: string; apiKey?: string };
+          options?: { baseURL?: string; apiKey?: string };
+        };
+        if (!/antigravity/i.test(`${id} ${provider.name ?? ""}`)) continue;
+        const settings = provider.settings ?? provider.options;
+        const baseUrl = settings?.baseURL ? normalizeAntigravityToolsBaseUrl(settings.baseURL) : null;
+        if (!baseUrl || out.some((endpoint) => endpoint.baseUrl === baseUrl)) continue;
+        const apiKey = typeof settings?.apiKey === "string" && !settings.apiKey.startsWith("{")
+          ? settings.apiKey
+          : undefined;
+        out.push({
+          baseUrl,
+          credentials: apiKey ? [apiKey] : [],
+          usageHours: base?.usageHours ?? 168,
+          includeUsage: base?.includeUsage ?? cfg.antigravityTools?.includeUsage !== false,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+function antigravityToolsCandidates(cfg: MyStatusConfig): AntigravityToolsSettings[] {
+  if (cfg.antigravityTools?.enabled === false) return [];
+  const primary = resolveAntigravityToolsSettings(cfg);
+  // An explicit base URL (env or mystatus.json) pins the instance.
+  if (process.env.ANTIGRAVITY_TOOLS_BASE_URL || cfg.antigravityTools?.baseUrl) {
+    return primary ? [primary] : [];
+  }
+  const candidates = primary ? [primary] : [];
+  for (const endpoint of opencodeJsonAntigravityEndpoints(primary, cfg)) {
+    const same = candidates.find((candidate) => candidate.baseUrl === endpoint.baseUrl);
+    if (same) {
+      for (const credential of endpoint.credentials) {
+        if (!same.credentials.includes(credential)) same.credentials.push(credential);
+      }
+    } else {
+      candidates.push(endpoint);
+    }
+  }
+  return candidates;
+}
+
 function antigravityToolsHeaders(credential: string | undefined): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: "application/json",
@@ -1742,15 +2154,21 @@ function antigravityToolsStatusWarning(account: AntigravityToolsAccount): string
 }
 
 async function queryAntigravityTools(cfg: MyStatusConfig): Promise<QueryResult | null> {
-  const settings = resolveAntigravityToolsSettings(cfg);
-  if (!settings) return null;
+  const candidates = antigravityToolsCandidates(cfg);
+  if (!candidates.length) return null;
 
-  let client: AntigravityToolsClient;
-  try {
-    client = await connectAntigravityTools(settings);
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  let client: AntigravityToolsClient | undefined;
+  const connectErrors: string[] = [];
+  for (const candidate of candidates) {
+    try {
+      client = await connectAntigravityTools(candidate);
+      break;
+    } catch (err) {
+      connectErrors.push(err instanceof Error ? err.message : String(err));
+    }
   }
+  if (!client) return { success: false, error: connectErrors.join("\n") };
+  const settings = client.settings;
 
   const hoursQuery = `?hours=${settings.usageHours}`;
   const [health, summary, accountStats, modelStats] = await Promise.all([
@@ -1898,9 +2316,7 @@ async function queryGoogle(ansi = false): Promise<QueryResult | null> {
     if (!accounts.length)
       return { success: true, output: "No enabled Google accounts found." };
 
-    const cards: ProviderCard[] = [];
-
-    for (const account of accounts) {
+    const cards = await Promise.all(accounts.map(async (account): Promise<ProviderCard> => {
       const ua = account.fingerprint?.userAgent ?? "antigravity/1.23.2 windows/amd64";
       const windows: QuotaWindow[] = [];
       let cachedNote: string | undefined;
@@ -1945,15 +2361,15 @@ async function queryGoogle(ansi = false): Promise<QueryResult | null> {
         }
       }
 
-      cards.push({
+      return {
         subtitle: account.email,
         note: cachedNote,
         windows: windows.length ? windows : undefined,
         footer: windows.length
           ? undefined
           : ["No quota data available for this account."],
-      });
-    }
+      };
+    }));
 
     if (!cards.length) {
       return { success: true, output: "No quota data available for Google accounts." };
@@ -3266,6 +3682,23 @@ function parseSyntheticWeeklyWindow(raw: unknown): SyntheticParsedWindow | null 
   };
 }
 
+// Current /v2/quotas plan pool: a server-computed percentage that regenerates
+// by `nextRegenPercent` percentage points on each tick.
+function parseSyntheticPlanWeeklyWindow(raw: unknown): SyntheticParsedWindow | null {
+  const value = syntheticRecord(raw);
+  if (!value) return null;
+  const remainingPercent = parseSyntheticPercent(value.percentRemaining);
+  if (remainingPercent === undefined) return null;
+  const regen = syntheticFiniteNumber(value.nextRegenPercent);
+  return {
+    kind: "regeneration",
+    remainingPercent,
+    regenPercent: regen !== undefined && regen >= 0 ? Number(regen.toFixed(2)) : undefined,
+    nextRegenAt: parseSyntheticTimestamp(value.nextRegenAt),
+    limited: value.limited === true,
+  };
+}
+
 function parseSyntheticSubscriptionWindow(raw: unknown): SyntheticParsedWindow | null {
   const subscription = syntheticRecord(raw);
   if (!subscription) return null;
@@ -3305,6 +3738,7 @@ function syntheticWindow(
   return {
     label,
     remaining: Math.round(clampPercent(parsed.remainingPercent)),
+    resetAt: parsed.kind === "renewal" ? parsed.renewalAt : undefined,
     detail,
     ...(parsed.limited ? { warn: "Limited; regeneration continues on each tick" } : {}),
   };
@@ -3361,7 +3795,15 @@ async function querySynthetic(auth: SyntheticAuthData | undefined): Promise<Quer
     }
 
     const weekly = parseSyntheticWeeklyWindow(payload.weeklyTokenLimit);
-    if (weekly) windows.push(syntheticWindow("Weekly credits", weekly, true, "credits"));
+    if (weekly) {
+      windows.push(syntheticWindow("Weekly credits", weekly, true, "credits"));
+    } else {
+      const plan = parseSyntheticPlanWeeklyWindow(payload.planWeeklyLimit);
+      if (plan) windows.push(syntheticWindow("Weekly plan limit", plan, false, ""));
+    }
+
+    const search = parseSyntheticSubscriptionWindow(syntheticRecord(payload.search)?.hourly);
+    if (search) windows.push(syntheticWindow("Search (hourly)", search, false, "requests"));
 
     if (!windows.length) {
       return { success: false, error: "Synthetic quotas API returned no recognized quota windows" };
@@ -3373,6 +3815,171 @@ async function querySynthetic(auth: SyntheticAuthData | undefined): Promise<Quer
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+// ============================================================
+// Meta Muse Code  (POST api.meta.ai/muse-code/key)
+//
+// Muse has no read-only usage route. Its plan usage (rolling 5-hour window +
+// weekly) is only returned by the key-mint endpoint that the opencode-muse
+// plugin and `muse` CLI call to exchange their device-flow token for a 24-hour
+// API key. Each call mints a new key (existing keys stay valid), so the
+// provider is throttled to one live call per MUSE_MIN_INTERVAL_MS through the
+// provider cache, even when `fresh` is requested.
+//
+//   Credentials: OpenCode V2 `muse` connections (refresh = device-flow token),
+//                then the muse CLI's ~/.config/muse/auth.json (MUSE_AUTH_PATH).
+// ============================================================
+
+const MUSE_MINT_URL = "https://api.meta.ai/muse-code/key";
+const MUSE_ACCOUNT_URL = "https://accountscenter.meta.com/muse_code/";
+const MUSE_MIN_INTERVAL_MS = 15 * 60_000;
+
+interface MuseUsageWindow {
+  used_percent?: number;
+  window_duration_mins?: number;
+  resets_at?: number;
+}
+
+interface MuseMintResponse {
+  user_email?: string;
+  subs_tier_name?: string;
+  is_subs_active?: boolean;
+  require_payment?: boolean;
+  action_url?: string | null;
+  subs_usage?: { window?: MuseUsageWindow | null; weekly?: MuseUsageWindow | null } | null;
+}
+
+interface MuseLogin {
+  token: string;
+  email?: string;
+  tier?: string;
+  source: string;
+}
+
+function museCliAuthPath(): string {
+  if (process.env.MUSE_AUTH_PATH) return process.env.MUSE_AUTH_PATH;
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "muse", "auth.json");
+}
+
+async function loadMuseLogins(): Promise<MuseLogin[]> {
+  const logins: MuseLogin[] = [];
+  const seen = new Set<string>();
+  // Several connections can exist for one account after re-logins; keep the
+  // active/newest one per email.
+  for (const row of await opencodeCredentialsFor("muse")) {
+    const value = row.value as { type?: string; refresh?: unknown; metadata?: Record<string, unknown> };
+    if (value.type !== "oauth" || typeof value.refresh !== "string" || !value.refresh) continue;
+    const email = typeof value.metadata?.email === "string" ? value.metadata.email : undefined;
+    const key = (email ?? value.refresh).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    logins.push({
+      token: value.refresh,
+      email,
+      tier: typeof value.metadata?.tier === "string" ? value.metadata.tier : undefined,
+      source: "OpenCode",
+    });
+  }
+  if (logins.length) return logins;
+
+  try {
+    const cli = JSON.parse(readFileSync(museCliAuthPath(), "utf-8")) as {
+      providers?: { meta?: { mechanism?: string; access_token?: string } };
+    };
+    const meta = cli.providers?.meta;
+    if (meta?.mechanism === "oauth" && meta.access_token) {
+      logins.push({ token: meta.access_token, source: "muse CLI" });
+    }
+  } catch {
+    // no muse CLI login
+  }
+  return logins;
+}
+
+function museWindow(label: string, window: MuseUsageWindow | null | undefined): QuotaWindow | null {
+  if (typeof window?.used_percent !== "number" || !Number.isFinite(window.used_percent)) return null;
+  return {
+    label,
+    remaining: Math.round(clampPercent(100 - window.used_percent)),
+    resetAt: epochToIso(window.resets_at),
+  };
+}
+
+function museWindowLabel(window: MuseUsageWindow | null | undefined): string {
+  const mins = window?.window_duration_mins;
+  if (typeof mins !== "number" || !Number.isFinite(mins) || mins <= 0) return "Rolling window";
+  if (mins % 60 === 0) return `${mins / 60}-hour limit`;
+  return `${mins}-minute limit`;
+}
+
+async function queryMuseLogin(login: MuseLogin): Promise<ProviderCard> {
+  const res = await fetchTimeout(
+    MUSE_MINT_URL,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${login.token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "User-Agent": "opencode-muse/0.1.0",
+      },
+      body: "{}",
+    },
+    15_000,
+    0,
+  );
+  if (res.status === 401 || res.status === 403) {
+    throw new Error(
+      `Muse login is no longer valid (${res.status}). Run \`opencode auth login\`, choose Muse, and approve the device code.`,
+    );
+  }
+  if (!res.ok) throw new Error(`Muse API error (${res.status})`);
+  const data = (await res.json()) as MuseMintResponse;
+
+  const header = [`Account:        ${data.user_email ?? login.email ?? "unknown"}`];
+  const tier = data.subs_tier_name ?? login.tier;
+  if (tier) header.push(`Plan:           ${tier}`);
+  if (login.source !== "OpenCode") header.push(`Source:         ${login.source}`);
+
+  const windows = [
+    museWindow(museWindowLabel(data.subs_usage?.window), data.subs_usage?.window),
+    museWindow("Weekly limit", data.subs_usage?.weekly),
+  ].filter((window): window is QuotaWindow => window !== null);
+
+  const footer: string[] = [];
+  if (data.require_payment || data.is_subs_active === false) {
+    footer.push(`\u26a0\ufe0f Subscription needs attention: ${data.action_url ?? MUSE_ACCOUNT_URL}`);
+  }
+  if (!windows.length) footer.push("No usage data returned for this subscription.");
+
+  return {
+    subtitle: data.user_email ?? login.email,
+    header,
+    windows: windows.length ? windows : undefined,
+    footer: footer.length ? footer : undefined,
+  };
+}
+
+async function queryMuse(): Promise<QueryResult | null> {
+  const logins = await loadMuseLogins();
+  if (!logins.length) return null;
+
+  const results = await Promise.allSettled(logins.map((login) => queryMuseLogin(login)));
+  const cards: ProviderCard[] = [];
+  const errors: string[] = [];
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") cards.push(result.value);
+    else {
+      const label = logins[index].email ?? logins[index].source;
+      errors.push(`${label}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+    }
+  });
+  if (!cards.length) return { success: false, error: errors.join("\n") };
+  if (errors.length) {
+    cards[0].footer = [...(cards[0].footer ?? []), ...errors.map((error) => `\u26a0\ufe0f ${error}`)];
+  }
+  return { success: true, cards };
 }
 
 // ============================================================
@@ -7321,6 +7928,8 @@ interface Provider {
   id: string;
   title: string;
   query: (auth: AuthData, ansi: boolean) => Promise<QueryResult | null>;
+  /** Minimum age before a cached success is re-queried; not bypassed by `fresh`. */
+  minIntervalMs?: number;
 }
 
 const PROVIDERS: Provider[] = [
@@ -7333,6 +7942,7 @@ const PROVIDERS: Provider[] = [
   { id: "longcat", title: "LongCat API Quota", query: (_a, ansi) => queryLongCat(ansi) },
   { id: "minimax", title: "MiniMax Token Plan", query: (a, ansi) => queryMiniMax(a["minimax-coding-plan"], ansi) },
   { id: "mistral", title: "Mistral Vibe Usage", query: (_a, ansi) => queryMistral(_a, ansi) },
+  { id: "muse", title: "Meta Muse Code", query: () => queryMuse(), minIntervalMs: MUSE_MIN_INTERVAL_MS },
   { id: "nanogpt", title: "NanoGPT Account Quota", query: (a, ansi) => queryNanoGpt(a["nano-gpt"], ansi) },
   { id: "openai", title: "OpenAI Account Quota", query: (a, ansi) => queryOpenAI(a.openai, ansi) },
   { id: "ollama", title: "Ollama Cloud", query: (_a, ansi) => queryOllama(_a, ansi) },
@@ -7393,12 +8003,13 @@ function saveCache(cache: CacheFile): void {
 }
 
 function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
     p,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`exceeded ${ms / 1000}s deadline`)), ms),
-    ),
-  ]);
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`exceeded ${ms / 1000}s deadline`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 function noteCards(result: QueryResult, note: string): QueryResult {
@@ -7449,7 +8060,8 @@ async function runProvider(
   const cached = cache[p.id];
   const ageNote = (ts: number) => `cached${formatCachedAgeMinutes(ts)}`;
 
-  if (!fresh && ttlMs > 0 && cached && Date.now() - cached.ts < ttlMs) {
+  const reuseMs = Math.max(fresh ? 0 : ttlMs, p.minIntervalMs ?? 0);
+  if (reuseMs > 0 && cached && Date.now() - cached.ts < reuseMs) {
     return { title: p.title, result: noteCards(cached.result, ageNote(cached.ts)) };
   }
 
@@ -8002,14 +8614,14 @@ export async function queryMyStatus(args: MyStatusArgs): Promise<MyStatusSnapsho
   saveCache(cache);
 
   // Local/dashboard providers (including Antigravity Tools) do not require an
-  // OpenCode auth.json. Preserve the old guidance only when every selected
+  // OpenCode credential store. Preserve the old guidance only when every selected
   // provider was skipped specifically because no native auth was available.
   if (authMissing && ran.every(({ result }) => result === null)) {
-    const tried = candidateDirs("data").map((d) => join(d, "auth.json"));
+    const tried = candidateDirs("data").flatMap((d) => [join(d, "opencode.db"), join(d, "auth.json")]);
     return {
       ran,
       fetchedAt: Date.now(),
-      authError: `\u274c No auth.json found in any opencode profile.\nLooked at: ${tried.join(", ")}`,
+      authError: `\u274c No OpenCode credentials found in any opencode profile.\nLooked at: ${tried.join(", ")}`,
     };
   }
 
@@ -8075,7 +8687,7 @@ export const MyStatusPlugin: Plugin = async () => ({
   tool: {
     mystatus: tool({
       description:
-        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Kimi for Coding, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, Synthetic, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,kimi,longcat,minimax,mistral,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,synthetic,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
+        "Query quota usage for all configured AI platforms. Returns remaining quota, usage stats, and reset countdowns. Supports OpenAI, Anthropic, Meta Muse Code, Google (Antigravity Tools quota + proxy token stats, with auth-plugin fallback), GitHub Copilot, OpenCode Go+Zen, Kimi for Coding, Ollama Cloud, LongCat API, Poe, Z.AI (GLM Coding Plan), xAI/Grok, MiniMax Token Plan, NanoGPT, StepFun Token Plan, Synthetic, QwenCloud Token Plan, Mistral Vibe, AtlasCloud Coding Plan, and BytePlus Coding Plan. Output is a responsive grid of provider cards (two columns when the terminal is wide enough), sorted by urgency, with a full-width summary card and usage trends. Pass `width` with the user's terminal column count (or set MYSTATUS_WIDTH / a width in ~/.config/opencode/mystatus.json) so cards size to the terminal and never wrap. Optional args: layout (auto|single|double), sort (urgency|name|reset), summary (bool), trend (off|compact|full), only/exclude (comma provider ids: anthropic,atlascloud,byteplus,copilot,google,kimi,longcat,minimax,mistral,muse,nanogpt,ollama,openai,opencode-go,poe,qwencloud,stepfun,synthetic,xai,zai), fresh (bool), threshold (number), format (ansi|json).",
       args: {
         format: tool.schema.string().optional(),
         threshold: tool.schema.number().optional(),
