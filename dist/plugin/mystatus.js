@@ -1108,6 +1108,7 @@ async function queryAnthropic(auth, ansi = false) {
 const GOOGLE_CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const GOOGLE_CLIENT_SECRET = "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";
 const GOOGLE_QUOTA_GROUPS = [
+    { key: "gemini-argon", display: "Gemini Argon" },
     { key: "gemini-pro", display: "Gemini Pro" },
     { key: "gemini-flash", display: "Gemini Flash" },
     { key: "claude", display: "Claude" },
@@ -1124,6 +1125,8 @@ function classifyAntigravityGroup(modelId) {
         return "claude";
     if (m.includes("gpt-oss") || m.includes("gpt"))
         return "gpt-oss";
+    if (m.includes("argon"))
+        return "gemini-argon";
     if (!m.includes("gemini"))
         return null;
     return m.includes("flash") ? "gemini-flash" : "gemini-pro";

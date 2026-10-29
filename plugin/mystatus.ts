@@ -1508,10 +1508,14 @@ const GOOGLE_CLIENT_SECRET = "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";
 // classify every model the live API returns into the same three families the
 // auth plugin caches (gemini-pro / gemini-flash / claude) and aggregate
 // conservatively. This keeps the live and cached paths consistent and resilient
-// to renames. The grouping mirrors opencode-antigravity-auth's classifyQuotaGroup.
-type AntigravityGroupKey = "gemini-pro" | "gemini-flash" | "claude" | "gpt-oss";
+// to renames. The grouping mirrors opencode-antigravity-auth's classifyQuotaGroup,
+// plus a separate Gemini Argon family: gemini-4-argon-{low,medium,high} carry
+// their own (weekly) pool, which folded into "Gemini Pro" masked the 2.5 Pro
+// pool behind Argon's exhaustion.
+type AntigravityGroupKey = "gemini-argon" | "gemini-pro" | "gemini-flash" | "claude" | "gpt-oss";
 
 const GOOGLE_QUOTA_GROUPS: Array<{ key: AntigravityGroupKey; display: string }> = [
+  { key: "gemini-argon", display: "Gemini Argon" },
   { key: "gemini-pro", display: "Gemini Pro" },
   { key: "gemini-flash", display: "Gemini Flash" },
   { key: "claude", display: "Claude" },
@@ -1532,6 +1536,7 @@ function classifyAntigravityGroup(modelId: string): AntigravityGroupKey | null {
   if (m.startsWith("chat_") || m.startsWith("tab_")) return null;
   if (m.includes("claude")) return "claude";
   if (m.includes("gpt-oss") || m.includes("gpt")) return "gpt-oss";
+  if (m.includes("argon")) return "gemini-argon";
   if (!m.includes("gemini")) return null;
   return m.includes("flash") ? "gemini-flash" : "gemini-pro";
 }
